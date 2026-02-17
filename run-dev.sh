@@ -47,6 +47,7 @@ SERILOG_PATH="$SERILOG_PATH"
 TAILWIND_INPUT="$TAILWIND_INPUT"
 TAILWIND_OUTPUT="$TAILWIND_OUTPUT"
 TAILWIND_LOG_FILE="$TAILWIND_LOG_FILE"
+APP_STORAGE_ROOT="$ROOT_DIR/storage"
 ENV_EOF
 
 if [[ ! -f "$APP_DIR/package.json" ]]; then
@@ -131,9 +132,11 @@ cd "$ROOT_DIR"
 ASPNETCORE_ENVIRONMENT=Development \
 ASPNETCORE_URLS="http://127.0.0.1:${APP_PORT}" \
 ConnectionStrings__Default="$CONNECTION_STRING" \
+Agora__StorageRoot="$APP_STORAGE_ROOT" \
 Email__Provider=filesystem \
 Email__FileSystem__OutputDirectory="$APP_EMAIL_DIR" \
 Serilog__WriteTo__0__Args__path="$SERILOG_PATH" \
+DOTNET_WATCH_SUPPRESS_BROWSER_REFRESH=1 \
 dotnet watch --project src/Agora.Web/Agora.Web.csproj \
   --exclude "src/Agora.Web/storage/**" \
   --exclude "src/Agora.Web/logs/**" \
