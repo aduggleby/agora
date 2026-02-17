@@ -1,0 +1,7 @@
+**/bin/
+**/obj/
+.git/
+.gitignore
+src/Agora.Web/storage/
+src/Agora.Web/logs/
+*.db
