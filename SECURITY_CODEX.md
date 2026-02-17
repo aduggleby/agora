@@ -5,13 +5,13 @@ Repository: `Agora` (`/home/alex/Source/agora`)
 
 ## Executive Summary
 
-Overall risk is **High**. The review found **2 critical**, **3 high**, and **4 medium** findings. The most significant issues are plaintext share token storage, unauthenticated E2E endpoints when enabled, and sensitive data leakage through logs.
+Overall risk is **High**. The review found **2 critical**, **3 high**, and **4 medium** findings. As of 0.9.1, rate limiting (#5) and CSRF (#6) are fixed. The most significant remaining issues are plaintext share token storage, unauthenticated E2E endpoints when enabled, and sensitive data leakage through logs.
 
 ## Risk Matrix
 
 - Critical: 2
-- High: 3
-- Medium: 4
+- High: 3 (1 fixed in 0.9.1)
+- Medium: 4 (1 fixed in 0.9.1)
 - Low: 0
 
 ## Detailed Findings (By Priority)
@@ -56,24 +56,13 @@ Overall risk is **High**. The review found **2 critical**, **3 high**, and **4 m
 - Impact: Brute-force/enumeration risk increases significantly for short tokens.
 - Recommendation: Enforce stronger minimum length (for example 12+) server-side; avoid user-selected short custom tokens.
 
-5. Missing anti-automation/rate limiting on sensitive endpoints
-- Description: No request throttling observed for login/token-related endpoints.
-- Evidence:
-  - `src/Agora.Web/Program.cs` (no `AddRateLimiter` / `UseRateLimiter`)
-- Impact: Increases feasibility of credential stuffing and token probing.
-- Recommendation: Add rate limiting policies for `/login`, `/register`, `/api/shares/{token}`, `/s/{token}/*`, and admin mutation APIs.
+5. ~~Missing anti-automation/rate limiting on sensitive endpoints~~
+**Fixed in 0.9.1** — built-in rate limiting for auth endpoints (10 req/min per IP), authenticated requests (120 req/min per account), and download endpoint (20 req/min per token+IP). Temporary account lockout after repeated login failures.
 
 ### Medium
 
-6. CSRF protections not explicit for cookie-authenticated Minimal APIs
-- Description: Multiple state-changing POST routes use cookie auth, with no explicit antiforgery configuration.
-- Evidence:
-  - `src/Agora.Web/Program.cs:884`
-  - `src/Agora.Web/Program.cs:1070`
-  - `src/Agora.Web/Program.cs:1234`
-  - `src/Agora.Web/Program.cs` (no antiforgery setup)
-- Impact: Defense-in-depth gap for cross-site request risk on authenticated sessions.
-- Recommendation: Add antiforgery services/middleware and validate tokens on mutating cookie-authenticated endpoints.
+6. ~~CSRF protections not explicit for cookie-authenticated Minimal APIs~~
+**Fixed in 0.9.1** — antiforgery validation on unsafe HTTP methods (forms, fetch, and XHR).
 
 7. Missing explicit HTTPS and security header hardening
 - Description: No explicit HTTPS redirection/HSTS/security header middleware observed.
@@ -110,7 +99,7 @@ Overall risk is **High**. The review found **2 critical**, **3 high**, and **4 m
 - A01 Broken Access Control: **Fail** (E2E endpoints if enabled)
 - A02 Cryptographic Failures: **Fail** (plaintext share tokens)
 - A03 Injection: **Pass (current scan)**
-- A04 Insecure Design: **Partial** (short token policy, no throttling)
+- A04 Insecure Design: **Partial** (short token policy; throttling fixed in 0.9.1)
 - A05 Security Misconfiguration: **Fail** (sensitive logging, missing explicit hardening)
 - A06 Vulnerable Components: **Pass (tooling results)**
 - A07 Identification and Authentication Failures: **Partial** (weak registration password policy)
@@ -122,8 +111,8 @@ Overall risk is **High**. The review found **2 critical**, **3 high**, and **4 m
 
 1. Remove plaintext token storage and eliminate credential/token log exposure.
 2. Lock down/remove E2E endpoints from non-test runtime contexts.
-3. Strengthen token/password policies and add rate limiting.
-4. Add CSRF protections for cookie-authenticated mutating routes.
+3. Strengthen token/password policies. ~~Add rate limiting.~~ (Fixed in 0.9.1)
+4. ~~Add CSRF protections for cookie-authenticated mutating routes.~~ (Fixed in 0.9.1)
 5. Add explicit HTTPS + security-header baseline and externalize development secrets.
 
 ## Assumptions / Open Questions

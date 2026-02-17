@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.2] - 2026-02-17
+
+### Changed
+- Consolidated publish profile into main `build.csando` file (removed `build.publish.csando`).
+- Publish profile now builds and pushes multi-arch Docker images directly to GHCR (`ghcr.io/aduggleby/agora`).
+
 ## [0.9.1] - 2026-02-17
 
 ### Added

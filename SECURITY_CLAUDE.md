@@ -16,15 +16,11 @@ Recommendation: compile out in production builds, or additionally require admin 
 
 ## Medium Priority
 
-1. CSRF protections are missing on cookie-authenticated minimal API `POST` endpoints.  
-Examples: `src/Agora.Web/Program.cs:841`, `src/Agora.Web/Program.cs:884`, `src/Agora.Web/Program.cs:1022`, `src/Agora.Web/Program.cs:1070`, `src/Agora.Web/Program.cs:1234`.  
-Impact: cross-site request forgery against authenticated users (partially mitigated by SameSite defaults, but not a full control).  
-Recommendation: enable antiforgery validation for these endpoints and send antiforgery tokens in forms/XHR.
+1. ~~CSRF protections are missing on cookie-authenticated minimal API `POST` endpoints.~~
+**Fixed in 0.9.1** — antiforgery validation on unsafe HTTP methods (forms, fetch, and XHR).
 
-2. No login throttling / brute-force controls.  
-`src/Agora.Infrastructure/Auth/AuthService.cs:62`-`src/Agora.Infrastructure/Auth/AuthService.cs:81` performs credential checks without lockout/backoff/rate limits.  
-Impact: credential stuffing and password guessing risk.  
-Recommendation: add IP/user rate limiting (`AddRateLimiter`) and progressive lockout/backoff.
+2. ~~No login throttling / brute-force controls.~~
+**Fixed in 0.9.1** — built-in rate limiting for auth, authenticated user traffic, and share downloads; temporary account lockout after repeated login failures.
 
 3. SVG uploads allowed and served from same origin as authenticated app.  
 Upload allowlist includes `.svg` at `src/Agora.Web/Program.cs:3193`-`src/Agora.Web/Program.cs:3196`; served at `src/Agora.Web/Program.cs:1666`-`src/Agora.Web/Program.cs:1698`.  
