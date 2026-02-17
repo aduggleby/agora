@@ -40,6 +40,7 @@ Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, gene
 - `src/Agora.Infrastructure` - EF Core persistence and service implementations
 - `src/Agora.Domain` - domain entities
 - `tests/Agora.Application.Tests` - unit tests
+- `tests/e2e` - Playwright end-to-end tests
 
 ## Local Development
 
@@ -72,10 +73,12 @@ This starts:
 - Agora app on `http://127.0.0.1:18080`
 
 During development, emails are written to the filesystem instead of being sent:
-- `src/Agora.Web/emails`
+- `emails/`
 
 Logs are written to:
-- `src/Agora.Web/logs`
+- `logs/` (Serilog rolling files)
+- `.dev/agora-web.log` (app runtime output)
+- `.dev/tailwind.log` (Tailwind watch output)
 
 Stop everything:
 
@@ -88,6 +91,19 @@ Stop and delete dev SQL container:
 ```bash
 ./stop-dev.sh --delete
 ```
+
+## End-to-End Tests
+
+Playwright tests run against a dedicated app instance on port `18090` with an isolated SQLite database:
+
+```bash
+cd tests/e2e
+npm install
+npx playwright install --with-deps chromium
+npx playwright test
+```
+
+The test runner starts the app automatically. Test data is stored in `.e2e-data/`.
 
 ## ANDO Build
 

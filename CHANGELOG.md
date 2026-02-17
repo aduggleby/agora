@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.1] - 2026-02-17
+
+### Added
+- User authentication with cookie-based sessions.
+- Registration with email confirmation before first login.
+- Forgot password and password reset flows.
+- Account settings with email and password update forms (both require confirmation).
+- Share-created success screen with one-click link copy.
+- Previous shares list on dashboard with Details modal showing archived filenames and sizes.
+- Customizable share link tokens (default: 8-character alphanumeric).
+- Download page designer with configurable card position (corners, edges, centered).
+- Share defaults settings page.
+- New accounts default download page subtitle set to `by <account email>`.
+- Signed-in downloads excluded from download totals.
+- Built-in rate limiting for auth, authenticated user traffic, and share downloads.
+- CSRF protection on unsafe HTTP methods (forms, fetch, and XHR).
+- Login brute-force protection with temporary account lockout after repeated failures.
+- Share token hashing at rest.
+- Playwright end-to-end test suite (`tests/e2e`).
+- Warm Craft design system with `STYLEGUIDE.md`.
+- Tailwind CSS v4 theme and build workflow.
+- `tmux`-based development scripts (`run-dev.sh`, `stop-dev.sh`).
+- Security review reports (`SECURITY.md`, `SECURITY_CLAUDE.md`, `SECURITY_CODEX.md`).
+
+### Fixed
+- `dotnet watch` no longer triggers overlay on upload-created file changes.
+- `stop-dev.sh` reliably frees dev ports and kills orphaned app processes.
+
 ## [0.9.0] - 2026-02-17
 
 ### Added
