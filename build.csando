@@ -1,7 +1,11 @@
+var publish = DefineProfile("publish");
+
 Ando.UseImage("mcr.microsoft.com/dotnet/sdk:10.0");
 
 var web = Dotnet.Project("./src/Agora.Web/Agora.Web.csproj");
 var tests = Dotnet.Project("./tests/Agora.Application.Tests/Agora.Application.Tests.csproj");
+var version = web.Version;
+
 Dotnet.Restore(web);
 Dotnet.Build(web, o =>
 {
@@ -15,3 +19,22 @@ Dotnet.Test(tests, o =>
     o.NoRestore = true;
     o.NoBuild = false;
 });
+
+if (publish)
+{
+    Docker.Install();
+
+    Dotnet.Publish(web, o => o
+        .WithConfiguration(Configuration.Release)
+        .SkipRestore()
+        .Output(Root / "artifacts" / "publish"));
+
+    Docker.Build("Dockerfile", o => o
+        .WithPlatforms("linux/amd64", "linux/arm64")
+        .WithContext(".")
+        .WithTag($"ghcr.io/aduggleby/agora:{version}")
+        .WithTag("ghcr.io/aduggleby/agora:latest")
+        .WithPush());
+
+    Ando.CopyZippedArtifactsToHost("artifacts", "./artifacts");
+}

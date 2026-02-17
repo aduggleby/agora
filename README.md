@@ -115,10 +115,16 @@ Run validation pipeline (restore -> build -> test):
 ando run
 ```
 
-Run publish + container build profile:
+Authenticate to GHCR first:
 
 ```bash
-ando run -f build.publish.csando -p publish --dind
+echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+```
+
+Run publish profile (build/test, publish artifacts, build and push multi-arch image to GHCR):
+
+```bash
+ando run -p publish --dind
 ```
 
 ## Container
