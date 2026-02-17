@@ -22,6 +22,7 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
             builder.Property(x => x.NotifyMode).HasMaxLength(20);
             builder.Property(x => x.ZipDisplayName).HasMaxLength(255);
             builder.Property(x => x.ShareTokenPrefix).HasMaxLength(16);
+            builder.Property(x => x.PageBackgroundColorHex).HasMaxLength(16);
         });
 
         modelBuilder.Entity<ShareFile>(builder =>
@@ -42,6 +43,7 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
             builder.HasKey(x => x.Id);
             builder.HasIndex(x => x.UploaderEmail).IsUnique();
             builder.Property(x => x.UploaderEmail).HasMaxLength(320);
+            builder.Property(x => x.BackgroundColorHex).HasMaxLength(16);
         });
 
         modelBuilder.Entity<UserAccount>(builder =>
@@ -51,6 +53,8 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
             builder.Property(x => x.Email).HasMaxLength(320);
             builder.Property(x => x.PasswordHash).HasMaxLength(1000);
             builder.Property(x => x.Role).HasMaxLength(20);
+            builder.Property(x => x.DefaultNotifyMode).HasMaxLength(20);
+            builder.Property(x => x.DefaultExpiryMode).HasMaxLength(20);
         });
 
         modelBuilder.Entity<SystemSetting>(builder =>

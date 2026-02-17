@@ -49,6 +49,10 @@ Default container port:
 This project is assigned `18000-18099` in `~/Source/PORTS.md`.
 Agents should use ports in this range for local services and examples.
 
+E2E defaults:
+- Web app (Playwright): `18090`
+- Dedicated E2E database: `.e2e-data/agora_e2e.db`
+
 ## File Ownership and Layout
 
 - `src/Agora.Web` - endpoints, startup, hosted services
@@ -69,12 +73,14 @@ Key constraints:
 - Primary accent: `terra` (#C4663A). Do not introduce new accent colors.
 - Build CSS with `npm run tailwind:build` in `src/Agora.Web/` after any HTML changes.
 - Public share pages (`/s/{token}`) use inline CSS (not Tailwind) for self-contained rendering.
+- Any disabled button must include a tooltip (for example `title`) explaining why the button is disabled.
 
 ## Coding Rules
 
 - Keep new code ASCII unless file requires Unicode.
 - Prefer explicit validation for user inputs.
 - Use UTC for all persisted timestamps.
+- Display all user-facing date/time values in the browser's local timezone.
 - Stream file operations; avoid loading full payloads in memory.
 - Keep APIs stable and additive where possible.
 
@@ -92,6 +98,22 @@ When behavior changes, update at least one of:
 - `README.md`
 - `AGENTS.md`
 - `docs/plans/*.md` (if scope/plans are affected)
+
+If the user asks to add or change something in `CLAUDE.md`, ask for confirmation whether they meant `AGENTS.md` before applying the change.
+
+## Dev Log Locations
+
+- App runtime output (tmux app pane): `.dev/agora-web.log`
+- Tailwind watch output (tmux tailwind pane): `.dev/tailwind.log`
+- Serilog rolling logs: `logs/agora-YYYYMMDD.log`
+- Dev email sink files: `emails/`
+
+Quick checks:
+
+- `tail -f .dev/agora-web.log`
+- `tail -f .dev/tailwind.log`
+- `tail -f logs/agora-$(date +%Y%m%d).log`
+- `ls -la emails`
 
 ## Safe Defaults for Examples
 

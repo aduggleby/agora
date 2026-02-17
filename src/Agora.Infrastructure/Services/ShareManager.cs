@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Text.Json;
 using Agora.Application.Models;
 using Agora.Application.Utilities;
 using Agora.Domain.Entities;
@@ -14,6 +15,55 @@ public sealed class ShareManager(
     IOptions<AgoraOptions> options,
     IBackgroundJobClient backgroundJobs)
 {
+    public sealed record UserShareSummary(
+        Guid ShareId,
+        string ZipDisplayName,
+        long ZipSizeBytes,
+        int FileCount,
+        int DownloadCount,
+        DateTime CreatedAtUtc,
+        DateTime? ExpiresAtUtc,
+        DateTime? DeletedAtUtc);
+
+    public sealed record DraftTemplateState(
+        string DraftShareId,
+        string TemplateMode,
+        string Title,
+        string H1,
+        string Description,
+        string? BackgroundImageUrl,
+        string? BackgroundUploadId,
+        string? BackgroundColorHex);
+
+    public sealed record StagedUploadFile(
+        string UploadId,
+        string OriginalFileName,
+        long OriginalSizeBytes,
+        string ContentType,
+        string TempPath,
+        string DirectoryPath);
+
+    private sealed record StagedUploadMetadata(
+        string UploadId,
+        string UploaderEmail,
+        string DraftShareId,
+        string OriginalFileName,
+        long OriginalSizeBytes,
+        string ContentType,
+        DateTime CreatedAtUtc);
+
+    private sealed record DraftShareMetadata(
+        string DraftShareId,
+        string UploaderEmail,
+        DateTime LastActivityUtc,
+        string TemplateMode,
+        string Title,
+        string H1,
+        string Description,
+        string? BackgroundImageUrl,
+        string? BackgroundUploadId,
+        string? BackgroundColorHex);
+
     private readonly AgoraOptions _options = options.Value;
 
     public async Task<CreateShareResult> CreateShareAsync(CreateShareCommand command, CancellationToken cancellationToken)
@@ -46,6 +96,11 @@ public sealed class ShareManager(
         var zipInfo = new FileInfo(zipAbsolutePath);
 
         var template = await ResolveTemplateAsync(command, cancellationToken);
+        if (command.TemplateMode == TemplateMode.PerUpload && command.TemplateBackgroundFile is not null)
+        {
+            var backgroundMarker = CopyTemplateBackgroundToShareDirectory(command.TemplateBackgroundFile, zipRelativePath);
+            template = template with { BackgroundImageUrl = backgroundMarker };
+        }
 
         var share = new Share
         {
@@ -64,6 +119,7 @@ public sealed class ShareManager(
             PageH1 = template.H1,
             PageDescription = template.Description,
             BackgroundImageUrl = template.BackgroundImageUrl,
+            PageBackgroundColorHex = template.BackgroundColorHex,
             Files = command.Files.Select(x => new ShareFile
             {
                 Id = Guid.NewGuid(),
@@ -86,6 +142,92 @@ public sealed class ShareManager(
             .Include(x => x.Files)
             .Include(x => x.DownloadEvents)
             .SingleOrDefaultAsync(x => x.ShareTokenHash == hash, cancellationToken);
+    }
+
+    public Task<Share?> FindByTokenForUploaderAsync(string token, string uploaderEmail, CancellationToken cancellationToken)
+    {
+        var hash = TokenCodec.HashToken(token);
+        var normalizedEmail = uploaderEmail.Trim();
+        return db.Shares
+            .SingleOrDefaultAsync(x => x.ShareTokenHash == hash && x.UploaderEmail == normalizedEmail, cancellationToken);
+    }
+
+    public Task<List<UserShareSummary>> ListRecentSharesForUploaderAsync(string uploaderEmail, int take, CancellationToken cancellationToken)
+    {
+        var normalizedEmail = uploaderEmail.Trim();
+        return db.Shares
+            .AsNoTracking()
+            .Where(x => x.UploaderEmail == normalizedEmail && x.DeletedAtUtc == null)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .Take(take)
+            .Select(x => new UserShareSummary(
+                x.Id,
+                x.ZipDisplayName,
+                x.ZipSizeBytes,
+                x.Files.Count,
+                x.DownloadEvents.Count,
+                x.CreatedAtUtc,
+                x.ExpiresAtUtc,
+                x.DeletedAtUtc))
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<bool> DeleteShareAsync(Guid shareId, string uploaderEmail, CancellationToken cancellationToken)
+    {
+        var normalizedEmail = uploaderEmail.Trim();
+        var share = await db.Shares.SingleOrDefaultAsync(x => x.Id == shareId && x.UploaderEmail == normalizedEmail, cancellationToken);
+        if (share is null)
+        {
+            return false;
+        }
+
+        if (share.DeletedAtUtc is null)
+        {
+            share.DeletedAtUtc = DateTime.UtcNow;
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        backgroundJobs.Enqueue<ShareManager>(x => x.DeleteShareFilesAsync(shareId, CancellationToken.None));
+        return true;
+    }
+
+    public async Task<bool> ReenableShareFor24HoursAsync(Guid shareId, string uploaderEmail, CancellationToken cancellationToken)
+    {
+        var normalizedEmail = uploaderEmail.Trim();
+        var share = await db.Shares.SingleOrDefaultAsync(
+            x => x.Id == shareId && x.UploaderEmail == normalizedEmail && x.DeletedAtUtc == null,
+            cancellationToken);
+        if (share is null)
+        {
+            return false;
+        }
+
+        var now = DateTime.UtcNow;
+        if (share.ExpiresAtUtc is null || share.ExpiresAtUtc > now)
+        {
+            return false;
+        }
+
+        var zipAbsolutePath = Path.Combine(_options.StorageRoot, share.ZipDiskPath);
+        if (!File.Exists(zipAbsolutePath))
+        {
+            return false;
+        }
+
+        share.ExpiresAtUtc = now.AddHours(24);
+        await db.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    public async Task DeleteShareFilesAsync(Guid shareId, CancellationToken cancellationToken)
+    {
+        var share = await db.Shares.AsNoTracking().SingleOrDefaultAsync(x => x.Id == shareId, cancellationToken);
+        if (share is null)
+        {
+            return;
+        }
+
+        DeleteShareContentFiles(share.ZipDiskPath, share.BackgroundImageUrl);
     }
 
     public static bool IsExpired(Share share, DateTime utcNow)
@@ -162,6 +304,7 @@ public sealed class ShareManager(
                 H1 = template.H1,
                 Description = template.Description,
                 BackgroundImageUrl = template.BackgroundImageUrl,
+                BackgroundColorHex = template.BackgroundColorHex,
                 UpdatedAtUtc = DateTime.UtcNow
             });
         }
@@ -171,28 +314,42 @@ public sealed class ShareManager(
             existing.H1 = template.H1;
             existing.Description = template.Description;
             existing.BackgroundImageUrl = template.BackgroundImageUrl;
+            existing.BackgroundColorHex = template.BackgroundColorHex;
             existing.UpdatedAtUtc = DateTime.UtcNow;
         }
 
         await db.SaveChangesAsync(cancellationToken);
     }
 
+    public async Task<ShareTemplateData> GetAccountTemplateAsync(string uploaderEmail, CancellationToken cancellationToken)
+    {
+        var normalizedEmail = uploaderEmail.Trim();
+        var existing = await db.AccountTemplates.SingleOrDefaultAsync(x => x.UploaderEmail == normalizedEmail, cancellationToken);
+        if (existing is null)
+        {
+            return new ShareTemplateData(
+                "Shared file",
+                "A file was shared with you",
+                "Use the button below to download your file.",
+                null,
+                null);
+        }
+
+        return new ShareTemplateData(existing.Title, existing.H1, existing.Description, existing.BackgroundImageUrl, existing.BackgroundColorHex);
+    }
+
     public async Task<int> CleanupExpiredSharesAsync(CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
+        var purgeCutoff = now.AddDays(-7);
         var expired = await db.Shares
-            .Where(x => x.DeletedAtUtc == null && x.ExpiresAtUtc != null && x.ExpiresAtUtc <= now)
+            .Where(x => x.DeletedAtUtc == null && x.ExpiresAtUtc != null && x.ExpiresAtUtc <= purgeCutoff)
             .ToListAsync(cancellationToken);
 
         var count = 0;
         foreach (var share in expired)
         {
-            var absolutePath = Path.Combine(_options.StorageRoot, share.ZipDiskPath);
-            if (File.Exists(absolutePath))
-            {
-                File.Delete(absolutePath);
-            }
-
+            DeleteShareContentFiles(share.ZipDiskPath, share.BackgroundImageUrl);
             share.DeletedAtUtc = now;
             count++;
         }
@@ -213,6 +370,376 @@ public sealed class ShareManager(
         return count;
     }
 
+    public async Task<StagedUploadFile> StageUploadAsync(
+        string uploaderEmail,
+        string draftShareId,
+        string originalFileName,
+        long originalSizeBytes,
+        string contentType,
+        Stream source,
+        CancellationToken cancellationToken)
+    {
+        var uploadId = Guid.NewGuid().ToString("N");
+        var stagingDirectory = Path.Combine(GetStagingRoot(), uploadId);
+        Directory.CreateDirectory(stagingDirectory);
+
+        var sanitizedName = ArchiveNameResolver.Sanitize(originalFileName);
+        var payloadPath = Path.Combine(stagingDirectory, "payload.bin");
+        var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
+
+        await using (var destination = File.Create(payloadPath))
+        {
+            await source.CopyToAsync(destination, cancellationToken);
+        }
+
+        var metadata = new StagedUploadMetadata(
+            UploadId: uploadId,
+            UploaderEmail: uploaderEmail.Trim(),
+            DraftShareId: draftShareId,
+            OriginalFileName: sanitizedName,
+            OriginalSizeBytes: originalSizeBytes,
+            ContentType: string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType,
+            CreatedAtUtc: DateTime.UtcNow);
+
+        await File.WriteAllTextAsync(metadataPath, JsonSerializer.Serialize(metadata), cancellationToken);
+
+        return new StagedUploadFile(
+            UploadId: uploadId,
+            OriginalFileName: metadata.OriginalFileName,
+            OriginalSizeBytes: metadata.OriginalSizeBytes,
+            ContentType: metadata.ContentType,
+            TempPath: payloadPath,
+            DirectoryPath: stagingDirectory);
+    }
+
+    public async Task<IReadOnlyList<StagedUploadFile>> ResolveStagedUploadsAsync(
+        string uploaderEmail,
+        IReadOnlyCollection<string> uploadIds,
+        string? expectedDraftShareId,
+        CancellationToken cancellationToken)
+    {
+        if (uploadIds.Count == 0)
+        {
+            return [];
+        }
+
+        var resolved = new List<StagedUploadFile>(uploadIds.Count);
+        var normalizedUploader = uploaderEmail.Trim();
+
+        foreach (var rawId in uploadIds)
+        {
+            var uploadId = (rawId ?? string.Empty).Trim();
+            if (uploadId.Length == 0)
+            {
+                continue;
+            }
+
+            var stagingDirectory = Path.Combine(GetStagingRoot(), uploadId);
+            var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
+            var payloadPath = Path.Combine(stagingDirectory, "payload.bin");
+
+            if (!Directory.Exists(stagingDirectory) || !File.Exists(metadataPath) || !File.Exists(payloadPath))
+            {
+                throw new InvalidOperationException($"Uploaded file '{uploadId}' is not available.");
+            }
+
+            StagedUploadMetadata? metadata;
+            try
+            {
+                var json = await File.ReadAllTextAsync(metadataPath, cancellationToken);
+                metadata = JsonSerializer.Deserialize<StagedUploadMetadata>(json);
+            }
+            catch
+            {
+                metadata = null;
+            }
+
+            if (metadata is null)
+            {
+                throw new InvalidOperationException($"Uploaded file '{uploadId}' has invalid metadata.");
+            }
+
+            if (!string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"Uploaded file '{uploadId}' does not belong to the current user.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(expectedDraftShareId) &&
+                !string.Equals(metadata.DraftShareId, expectedDraftShareId, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"Uploaded file '{uploadId}' does not belong to this draft share.");
+            }
+
+            resolved.Add(new StagedUploadFile(
+                UploadId: uploadId,
+                OriginalFileName: metadata.OriginalFileName,
+                OriginalSizeBytes: metadata.OriginalSizeBytes,
+                ContentType: metadata.ContentType,
+                TempPath: payloadPath,
+                DirectoryPath: stagingDirectory));
+        }
+
+        return resolved;
+    }
+
+    public async Task<IReadOnlyList<StagedUploadFile>> ListStagedUploadsForDraftAsync(
+        string uploaderEmail,
+        string draftShareId,
+        CancellationToken cancellationToken)
+    {
+        var stagingRoot = GetStagingRoot();
+        if (!Directory.Exists(stagingRoot))
+        {
+            return [];
+        }
+
+        var normalizedUploader = uploaderEmail.Trim();
+        var result = new List<StagedUploadFile>();
+        foreach (var stagingDirectory in Directory.EnumerateDirectories(stagingRoot))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
+            var payloadPath = Path.Combine(stagingDirectory, "payload.bin");
+            if (!File.Exists(metadataPath) || !File.Exists(payloadPath))
+            {
+                continue;
+            }
+
+            StagedUploadMetadata? metadata;
+            try
+            {
+                var json = await File.ReadAllTextAsync(metadataPath, cancellationToken);
+                metadata = JsonSerializer.Deserialize<StagedUploadMetadata>(json);
+            }
+            catch
+            {
+                metadata = null;
+            }
+
+            if (metadata is null)
+            {
+                continue;
+            }
+
+            if (!string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!string.Equals(metadata.DraftShareId, draftShareId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            result.Add(new StagedUploadFile(
+                metadata.UploadId,
+                metadata.OriginalFileName,
+                metadata.OriginalSizeBytes,
+                metadata.ContentType,
+                payloadPath,
+                stagingDirectory));
+        }
+
+        return result.OrderBy(x => x.OriginalFileName, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    public async Task<bool> DeleteStagedUploadAsync(
+        string uploaderEmail,
+        string draftShareId,
+        string uploadId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedUploader = uploaderEmail.Trim();
+        var normalizedUploadId = (uploadId ?? string.Empty).Trim();
+        if (normalizedUploadId.Length == 0)
+        {
+            return false;
+        }
+
+        var stagingDirectory = Path.Combine(GetStagingRoot(), normalizedUploadId);
+        var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
+        var payloadPath = Path.Combine(stagingDirectory, "payload.bin");
+        if (!Directory.Exists(stagingDirectory) || !File.Exists(metadataPath) || !File.Exists(payloadPath))
+        {
+            return false;
+        }
+
+        StagedUploadMetadata? metadata;
+        try
+        {
+            var json = await File.ReadAllTextAsync(metadataPath, cancellationToken);
+            metadata = JsonSerializer.Deserialize<StagedUploadMetadata>(json);
+        }
+        catch
+        {
+            metadata = null;
+        }
+
+        if (metadata is null)
+        {
+            return false;
+        }
+
+        if (!string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.Equals(metadata.DraftShareId, draftShareId, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        Directory.Delete(stagingDirectory, recursive: true);
+        return true;
+    }
+
+    public async Task<int> CleanupZombieUploadsAsync(CancellationToken cancellationToken)
+    {
+        var staleDraftIds = await CleanupStaleDraftSharesAsync(cancellationToken);
+        var stagingRoot = GetStagingRoot();
+        if (!Directory.Exists(stagingRoot))
+        {
+            return staleDraftIds.Count;
+        }
+
+        var cutoff = DateTime.UtcNow.AddHours(-Math.Abs(_options.ZombieUploadRetentionHours));
+        var removed = 0;
+
+        foreach (var stagingDirectory in Directory.EnumerateDirectories(stagingRoot))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
+            var payloadPath = Path.Combine(stagingDirectory, "payload.bin");
+            var createdAtUtc = Directory.GetCreationTimeUtc(stagingDirectory);
+
+            if (File.Exists(metadataPath))
+            {
+                try
+                {
+                    var json = await File.ReadAllTextAsync(metadataPath, cancellationToken);
+                    var metadata = JsonSerializer.Deserialize<StagedUploadMetadata>(json);
+                    if (metadata is not null)
+                    {
+                        createdAtUtc = metadata.CreatedAtUtc;
+                    }
+                }
+                catch
+                {
+                    // Keep fallback timestamp when metadata cannot be parsed.
+                }
+            }
+
+            var isInvalid = !File.Exists(metadataPath) || !File.Exists(payloadPath);
+            var isStaleDraftUpload = metadataPath is not null && IsUploadForStaleDraft(metadataPath, staleDraftIds, cancellationToken);
+            if (isInvalid || isStaleDraftUpload || createdAtUtc <= cutoff)
+            {
+                Directory.Delete(stagingDirectory, recursive: true);
+                removed++;
+            }
+        }
+
+        return removed + staleDraftIds.Count;
+    }
+
+    public async Task<string> EnsureDraftShareAsync(string uploaderEmail, string? requestedDraftShareId, CancellationToken cancellationToken)
+    {
+        var normalizedUploader = uploaderEmail.Trim();
+        var draftShareId = TryNormalizeDraftShareId(requestedDraftShareId, out var normalizedId)
+            ? normalizedId
+            : Guid.NewGuid().ToString("N");
+        var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
+        if (metadata is not null && !string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Draft share does not belong to the current user.");
+        }
+
+        var now = DateTime.UtcNow;
+        var next = metadata is null
+            ? new DraftShareMetadata(
+                DraftShareId: draftShareId,
+                UploaderEmail: normalizedUploader,
+                LastActivityUtc: now,
+                TemplateMode: "account_default",
+                Title: string.Empty,
+                H1: string.Empty,
+                Description: string.Empty,
+                BackgroundImageUrl: null,
+                BackgroundUploadId: null,
+                BackgroundColorHex: null)
+            : metadata with { LastActivityUtc = now };
+
+        await WriteDraftMetadataAsync(next, cancellationToken);
+        return draftShareId;
+    }
+
+    public async Task<DraftTemplateState> GetDraftTemplateAsync(string uploaderEmail, string draftShareId, CancellationToken cancellationToken)
+    {
+        var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
+        if (metadata is null || !string.Equals(metadata.UploaderEmail, uploaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return new DraftTemplateState(draftShareId, "account_default", string.Empty, string.Empty, string.Empty, null, null, null);
+        }
+
+        var updated = metadata with { LastActivityUtc = DateTime.UtcNow };
+        await WriteDraftMetadataAsync(updated, cancellationToken);
+        return new DraftTemplateState(
+            draftShareId,
+            string.IsNullOrWhiteSpace(updated.TemplateMode) ? "account_default" : updated.TemplateMode,
+            updated.Title,
+            updated.H1,
+            updated.Description,
+            updated.BackgroundImageUrl,
+            updated.BackgroundUploadId,
+            updated.BackgroundColorHex);
+    }
+
+    public async Task SaveDraftTemplateAsync(
+        string uploaderEmail,
+        string draftShareId,
+        string templateMode,
+        ShareTemplateData template,
+        string? backgroundUploadId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedUploader = uploaderEmail.Trim();
+        var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
+        if (metadata is not null && !string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Draft share does not belong to the current user.");
+        }
+
+        var next = new DraftShareMetadata(
+            DraftShareId: draftShareId,
+            UploaderEmail: normalizedUploader,
+            LastActivityUtc: DateTime.UtcNow,
+            TemplateMode: string.Equals(templateMode, "per_upload", StringComparison.OrdinalIgnoreCase) ? "per_upload" : "account_default",
+            Title: template.Title,
+            H1: template.H1,
+            Description: template.Description,
+            BackgroundImageUrl: template.BackgroundImageUrl,
+            BackgroundUploadId: string.IsNullOrWhiteSpace(backgroundUploadId) ? null : backgroundUploadId.Trim(),
+            BackgroundColorHex: template.BackgroundColorHex);
+
+        await WriteDraftMetadataAsync(next, cancellationToken);
+    }
+
+    public async Task DeleteDraftShareAsync(string uploaderEmail, string draftShareId, CancellationToken cancellationToken)
+    {
+        var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
+        if (metadata is null || !string.Equals(metadata.UploaderEmail, uploaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var draftDirectory = GetDraftDirectory(draftShareId);
+        if (Directory.Exists(draftDirectory))
+        {
+            Directory.Delete(draftDirectory, recursive: true);
+        }
+    }
+
     private async Task<ShareTemplateData> ResolveTemplateAsync(CreateShareCommand command, CancellationToken cancellationToken)
     {
         if (command.TemplateMode == TemplateMode.PerUpload)
@@ -221,15 +748,181 @@ public sealed class ShareManager(
                 string.IsNullOrWhiteSpace(command.TemplateTitle) ? "Shared file" : command.TemplateTitle.Trim(),
                 string.IsNullOrWhiteSpace(command.TemplateH1) ? "A file was shared with you" : command.TemplateH1.Trim(),
                 string.IsNullOrWhiteSpace(command.TemplateDescription) ? "Use the button below to download your file." : command.TemplateDescription.Trim(),
-                string.IsNullOrWhiteSpace(command.TemplateBackgroundImageUrl) ? null : command.TemplateBackgroundImageUrl.Trim());
+                string.IsNullOrWhiteSpace(command.TemplateBackgroundImageUrl) ? null : command.TemplateBackgroundImageUrl.Trim(),
+                string.IsNullOrWhiteSpace(command.TemplateBackgroundColorHex) ? null : command.TemplateBackgroundColorHex.Trim());
         }
 
         var template = await db.AccountTemplates.SingleOrDefaultAsync(x => x.UploaderEmail == command.UploaderEmail.Trim(), cancellationToken);
         if (template is null)
         {
-            return new ShareTemplateData("Shared file", "A file was shared with you", "Use the button below to download your file.", null);
+            return new ShareTemplateData("Shared file", "A file was shared with you", "Use the button below to download your file.", null, null);
         }
 
-        return new ShareTemplateData(template.Title, template.H1, template.Description, template.BackgroundImageUrl);
+        return new ShareTemplateData(template.Title, template.H1, template.Description, template.BackgroundImageUrl, template.BackgroundColorHex);
+    }
+
+    private string GetStagingRoot()
+    {
+        return Path.Combine(_options.StorageRoot, "uploads", "staged");
+    }
+
+    private string GetDraftsRoot()
+    {
+        return Path.Combine(_options.StorageRoot, "uploads", "drafts");
+    }
+
+    private string GetDraftDirectory(string draftShareId)
+    {
+        return Path.Combine(GetDraftsRoot(), draftShareId);
+    }
+
+    private string GetDraftMetadataPath(string draftShareId)
+    {
+        return Path.Combine(GetDraftDirectory(draftShareId), "draft.json");
+    }
+
+    private static bool TryNormalizeDraftShareId(string? raw, out string normalized)
+    {
+        normalized = string.Empty;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        var text = raw.Trim();
+        if (!Guid.TryParse(text, out var parsed))
+        {
+            return false;
+        }
+
+        normalized = parsed.ToString("N");
+        return true;
+    }
+
+    private async Task<DraftShareMetadata?> ReadDraftMetadataAsync(string draftShareId, CancellationToken cancellationToken)
+    {
+        if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId))
+        {
+            return null;
+        }
+
+        var metadataPath = GetDraftMetadataPath(normalizedId);
+        if (!File.Exists(metadataPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var json = await File.ReadAllTextAsync(metadataPath, cancellationToken);
+            return JsonSerializer.Deserialize<DraftShareMetadata>(json);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task WriteDraftMetadataAsync(DraftShareMetadata metadata, CancellationToken cancellationToken)
+    {
+        var metadataPath = GetDraftMetadataPath(metadata.DraftShareId);
+        Directory.CreateDirectory(Path.GetDirectoryName(metadataPath)!);
+        var json = JsonSerializer.Serialize(metadata);
+        await File.WriteAllTextAsync(metadataPath, json, cancellationToken);
+    }
+
+    private async Task<HashSet<string>> CleanupStaleDraftSharesAsync(CancellationToken cancellationToken)
+    {
+        var draftsRoot = GetDraftsRoot();
+        if (!Directory.Exists(draftsRoot))
+        {
+            return [];
+        }
+
+        var staleCutoff = DateTime.UtcNow.AddHours(-24);
+        var removedDraftIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var draftDirectory in Directory.EnumerateDirectories(draftsRoot))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var draftShareId = Path.GetFileName(draftDirectory);
+            var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
+            var lastActivityUtc = metadata?.LastActivityUtc ?? Directory.GetLastWriteTimeUtc(draftDirectory);
+            if (lastActivityUtc <= staleCutoff)
+            {
+                removedDraftIds.Add(draftShareId);
+                Directory.Delete(draftDirectory, recursive: true);
+            }
+        }
+
+        return removedDraftIds;
+    }
+
+    private bool IsUploadForStaleDraft(string metadataPath, HashSet<string> staleDraftIds, CancellationToken cancellationToken)
+    {
+        if (staleDraftIds.Count == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            var json = File.ReadAllText(metadataPath);
+            var metadata = JsonSerializer.Deserialize<StagedUploadMetadata>(json);
+            if (metadata is null)
+            {
+                return false;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return staleDraftIds.Contains(metadata.DraftShareId);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private string CopyTemplateBackgroundToShareDirectory(UploadSourceFile backgroundFile, string zipRelativePath)
+    {
+        var zipDirectory = Path.GetDirectoryName(zipRelativePath) ?? "zips";
+        var zipStem = Path.GetFileNameWithoutExtension(zipRelativePath);
+        var safeExtension = Path.GetExtension(backgroundFile.OriginalFileName);
+        if (string.IsNullOrWhiteSpace(safeExtension))
+        {
+            safeExtension = ".bin";
+        }
+
+        var backgroundRelativePath = Path.Combine(zipDirectory, $"{zipStem}-background{safeExtension}");
+        var backgroundAbsolutePath = Path.Combine(_options.StorageRoot, backgroundRelativePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(backgroundAbsolutePath)!);
+        File.Copy(backgroundFile.TempPath, backgroundAbsolutePath, overwrite: true);
+        return $"internal:{backgroundRelativePath.Replace('\\', '/')}";
+    }
+
+    private void DeleteShareContentFiles(string zipDiskPath, string? backgroundImageMarker)
+    {
+        var zipAbsolutePath = Path.Combine(_options.StorageRoot, zipDiskPath);
+        if (File.Exists(zipAbsolutePath))
+        {
+            File.Delete(zipAbsolutePath);
+        }
+
+        var marker = backgroundImageMarker ?? string.Empty;
+        if (!marker.StartsWith("internal:", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var relativePath = marker["internal:".Length..].TrimStart('/', '\\');
+        if (relativePath.Length == 0)
+        {
+            return;
+        }
+
+        var backgroundAbsolutePath = Path.Combine(_options.StorageRoot, relativePath);
+        if (File.Exists(backgroundAbsolutePath))
+        {
+            File.Delete(backgroundAbsolutePath);
+        }
     }
 }

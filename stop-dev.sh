@@ -4,7 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SESSION_NAME="agora-dev"
 SQL_CONTAINER_NAME="agora-dev-sql"
-APP_DIR="$ROOT_DIR/src/Agora.Web"
+LOG_DIR="$ROOT_DIR/logs"
+EMAIL_DIR="$ROOT_DIR/emails"
 APP_PORT="18080"
 SQL_PORT="18033"
 DELETE_CONTAINERS="false"
@@ -91,5 +92,5 @@ if [[ "$DELETE_CONTAINERS" == "true" ]]; then
 fi
 
 echo "Development environment stopped."
-echo "Logs:   ${APP_DIR}/logs"
-echo "Emails: ${APP_DIR}/emails"
+echo "Logs:   ${LOG_DIR}"
+echo "Emails: ${EMAIL_DIR}"

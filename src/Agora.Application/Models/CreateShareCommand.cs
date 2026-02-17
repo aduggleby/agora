@@ -13,5 +13,7 @@ public sealed class CreateShareCommand
     public string? TemplateH1 { get; init; }
     public string? TemplateDescription { get; init; }
     public string? TemplateBackgroundImageUrl { get; init; }
+    public string? TemplateBackgroundColorHex { get; init; }
+    public UploadSourceFile? TemplateBackgroundFile { get; init; }
     public required IReadOnlyList<UploadSourceFile> Files { get; init; }
 }

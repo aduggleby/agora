@@ -20,6 +20,7 @@ public sealed class Share
     public string PageH1 { get; set; } = "A file was shared with you";
     public string PageDescription { get; set; } = "Use the button below to download your file.";
     public string? BackgroundImageUrl { get; set; }
+    public string? PageBackgroundColorHex { get; set; }
 
     public ICollection<ShareFile> Files { get; set; } = new List<ShareFile>();
     public ICollection<DownloadEvent> DownloadEvents { get; set; } = new List<DownloadEvent>();

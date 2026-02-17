@@ -7,12 +7,21 @@ src/Agora.Web/*.db
 src/Agora.Web/storage/
 src/Agora.Web/logs/
 src/Agora.Web/emails/
+/storage/
+/logs/
+/emails/
 .dev/
 **/node_modules/
 
 # Local temp/build artifacts
 build.csando.log
 artifacts/
+.playwright-mcp/
+warm-craft-*.png
+.e2e-data/
+playwright-report/
+test-results/
+tests/e2e/node_modules/
 
 # IDE
 .vscode/
