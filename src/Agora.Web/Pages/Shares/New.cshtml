@@ -59,9 +59,9 @@
               <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Share link</label>
               <div class="flex items-stretch rounded-lg border border-border overflow-hidden bg-cream">
                 <span class="px-3 py-2 text-sm text-ink-muted bg-cream-dark/70 border-r border-border whitespace-nowrap select-none">@Model.ShareLinkPrefix</span>
-                <input name="shareToken" value="@Model.ShareToken" class="flex-1 px-3 py-2 text-sm bg-cream focus:outline-none focus:ring-1 focus:ring-terra/20 transition-all font-mono" maxlength="64" minlength="3" pattern="[A-Za-z0-9]+" autocomplete="off" spellcheck="false" data-share-token />
+                <input name="shareToken" value="@Model.ShareToken" class="flex-1 px-3 py-2 text-sm bg-cream focus:outline-none focus:ring-1 focus:ring-terra/20 transition-all font-mono" maxlength="64" minlength="3" pattern="[A-Za-z0-9_-]+" autocomplete="off" spellcheck="false" data-share-token />
               </div>
-              <p class="text-[11px] text-ink-muted mt-1">3-64 letters or numbers. Default links use 8 characters.</p>
+              <p class="text-[11px] text-ink-muted mt-1">3-64 letters, numbers, hyphens, or underscores. Default links use 8 characters.</p>
               @if (!string.IsNullOrWhiteSpace(Model.SuggestedShareToken))
               {
                 <p class="text-[11px] text-danger mt-1.5">
@@ -278,7 +278,7 @@
     else if (uploadedIds.size === 0) reason = 'Upload at least one file first.';
     else if (shareTokenInput) {
       const token = (shareTokenInput.value || '').trim();
-      if (token.length < 3 || token.length > 64 || !/^[A-Za-z0-9]+$/.test(token)) reason = 'Share link must be 3-64 letters or numbers.';
+      if (token.length < 3 || token.length > 64 || !/^[A-Za-z0-9_-]+$/.test(token)) reason = 'Share link must be 3-64 letters, numbers, hyphens, or underscores.';
     }
     if (!reason && effectiveExpiryMode === 'date') {
       if (!expiresAtInput.value) reason = 'Pick an expiry date and time.';

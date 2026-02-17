@@ -15,10 +15,11 @@ Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, gene
 - Share-created success screen with one-click link copy
 - Previous shares support reopening the Share Ready link screen
 - Previous shares Details modal lists archived filenames and sizes
-- Share links default to unique 8-character alphanumeric tokens and can be customized
+- Share links default to unique 8-character alphanumeric tokens and can be customized (letters, numbers, `-`, `_`)
 - Download page designer supports configurable download card position (corners, edges, centered)
 - Account settings include email and password update forms
 - Registration requires email confirmation before first login
+- Unconfirmed login attempts redirect to a dedicated email confirmation page
 - Email and password changes require confirmation before they take effect
 - Forgot password and password reset flows are supported
 - Share defaults have a dedicated settings page
@@ -28,6 +29,7 @@ Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, gene
 - Download notifications (`none`, `once`, `every_time`)
 - Download event metadata: IP, user-agent, timestamp
 - Resend-compatible email integration with configurable API base URL
+- Auth emails are queued and sent asynchronously via Hangfire
 - Daily rolling Serilog file logs with 30-day retention
 - Built-in rate limiting for auth, authenticated user traffic, and share downloads
 - CSRF protection on unsafe HTTP methods (forms, fetch, and XHR)
@@ -235,6 +237,7 @@ These settings are optional and only needed if you want to override defaults:
 - `Serilog__WriteTo__0__Args__path` (default: `logs/agora-.log`)
 - `Email__Resend__FromDisplayName` (default: empty; uses just address if unset)
 - `Agora__PublicBaseUrl` (default: request host, for example `https://files.example.com`)
+- If running behind a reverse proxy (Caddy/Nginx), forward `X-Forwarded-For`, `X-Forwarded-Proto`, and `X-Forwarded-Host` headers to avoid CSRF/origin validation issues.
 - `Agora__MaxFilesPerShare` (default: `20`)
 - `Agora__MaxFileSizeBytes` (default: `262144000` / 250 MB)
 - `Agora__MaxTotalUploadBytes` (default: `1073741824` / 1 GB)

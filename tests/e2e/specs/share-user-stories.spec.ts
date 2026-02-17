@@ -4,6 +4,33 @@ import { expect, test } from '@playwright/test';
 import { createE2EUser, createTempFiles, extractShareUrl, login, tokenFromShareUrl } from '../support/helpers';
 
 test.describe('Share user stories', () => {
+  test('uses a custom share link slug when provided', async ({ page, request }, testInfo) => {
+    const user = await createE2EUser(request, 'custom-share-slug');
+    await login(page, user.email, user.password);
+
+    const inputFiles = await createTempFiles(testInfo.outputPath('files-custom-slug'), [
+      { name: 'slug-proof.txt', content: 'custom slug proof' },
+    ]);
+
+    await page.goto('/shares/new');
+    await page.setInputFiles('[data-file-input]', inputFiles);
+    await expect(page.locator('[data-upload-list] li')).toHaveCount(1);
+
+    await page.locator('[data-options-toggle]').click();
+    await expect(page.locator('[data-options-panel]')).toBeVisible();
+
+    const customSlug = `custom-slug-${Date.now().toString().slice(-6)}`;
+    await page.locator('[data-share-token]').fill(customSlug);
+
+    await page.locator('[data-submit]').click();
+    await page.waitForURL(new RegExp(`/shares/created\\?token=${customSlug}$`));
+
+    const shareUrlText = await page.locator('main').innerText();
+    const shareUrl = extractShareUrl(shareUrlText);
+    const parsed = new URL(shareUrl);
+    expect(parsed.pathname).toBe(`/s/${customSlug}`);
+  });
+
   test('uploads 3 files from dashboard quick dropzone and creates downloadable share', async ({ page, request }, testInfo) => {
     const user = await createE2EUser(request, 'three-files-default');
     await login(page, user.email, user.password);

@@ -4,15 +4,21 @@ using Agora.Application.Models;
 using Agora.Application.Utilities;
 using Agora.Domain.Entities;
 using Agora.Infrastructure.Persistence;
+using Agora.Infrastructure.Services;
+using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using System.Net.Mail;
 using System.Security.Cryptography;
 
 namespace Agora.Infrastructure.Auth;
 
-public sealed class AuthService(AgoraDbContext db, IEmailSender emailSender)
+public sealed class AuthService(
+    AgoraDbContext db,
+    IEmailSender emailSender,
+    IBackgroundJobClient? backgroundJobs = null)
 {
     public const string DevelopmentUserEmail = "ad@dualconsult.com";
+    public const string EmailConfirmationRequiredError = "Please confirm your email before signing in.";
     private const int MaxFailedLoginAttempts = 5;
     private static readonly TimeSpan FailedAttemptWindow = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan LockoutDuration = TimeSpan.FromMinutes(15);
@@ -88,7 +94,7 @@ public sealed class AuthService(AgoraDbContext db, IEmailSender emailSender)
         var token = IssueEmailConfirmationToken(user, DateTime.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
 
-        await emailSender.SendAuthEmailAsync(new AuthEmailMessage(
+        await QueueAuthEmailAsync(new AuthEmailMessage(
             To: user.Email,
             Subject: "Confirm your email address",
             Preheader: "Complete your registration",
@@ -119,7 +125,7 @@ public sealed class AuthService(AgoraDbContext db, IEmailSender emailSender)
         var token = IssueEmailConfirmationToken(user, DateTime.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
 
-        await emailSender.SendAuthEmailAsync(new AuthEmailMessage(
+        await QueueAuthEmailAsync(new AuthEmailMessage(
             To: user.Email,
             Subject: "Confirm your email address",
             Preheader: "Complete your registration",
@@ -148,7 +154,7 @@ public sealed class AuthService(AgoraDbContext db, IEmailSender emailSender)
 
         if (!user.EmailConfirmed)
         {
-            return (false, "Please confirm your email before signing in.", null);
+            return (false, EmailConfirmationRequiredError, null);
         }
 
         if (user.LockoutEndUtc is not null && user.LockoutEndUtc > nowUtc)
@@ -540,7 +546,7 @@ public sealed class AuthService(AgoraDbContext db, IEmailSender emailSender)
         await db.SaveChangesAsync(cancellationToken);
 
         var confirmationUrl = BuildConfirmationUrl(confirmEmailChangeUrlBase, user.Email, token);
-        await emailSender.SendAuthEmailAsync(new AuthEmailMessage(
+        await QueueAuthEmailAsync(new AuthEmailMessage(
             To: newEmail,
             Subject: "Confirm your new email address",
             Preheader: "Email change confirmation required",
@@ -603,7 +609,7 @@ public sealed class AuthService(AgoraDbContext db, IEmailSender emailSender)
 
         await db.SaveChangesAsync(cancellationToken);
 
-        await emailSender.SendAuthEmailAsync(new AuthEmailMessage(
+        await QueueAuthEmailAsync(new AuthEmailMessage(
             To: user.Email,
             Subject: "Your email address was changed",
             Preheader: "Account email updated",
@@ -659,7 +665,7 @@ public sealed class AuthService(AgoraDbContext db, IEmailSender emailSender)
         var token = IssuePendingPasswordToken(user, newPassword, DateTime.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
 
-        await emailSender.SendAuthEmailAsync(new AuthEmailMessage(
+        await QueueAuthEmailAsync(new AuthEmailMessage(
             To: user.Email,
             Subject: "Confirm your password change",
             Preheader: "Password change confirmation required",
@@ -703,7 +709,7 @@ public sealed class AuthService(AgoraDbContext db, IEmailSender emailSender)
         user.PendingPasswordTokenExpiresAtUtc = null;
         await db.SaveChangesAsync(cancellationToken);
 
-        await emailSender.SendAuthEmailAsync(new AuthEmailMessage(
+        await QueueAuthEmailAsync(new AuthEmailMessage(
             To: user.Email,
             Subject: "Your password was changed",
             Preheader: "Account password updated",
@@ -734,7 +740,7 @@ public sealed class AuthService(AgoraDbContext db, IEmailSender emailSender)
         var token = IssuePasswordResetToken(user, DateTime.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
 
-        await emailSender.SendAuthEmailAsync(new AuthEmailMessage(
+        await QueueAuthEmailAsync(new AuthEmailMessage(
             To: user.Email,
             Subject: "Reset your password",
             Preheader: "Password reset requested",
@@ -778,7 +784,7 @@ public sealed class AuthService(AgoraDbContext db, IEmailSender emailSender)
         user.PendingPasswordTokenExpiresAtUtc = null;
         await db.SaveChangesAsync(cancellationToken);
 
-        await emailSender.SendAuthEmailAsync(new AuthEmailMessage(
+        await QueueAuthEmailAsync(new AuthEmailMessage(
             To: user.Email,
             Subject: "Your password was changed",
             Preheader: "Account password updated",
@@ -795,6 +801,17 @@ public sealed class AuthService(AgoraDbContext db, IEmailSender emailSender)
     private static string NormalizeEmail(string value)
     {
         return (value ?? string.Empty).Trim().ToLowerInvariant();
+    }
+
+    private Task QueueAuthEmailAsync(AuthEmailMessage message, CancellationToken cancellationToken)
+    {
+        if (backgroundJobs is null)
+        {
+            return emailSender.SendAuthEmailAsync(message, cancellationToken);
+        }
+
+        backgroundJobs.Enqueue<AuthEmailJob>(x => x.SendAsync(message, CancellationToken.None));
+        return Task.CompletedTask;
     }
 
     private static string GenerateDevelopmentPassword()

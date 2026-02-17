@@ -84,7 +84,7 @@ public class NewModel(AuthService authService, ShareManager manager, IOptions<Ag
 
         foreach (var ch in value)
         {
-            if (!char.IsLetterOrDigit(ch))
+            if (!char.IsLetterOrDigit(ch) && ch is not '-' and not '_')
             {
                 return false;
             }

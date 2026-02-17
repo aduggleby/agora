@@ -6,6 +6,7 @@ using Agora.Domain.Entities;
 using Agora.Infrastructure.Auth;
 using Agora.Infrastructure.Persistence;
 using Agora.Infrastructure.Services;
+using Agora.Web.Auth;
 using Agora.Web.Services;
 using Agora.Web.Hangfire;
 using Hangfire;
@@ -16,7 +17,9 @@ using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -169,6 +172,7 @@ builder.Services.AddHangfire(configuration =>
 builder.Services.AddHangfireServer();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<ShareManager>();
+builder.Services.AddScoped<AuthEmailJob>();
 builder.Services.AddScoped<EmailNotificationJob>();
 builder.Services.AddSingleton<IEmailTemplateRenderer, RazorEmailTemplateRenderer>();
 
@@ -185,6 +189,14 @@ else
 builder.Services.Configure<FormOptions>(options =>
 {
     options.MultipartBodyLengthLimit = 1024L * 1024 * 1024;
+});
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor
+        | ForwardedHeaders.XForwardedProto
+        | ForwardedHeaders.XForwardedHost;
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
 });
 
 var app = builder.Build();
@@ -227,6 +239,7 @@ using (var scope = app.Services.CreateScope())
         "*/15 * * * *");
 }
 
+app.UseForwardedHeaders();
 app.UseStaticFiles();
 app.Use(async (context, next) =>
 {
@@ -266,8 +279,17 @@ app.Use(async (context, next) =>
     {
         await antiforgery.ValidateRequestAsync(context);
     }
-    catch (AntiforgeryValidationException)
+    catch (AntiforgeryValidationException ex)
     {
+        app.Logger.LogWarning(
+            ex,
+            "CSRF validation failed for {Method} {Path}. IsHttps={IsHttps} Host={Host} Origin={Origin} Referer={Referer}",
+            context.Request.Method,
+            context.Request.Path,
+            context.Request.IsHttps,
+            context.Request.Host.Value,
+            context.Request.Headers.Origin.ToString(),
+            context.Request.Headers.Referer.ToString());
         context.Response.StatusCode = StatusCodes.Status400BadRequest;
         await context.Response.WriteAsJsonAsync(new { error = "Invalid or missing CSRF token." });
         return;
@@ -339,7 +361,7 @@ app.MapGet("/_legacy/login", async (HttpContext httpContext, AuthService authSer
     return Results.Content(RenderLayout("Sign in", null, body, msg), "text/html");
 });
 
-app.MapPost("/login", async (HttpContext httpContext, AuthService authService, CancellationToken ct) =>
+app.MapPost("/login", async (HttpContext httpContext, AuthService authService, IDataProtectionProvider dataProtectionProvider, CancellationToken ct) =>
 {
     var form = await httpContext.Request.ReadFormAsync(ct);
     var email = form["email"].ToString();
@@ -348,6 +370,12 @@ app.MapPost("/login", async (HttpContext httpContext, AuthService authService, C
     var result = await authService.LoginAsync(email, password, ct);
     if (!result.Success || result.User is null)
     {
+        if (string.Equals(result.Error, AuthService.EmailConfirmationRequiredError, StringComparison.Ordinal))
+        {
+            var gateToken = LoginEmailConfirmationGate.Create(dataProtectionProvider, email);
+            return Results.Redirect($"/confirm-email-required?email={Uri.EscapeDataString(email)}&gate={Uri.EscapeDataString(gateToken)}");
+        }
+
         return Results.Redirect($"/login?msg={Uri.EscapeDataString(result.Error)}");
     }
 
@@ -1464,7 +1492,7 @@ app.MapPost("/api/shares", async (HttpContext context, ShareManager manager, Aut
 
     if (!IsValidShareToken(shareToken))
     {
-        return Results.Redirect($"/shares/new?draftShareId={Uri.EscapeDataString(draftShareId)}&shareToken={Uri.EscapeDataString(shareToken)}&msg=Share%20link%20must%20be%203-64%20letters%20or%20numbers");
+        return Results.Redirect($"/shares/new?draftShareId={Uri.EscapeDataString(draftShareId)}&shareToken={Uri.EscapeDataString(shareToken)}&msg=Share%20link%20must%20be%203-64%20letters%2C%20numbers%2C%20hyphens%2C%20or%20underscores");
     }
 
     var isShareTokenAvailable = await manager.IsShareTokenAvailableAsync(shareToken, ct);
@@ -1981,7 +2009,7 @@ static bool IsValidShareToken(string token)
 
     foreach (var ch in token)
     {
-        if (!char.IsLetterOrDigit(ch))
+        if (!char.IsLetterOrDigit(ch) && ch is not '-' and not '_')
         {
             return false;
         }
