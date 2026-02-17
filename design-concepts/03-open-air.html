@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agora — Open Air</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300..800;1,300..800&display=swap" rel="stylesheet">
+  <style type="text/tailwindcss">
+    @theme {
+      --color-canvas: #F8FAFC;
+      --color-white: #FFFFFF;
+      --color-gray-50: #F1F5F9;
+      --color-gray-100: #E2E8F0;
+      --color-gray-200: #CBD5E1;
+      --color-gray-400: #94A3B8;
+      --color-gray-500: #64748B;
+      --color-gray-700: #334155;
+      --color-gray-900: #0F172A;
+      --color-accent: #2563EB;
+      --color-accent-hover: #1D4ED8;
+      --color-accent-light: #DBEAFE;
+      --color-accent-wash: #EFF6FF;
+      --color-success: #10B981;
+      --color-success-light: #D1FAE5;
+      --color-warn: #F59E0B;
+      --color-warn-light: #FEF3C7;
+      --color-danger: #EF4444;
+      --font-sans: 'Plus Jakarta Sans', sans-serif;
+    }
+  </style>
+  <style>
+    body { font-family: var(--font-sans); }
+
+    /* Upload zone */
+    .upload-zone {
+      border: 2px dashed var(--color-gray-200);
+      transition: all 0.2s ease;
+    }
+    .upload-zone:hover {
+      border-color: var(--color-accent);
+      background: var(--color-accent-wash);
+    }
+
+    /* Card shadow */
+    .card {
+      box-shadow:
+        0 1px 3px rgba(15, 23, 42, 0.04),
+        0 1px 2px rgba(15, 23, 42, 0.02);
+      transition: box-shadow 0.2s ease;
+    }
+    .card-hover:hover {
+      box-shadow:
+        0 4px 6px rgba(15, 23, 42, 0.05),
+        0 2px 4px rgba(15, 23, 42, 0.03);
+    }
+
+    /* Button */
+    .btn-primary {
+      transition: all 0.15s ease;
+    }
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 14px rgba(37, 99, 235, 0.3);
+    }
+    .btn-primary:active {
+      transform: translateY(0);
+    }
+
+    /* Input focus */
+    .input-clean {
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .input-clean:focus {
+      border-color: var(--color-accent);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+      outline: none;
+    }
+
+    /* Share row */
+    .share-row { transition: background 0.1s ease; }
+    .share-row:hover { background: var(--color-gray-50); }
+
+    /* Page animation */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .fade-in { animation: fadeIn 0.4s ease-out both; }
+    .fade-in-1 { animation-delay: 0.05s; }
+    .fade-in-2 { animation-delay: 0.1s; }
+    .fade-in-3 { animation-delay: 0.18s; }
+    .fade-in-4 { animation-delay: 0.25s; }
+
+    /* Progress bar */
+    .progress-track {
+      background: var(--color-gray-100);
+      border-radius: 999px;
+      height: 4px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--color-accent), #818CF8);
+      transition: width 0.6s ease;
+    }
+
+    /* Tooltip style copy feedback */
+    .copy-btn {
+      position: relative;
+    }
+    .copy-btn::after {
+      content: 'Copied!';
+      position: absolute;
+      top: -28px;
+      left: 50%;
+      transform: translateX(-50%) scale(0.9);
+      background: var(--color-gray-900);
+      color: white;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.15s ease;
+    }
+  </style>
+</head>
+<body class="bg-canvas text-gray-900 min-h-screen">
+
+  <!-- Top Navigation -->
+  <header class="bg-white border-b border-gray-100 sticky top-0 z-40 fade-in">
+    <div class="max-w-6xl mx-auto px-6">
+      <div class="flex items-center justify-between h-14">
+        <!-- Logo -->
+        <div class="flex items-center gap-8">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 bg-accent rounded-xl flex items-center justify-center shadow-sm">
+              <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+              </svg>
+            </div>
+            <span class="font-bold text-base tracking-tight">Agora</span>
+          </div>
+          <nav class="flex items-center gap-1">
+            <a href="#" class="px-3 py-1.5 text-sm font-medium text-accent bg-accent-wash rounded-lg">Shares</a>
+            <a href="#" class="px-3 py-1.5 text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-lg transition-colors">Template</a>
+            <a href="#" class="px-3 py-1.5 text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-lg transition-colors">Admin</a>
+          </nav>
+        </div>
+
+        <!-- User -->
+        <div class="flex items-center gap-4">
+          <div class="hidden sm:flex items-center gap-1.5 text-xs text-gray-400">
+            <div class="progress-track w-20">
+              <div class="progress-fill" style="width: 6.4%"></div>
+            </div>
+            <span>3.2 / 50 GB</span>
+          </div>
+          <div class="w-px h-5 bg-gray-100"></div>
+          <div class="flex items-center gap-2">
+            <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-accent to-indigo-500 text-white text-xs font-bold flex items-center justify-center">A</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-6 py-8">
+
+    <!-- Page Title Row -->
+    <div class="flex items-end justify-between mb-8 fade-in fade-in-1">
+      <div>
+        <h1 class="text-2xl font-bold tracking-tight">Your shares</h1>
+        <p class="text-sm text-gray-400 mt-1">Upload files and create shareable download links</p>
+      </div>
+    </div>
+
+    <!-- Upload + Config in 2 columns -->
+    <div class="grid grid-cols-5 gap-6 mb-10">
+
+      <!-- Upload Zone (wider) -->
+      <div class="col-span-2 fade-in fade-in-2">
+        <div class="upload-zone rounded-2xl p-8 h-full flex flex-col items-center justify-center text-center cursor-pointer group">
+          <div class="w-14 h-14 rounded-2xl bg-white shadow-sm border border-gray-100 flex items-center justify-center mb-4 group-hover:border-accent-light group-hover:bg-accent-wash transition-all">
+            <svg class="w-6 h-6 text-gray-400 group-hover:text-accent transition-colors" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/>
+            </svg>
+          </div>
+          <p class="text-sm font-medium text-gray-700 mb-1">Drop files here</p>
+          <p class="text-xs text-gray-400">or <span class="text-accent font-medium">browse</span> to upload</p>
+          <div class="flex items-center gap-3 mt-4">
+            <span class="text-[11px] text-gray-400 bg-gray-50 px-2 py-0.5 rounded-md">Max 20 files</span>
+            <span class="text-[11px] text-gray-400 bg-gray-50 px-2 py-0.5 rounded-md">250 MB each</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Config Panel -->
+      <div class="col-span-3 card bg-white rounded-2xl border border-gray-100 p-6 fade-in fade-in-2">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-10 h-10 rounded-xl bg-accent-wash flex items-center justify-center">
+            <svg class="w-5 h-5 text-accent" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/>
+            </svg>
+          </div>
+          <div>
+            <p class="text-sm font-semibold">New share</p>
+            <p class="text-xs text-gray-400">Configure your download link</p>
+          </div>
+        </div>
+
+        <div class="space-y-4">
+          <div class="flex items-center gap-3 p-3 bg-gray-50 rounded-xl">
+            <svg class="w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium truncate">project-assets.zip</p>
+              <p class="text-xs text-gray-400">3 files, 12.4 MB</p>
+            </div>
+            <button class="text-gray-400 hover:text-danger transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs font-medium text-gray-500 mb-1 block">Zip filename</label>
+              <input type="text" value="project-assets" class="input-clean w-full px-3 py-2 text-sm border border-gray-200 rounded-xl bg-white" />
+            </div>
+            <div>
+              <label class="text-xs font-medium text-gray-500 mb-1 block">Expires</label>
+              <select class="input-clean w-full px-3 py-2 text-sm border border-gray-200 rounded-xl bg-white appearance-none">
+                <option>7 days</option>
+                <option>30 days</option>
+                <option>Never</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs font-medium text-gray-500 mb-1 block">Download alerts</label>
+              <select class="input-clean w-full px-3 py-2 text-sm border border-gray-200 rounded-xl bg-white appearance-none">
+                <option>Every download</option>
+                <option>First download</option>
+                <option>None</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs font-medium text-gray-500 mb-1 block">Landing page</label>
+              <select class="input-clean w-full px-3 py-2 text-sm border border-gray-200 rounded-xl bg-white appearance-none">
+                <option>Account default</option>
+                <option>Custom</option>
+              </select>
+            </div>
+          </div>
+
+          <button class="btn-primary w-full py-2.5 bg-accent hover:bg-accent-hover text-white text-sm font-semibold rounded-xl">
+            Create share link
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Shares List -->
+    <section class="fade-in fade-in-3">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-base font-semibold">Recent shares</h3>
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-gray-400 bg-gray-50 px-2 py-0.5 rounded-lg">3 active</span>
+          <span class="text-xs text-gray-400 bg-gray-50 px-2 py-0.5 rounded-lg">1 expired</span>
+        </div>
+      </div>
+
+      <div class="space-y-2">
+        <!-- Share Card 1 -->
+        <div class="card card-hover bg-white rounded-xl border border-gray-100 share-row">
+          <div class="flex items-center gap-4 px-5 py-4">
+            <div class="w-10 h-10 rounded-xl bg-accent-wash flex items-center justify-center shrink-0">
+              <svg class="w-5 h-5 text-accent" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/>
+              </svg>
+            </div>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-semibold">project-assets.zip</p>
+              <p class="text-xs text-gray-400">3 files &middot; 12.4 MB</p>
+            </div>
+            <div class="hidden sm:flex items-center gap-6 text-sm text-gray-500">
+              <div class="text-center">
+                <p class="font-semibold text-gray-700">7</p>
+                <p class="text-[11px] text-gray-400">downloads</p>
+              </div>
+              <div class="text-center">
+                <span class="inline-block px-2 py-0.5 text-[11px] font-medium bg-success-light text-success rounded-lg">Feb 24</span>
+                <p class="text-[11px] text-gray-400 mt-0.5">expires</p>
+              </div>
+            </div>
+            <button class="copy-btn px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent-wash rounded-lg transition-colors">
+              Copy link
+            </button>
+          </div>
+        </div>
+
+        <!-- Share Card 2 -->
+        <div class="card card-hover bg-white rounded-xl border border-gray-100 share-row">
+          <div class="flex items-center gap-4 px-5 py-4">
+            <div class="w-10 h-10 rounded-xl bg-accent-wash flex items-center justify-center shrink-0">
+              <svg class="w-5 h-5 text-accent" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/>
+              </svg>
+            </div>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-semibold">brand-guidelines-v2.zip</p>
+              <p class="text-xs text-gray-400">1 file &middot; 48.1 MB</p>
+            </div>
+            <div class="hidden sm:flex items-center gap-6 text-sm text-gray-500">
+              <div class="text-center">
+                <p class="font-semibold text-gray-700">23</p>
+                <p class="text-[11px] text-gray-400">downloads</p>
+              </div>
+              <div class="text-center">
+                <span class="inline-block px-2 py-0.5 text-[11px] font-medium bg-success-light text-success rounded-lg">Mar 10</span>
+                <p class="text-[11px] text-gray-400 mt-0.5">expires</p>
+              </div>
+            </div>
+            <button class="copy-btn px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent-wash rounded-lg transition-colors">
+              Copy link
+            </button>
+          </div>
+        </div>
+
+        <!-- Share Card 3 - expiring soon -->
+        <div class="card card-hover bg-white rounded-xl border border-gray-100 share-row">
+          <div class="flex items-center gap-4 px-5 py-4">
+            <div class="w-10 h-10 rounded-xl bg-warn-light flex items-center justify-center shrink-0">
+              <svg class="w-5 h-5 text-warn" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
+              </svg>
+            </div>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-semibold">contract-final.zip</p>
+              <p class="text-xs text-gray-400">2 files &middot; 1.2 MB</p>
+            </div>
+            <div class="hidden sm:flex items-center gap-6 text-sm text-gray-500">
+              <div class="text-center">
+                <p class="font-semibold text-gray-700">1</p>
+                <p class="text-[11px] text-gray-400">downloads</p>
+              </div>
+              <div class="text-center">
+                <span class="inline-block px-2 py-0.5 text-[11px] font-medium bg-warn-light text-warn rounded-lg">Tomorrow</span>
+                <p class="text-[11px] text-gray-400 mt-0.5">expires</p>
+              </div>
+            </div>
+            <button class="copy-btn px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent-wash rounded-lg transition-colors">
+              Copy link
+            </button>
+          </div>
+        </div>
+
+        <!-- Share Card 4 - expired -->
+        <div class="card bg-white rounded-xl border border-gray-100 opacity-50">
+          <div class="flex items-center gap-4 px-5 py-4">
+            <div class="w-10 h-10 rounded-xl bg-gray-50 flex items-center justify-center shrink-0">
+              <svg class="w-5 h-5 text-gray-300" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/>
+              </svg>
+            </div>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-semibold">photos-jan-2026.zip</p>
+              <p class="text-xs text-gray-400">14 files &middot; 234 MB</p>
+            </div>
+            <div class="hidden sm:flex items-center gap-6 text-sm text-gray-500">
+              <div class="text-center">
+                <p class="font-semibold text-gray-700">3</p>
+                <p class="text-[11px] text-gray-400">downloads</p>
+              </div>
+              <div class="text-center">
+                <span class="inline-block px-2 py-0.5 text-[11px] font-medium bg-gray-100 text-gray-400 rounded-lg">Expired</span>
+                <p class="text-[11px] text-gray-400 mt-0.5">&nbsp;</p>
+              </div>
+            </div>
+            <span class="px-3 py-1.5 text-xs text-gray-400">Deleted</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="mt-12 pt-6 border-t border-gray-100 flex items-center justify-between fade-in fade-in-4">
+      <p class="text-xs text-gray-400">Agora &middot; Self-hosted file sharing</p>
+      <a href="#" class="text-xs text-gray-400 hover:text-accent transition-colors">Documentation</a>
+    </footer>
+  </main>
+
+</body>
+</html>

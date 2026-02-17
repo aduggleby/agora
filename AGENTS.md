@@ -59,6 +59,17 @@ Agents should use ports in this range for local services and examples.
 - `docs/plans` - planning artifacts
 - `todos` - file-based work tracking
 
+## UI & Design
+
+All frontend UI follows the **Warm Craft** design system. See [`STYLEGUIDE.md`](./STYLEGUIDE.md) for the full specification including colors, typography, components, and layout patterns.
+
+Key constraints:
+- Use Tailwind CSS v4 classes from the theme defined in `src/Agora.Web/Styles/tailwind.css`
+- Display font: Instrument Serif. Body font: DM Sans. No other fonts.
+- Primary accent: `terra` (#C4663A). Do not introduce new accent colors.
+- Build CSS with `npm run tailwind:build` in `src/Agora.Web/` after any HTML changes.
+- Public share pages (`/s/{token}`) use inline CSS (not Tailwind) for self-contained rendering.
+
 ## Coding Rules
 
 - Keep new code ASCII unless file requires Unicode.

@@ -1,0 +1,3 @@
+[     260ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:18080/css/site.css:0
+[     367ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:18080/favicon.ico:0
+[     882ms] [ERROR] WebSocket connection to 'wss://localhost:44507/' failed: Error in connection establishment: net::ERR_CERT_AUTHORITY_INVALID @ http://localhost:18080/_framework/aspnetcore-browser-refresh.js:349
