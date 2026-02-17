@@ -11,15 +11,28 @@ namespace Agora.Infrastructure.Services;
 public sealed class ResendEmailSender(
     HttpClient httpClient,
     IOptions<EmailSenderOptions> options,
+    IEmailTemplateRenderer templateRenderer,
     ILogger<ResendEmailSender> logger) : IEmailSender
 {
     private readonly EmailSenderOptions _options = options.Value;
 
     public async Task SendDownloadNotificationAsync(DownloadNotification notification, CancellationToken cancellationToken)
     {
+        var html = await templateRenderer.RenderDownloadNotificationHtmlAsync(notification, cancellationToken);
+        await SendHtmlEmailAsync(notification.To, "Your shared file was downloaded", html, cancellationToken);
+    }
+
+    public async Task SendAuthEmailAsync(AuthEmailMessage message, CancellationToken cancellationToken)
+    {
+        var html = await templateRenderer.RenderAuthEmailHtmlAsync(message, cancellationToken);
+        await SendHtmlEmailAsync(message.To, message.Subject, html, cancellationToken);
+    }
+
+    private async Task SendHtmlEmailAsync(string to, string subject, string html, CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(_options.ApiToken))
         {
-            logger.LogWarning("Email API token not configured; skipping download notification.");
+            logger.LogWarning("Email API token not configured; skipping email with subject {Subject}.", subject);
             return;
         }
 
@@ -28,12 +41,10 @@ public sealed class ResendEmailSender(
 
         var body = new
         {
-            from = _options.FromAddress,
-            to = new[] { notification.To },
-            subject = "Your shared file was downloaded",
-            html = $"<p>Your shared file <strong>{notification.ZipDisplayName}</strong> was downloaded.</p>" +
-                   $"<p>Time (UTC): {notification.DownloadedAtUtc:O}<br/>IP: {notification.DownloaderIp}<br/>User Agent: {notification.DownloaderUserAgent}</p>" +
-                   $"<p>Share: <a href=\"{notification.ShareUrl}\">{notification.ShareUrl}</a></p>"
+            from = BuildFromValue(),
+            to = new[] { to },
+            subject,
+            html
         };
 
         using var content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
@@ -43,5 +54,23 @@ public sealed class ResendEmailSender(
             var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
             throw new InvalidOperationException($"Resend request failed ({(int)response.StatusCode}): {responseBody}");
         }
+    }
+
+    private string BuildFromValue()
+    {
+        var address = (_options.FromAddress ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            return "no-reply@example.com";
+        }
+
+        var displayName = (_options.FromDisplayName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(displayName))
+        {
+            return address;
+        }
+
+        var escapedDisplay = displayName.Replace("\"", "'");
+        return $"\"{escapedDisplay}\" <{address}>";
     }
 }

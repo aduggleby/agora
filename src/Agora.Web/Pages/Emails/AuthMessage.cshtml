@@ -1,0 +1,74 @@
+@model Agora.Application.Models.AuthEmailMessage
+@{
+    Layout = "/Pages/Emails/_EmailLayout.cshtml";
+    ViewData["EmailTitle"] = Model.Subject;
+    ViewData["EmailPreheader"] = Model.Preheader;
+    if (!string.IsNullOrWhiteSpace(Model.ActionUrl) && Uri.TryCreate(Model.ActionUrl, UriKind.Absolute, out var actionUri))
+    {
+        ViewData["EmailBrand"] = actionUri.Host;
+    }
+}
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+  <tr><td style="height:24px;font-size:1px;line-height:1px;">&nbsp;</td></tr>
+</table>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+  <tr>
+    <td style="font-size:32px;line-height:1.1;color:#1a1614;font-family:Georgia,'Times New Roman',serif;font-weight:normal;letter-spacing:-0.02em;">
+      @Model.Headline
+    </td>
+  </tr>
+</table>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+  <tr>
+    <td style="padding:12px 0 0;font-size:15px;line-height:1.6;color:#5C534A;">
+      @Model.IntroText
+    </td>
+  </tr>
+</table>
+
+@if (!string.IsNullOrWhiteSpace(Model.DetailText))
+{
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+  <tr>
+    <td style="padding:16px 0 0;font-size:14px;line-height:1.55;color:#1a1614;background-color:#F7F4EE;border:1px solid #E8E2D8;border-radius:10px;padding:14px 16px;">
+      @Model.DetailText
+    </td>
+  </tr>
+</table>
+}
+
+@if (!string.IsNullOrWhiteSpace(Model.ActionUrl) && !string.IsNullOrWhiteSpace(Model.ActionLabel))
+{
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+  <tr><td style="height:28px;font-size:1px;line-height:1px;">&nbsp;</td></tr>
+</table>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+  <tr>
+    <td align="center">
+      <a href="@Model.ActionUrl" style="display:inline-block;padding:11px 22px;background:#C4663A;color:#ffffff;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;" target="_blank">@Model.ActionLabel</a>
+    </td>
+  </tr>
+</table>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+  <tr>
+    <td align="center" style="padding:14px 0 0;font-size:20px;line-height:1.35;word-break:break-all;">
+      <a href="@Model.ActionUrl" style="color:#C4663A;text-decoration:none;" target="_blank">@Model.ActionUrl</a>
+    </td>
+  </tr>
+</table>
+}
+
+@if (!string.IsNullOrWhiteSpace(Model.SecondaryText))
+{
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+  <tr><td style="height:24px;font-size:1px;line-height:1px;">&nbsp;</td></tr>
+  <tr>
+    <td style="font-size:13px;line-height:1.6;color:#9B9189;">
+      @Model.SecondaryText
+    </td>
+  </tr>
+</table>
+}

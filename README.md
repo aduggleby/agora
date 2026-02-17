@@ -1,16 +1,37 @@
 # Agora
 
-Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, generate a ZIP archive on disk, and share a URL for recipients to access a branded landing page and download the archive.
+Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, generate a ZIP archive on disk, and share a URL for recipients to access a branded download page and download the archive.
+
+## Screenshots
+
+| New Share | Download Page | Download Page Editor |
+| --- | --- | --- |
+| [![New share page](docs/screenshots/new-share-page.png)](docs/screenshots/new-share-page.png) | [![Download page](docs/screenshots/download-page.png)](docs/screenshots/download-page.png) | [![Download page editor](docs/screenshots/landing-page-editor.png)](docs/screenshots/landing-page-editor.png) |
 
 ## Features
 
 - Multi-file upload with ZIP archive generation
-- Share URL with landing page before download
+- Share URL with download page before download
+- Share-created success screen with one-click link copy
+- Previous shares support reopening the Share Ready link screen
+- Previous shares Details modal lists archived filenames and sizes
+- Share links default to unique 8-character alphanumeric tokens and can be customized
+- Download page designer supports configurable download card position (corners, edges, centered)
+- Account settings include email and password update forms
+- Registration requires email confirmation before first login
+- Email and password changes require confirmation before they take effect
+- Forgot password and password reset flows are supported
+- Share defaults have a dedicated settings page
+- New accounts default download page subtitle is set to `by <account email>`
+- Signed-in downloads are excluded from download totals
 - Expiry options: date-based or indefinite
 - Download notifications (`none`, `once`, `every_time`)
 - Download event metadata: IP, user-agent, timestamp
 - Resend-compatible email integration with configurable API base URL
 - Daily rolling Serilog file logs with 30-day retention
+- Built-in rate limiting for auth, authenticated user traffic, and share downloads
+- CSRF protection on unsafe HTTP methods (forms, fetch, and XHR)
+- Login brute-force protection with temporary account lockout after repeated failures
 
 ## Project Layout
 
@@ -81,7 +102,7 @@ ando run
 Run publish + container build profile:
 
 ```bash
-ando run -p publish
+ando run -f build.publish.csando -p publish --dind
 ```
 
 ## Container
@@ -99,52 +120,127 @@ docker run -d \
   --name agora \
   -p 18080:18080 \
   -e Email__Resend__ApiToken="<your_token>" \
+  -e Email__Resend__FromDisplayName="<display_name>" \
   -e Email__Resend__FromAddress="no-reply@yourdomain.com" \
   -e Email__Resend__ApiUrl="https://api.resend.com" \
+  -e Agora__PublicBaseUrl="https://files.yourdomain.com" \
   -e ConnectionStrings__Default="Data Source=/app/data/uploads/agora.db" \
-  -e Agora__StorageRoot="/app/data/uploads" \
   -e Serilog__WriteTo__0__Args__path="/app/data/logs/agora-.log" \
   -v agora_data:/app/data \
   agora:latest
 ```
 
-## Installing on TrueNAS SCALE (Container)
+## Installing on TrueNAS SCALE (YAML)
 
-Tested workflow for custom Docker app deployment:
+### 1. Create Dataset/Directories
 
-1. Build and push your image to a registry accessible by TrueNAS (Docker Hub/GHCR/private registry).
-2. In TrueNAS, open **Apps** and create a custom app (Docker image).
-3. Set image to your Agora image tag.
-4. Set container port to `18080` and map host port to `18080` (or another free host port).
-5. Add environment variables:
-   - `Email__Resend__ApiToken`
-   - `Email__Resend__FromAddress`
-   - `Email__Resend__ApiUrl`
-   - `ConnectionStrings__Default=Data Source=/app/data/uploads/agora.db`
-   - `Agora__StorageRoot=/app/data/uploads`
-   - `Serilog__WriteTo__0__Args__path=/app/data/logs/agora-.log`
-6. Add persistent host path/dataset:
-   - `/app/data` -> single dataset containing uploads/database and rolling logs
-7. Deploy app.
-8. Verify app health by opening `http://<truenas-host>:18080/`.
+Create one dataset for all persistent app data, for example:
 
-Recommended TrueNAS datasets:
+- `/mnt/YOUR_POOL/apps/agora/data`
 
-- `tank/apps/agora/data`
+Agora will create and use subfolders inside this mount (for example uploads, logs, and other runtime data).
+The default uploads path is `/app/data/uploads`.
 
-## Runtime Configuration
+### 2. Create SQL Server Database + User
 
-Important settings:
+Generate a secure password first:
 
-- `ConnectionStrings__Default`
-- `Agora__StorageRoot`
-- `Serilog__WriteTo__0__Args__path`
-- `Agora__MaxFilesPerShare`
-- `Agora__MaxFileSizeBytes`
-- `Agora__MaxTotalUploadBytes`
-- `Email__Resend__ApiToken`
-- `Email__Resend__ApiUrl`
-- `Email__Resend__FromAddress`
+```bash
+openssl rand -base64 32
+```
+
+Connect to your SQL Server (for example from `sqlcmd`) and run:
+
+```sql
+-- Create database
+CREATE DATABASE Agora;
+GO
+
+-- Create SQL login
+CREATE LOGIN agora WITH PASSWORD = 'REPLACE_WITH_STRONG_PASSWORD';
+GO
+
+-- Create DB user + grant permissions
+USE Agora;
+GO
+
+CREATE USER agora FOR LOGIN agora;
+GO
+
+ALTER ROLE db_owner ADD MEMBER agora;
+GO
+```
+
+Example sqlcmd connection:
+
+```bash
+sqlcmd -S YOUR_TRUENAS_IP,1433 -U sa -P 'YOUR_SA_PASSWORD' -C
+```
+
+### 3. Install via YAML
+
+In TrueNAS:
+
+1. Open `Apps -> Discover Apps`.
+2. Click the three-dot menu (`...`) and select `Install via YAML`.
+3. Set application name to `agora`.
+4. Paste and adjust this YAML:
+
+```yaml
+services:
+  agora:
+    image: ghcr.io/aduggleby/agora:latest
+    pull_policy: always
+    ports:
+      - "18080:18080"
+    environment:
+      - ConnectionStrings__Default=Server=YOUR_TRUENAS_IP,1433;Database=Agora;User Id=agora;Password=YOUR_AGORA_PASSWORD;TrustServerCertificate=true
+      - Email__Provider=Resend
+      - Email__Resend__ApiToken=YOUR_RESEND_API_TOKEN
+      - Email__Resend__FromDisplayName=YOUR_FROM_DISPLAY_NAME
+      - Email__Resend__FromAddress=YOUR_VERIFIED_FROM_EMAIL
+      - Email__Resend__ApiUrl=https://api.resend.com
+      - Agora__PublicBaseUrl=https://files.YOUR_DOMAIN
+    volumes:
+      - /mnt/YOUR_POOL/apps/agora/data:/app/data
+    restart: unless-stopped
+```
+
+### 4. Optional Runtime Configuration
+
+These settings are optional and only needed if you want to override defaults:
+
+- `Serilog__WriteTo__0__Args__path` (default: `logs/agora-.log`)
+- `Email__Resend__FromDisplayName` (default: empty; uses just address if unset)
+- `Agora__PublicBaseUrl` (default: request host, for example `https://files.example.com`)
+- `Agora__MaxFilesPerShare` (default: `20`)
+- `Agora__MaxFileSizeBytes` (default: `262144000` / 250 MB)
+- `Agora__MaxTotalUploadBytes` (default: `1073741824` / 1 GB)
+- `Agora__DownloadEventRetentionDays` (default: `90`)
+- `Agora__ZombieUploadRetentionHours` (default: `24`)
+
+Rate limiting defaults (built in):
+
+- Auth endpoints (`POST /login`, `POST /register`, `POST /login/development`): `10 requests/minute` per source IP
+- Authenticated requests (global): `120 requests/minute` per authenticated account
+- Download endpoint (`GET /s/{token}/download`): `20 requests/minute` per `(token, source IP)` pair
+
+### 5. Replace Placeholder Values
+
+- `YOUR_TRUENAS_IP`: IP of your TrueNAS host.
+- `YOUR_AGORA_PASSWORD`: password used in `CREATE LOGIN`.
+- `YOUR_POOL`: your TrueNAS pool name.
+- `YOUR_RESEND_API_TOKEN`: Resend (or compatible provider) token.
+- `YOUR_FROM_DISPLAY_NAME`: friendly sender name shown in recipient inboxes.
+- `YOUR_VERIFIED_FROM_EMAIL`: sender address verified in your provider.
+
+### 6. Verify
+
+After install, open:
+
+- `http://YOUR_TRUENAS_IP:18080/`
+
+To update, edit the app and bump image tag (or keep `latest`).
 
 ## Port Assignment
 

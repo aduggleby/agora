@@ -1,0 +1,210 @@
+@page "/share/landing-page-designer"
+@model Agora.Web.Pages.Share.LandingPageDesignerModel
+@{
+  var existingBackgroundPreviewUrl = string.IsNullOrWhiteSpace(Model.DraftTemplate.BackgroundUploadId)
+    ? string.Empty
+    : $"/api/share-drafts/{Model.DraftShareId}/background-preview?uploadId={Uri.EscapeDataString(Model.DraftTemplate.BackgroundUploadId)}";
+  var previewModel = new Agora.Web.Pages.Shared.ShareLandingCardViewModel(
+    Title: string.IsNullOrWhiteSpace(Model.DraftTemplate.H1) ? "A file was shared with you" : Model.DraftTemplate.H1,
+    Subtitle: string.IsNullOrWhiteSpace(Model.DraftTemplate.Title) ? null : Model.DraftTemplate.Title,
+    Description: string.IsNullOrWhiteSpace(Model.DraftTemplate.Description) ? "Use the button below to download your file." : Model.DraftTemplate.Description,
+    ZipDisplayName: "example-share.zip",
+    FileCount: 3,
+    SizeDisplay: "2.4 MB",
+    IsExpired: false,
+    DownloadUrl: "#");
+  var previewAlignmentClasses = Model.DraftTemplate.ContainerPosition switch
+  {
+    "top_left" => "items-start justify-start",
+    "top_right" => "items-start justify-end",
+    "bottom_left" => "items-end justify-start",
+    "bottom_right" => "items-end justify-end",
+    "center_right" => "items-center justify-end",
+    "center_left" => "items-center justify-start",
+    "center_top" => "items-start justify-center",
+    "center_bottom" => "items-end justify-center",
+    _ => "items-center justify-center"
+  };
+}
+
+<section class="mb-8">
+  <h2 class="font-display text-3xl tracking-tight">Share download page designer</h2>
+  <p class="text-ink-muted text-sm mt-1">Configure this share's download page. Save and return to the upload form.</p>
+</section>
+<section class="space-y-6">
+  <div class="bg-white rounded-2xl border border-border p-6">
+    <form id="share-template-form" class="space-y-4" method="post" action="/api/share-drafts/@Model.DraftShareId/template">
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Title</label>
+        <input name="h1" data-template-h1 value="@Model.DraftTemplate.H1" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
+      </div>
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Subtitle</label>
+        <input name="title" data-template-title value="@Model.DraftTemplate.Title" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
+      </div>
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Description</label>
+        <textarea rows="3" name="description" data-template-description class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra">@Model.DraftTemplate.Description</textarea>
+      </div>
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Background image</label>
+        <input type="hidden" name="backgroundUploadId" value="@Model.DraftTemplate.BackgroundUploadId" data-template-background-upload-id />
+        <input type="hidden" name="backgroundColorHex" value="@Model.DraftTemplate.BackgroundColorHex" data-template-background-color-hex />
+        <input type="hidden" name="containerPosition" value="@Model.DraftTemplate.ContainerPosition" data-template-container-position />
+        <input type="hidden" value="@Model.DraftShareId" data-draft-share-id />
+        <input type="file" accept=".jpg,.jpeg,.png,.svg,.webp" data-template-background-file class="sr-only" />
+        <div class="rounded-lg border border-dashed border-border bg-cream p-4" data-template-upload-dropzone>
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-xs text-ink-muted">.jpg, .jpeg, .png, .svg, .webp</p>
+            <button type="button" class="px-3 py-1.5 bg-ink text-white text-xs font-medium rounded-md hover:bg-ink/90 transition-colors" data-template-upload-pick>Select image</button>
+          </div>
+          <div class="mt-2 text-xs text-ink-muted" data-template-upload-status>No uploaded background image.</div>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div>
+          <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Background color</label>
+          <select class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" data-template-background-color-mode>
+            <option value="default" selected="@(string.IsNullOrWhiteSpace(Model.DraftTemplate.BackgroundColorHex))">Default</option>
+            <option value="custom" selected="@(!string.IsNullOrWhiteSpace(Model.DraftTemplate.BackgroundColorHex))">Custom</option>
+          </select>
+        </div>
+        <div data-template-background-color-picker-wrap>
+          <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Pick color</label>
+          <input type="color" value="@(string.IsNullOrWhiteSpace(Model.DraftTemplate.BackgroundColorHex) ? "#faf7f2" : Model.DraftTemplate.BackgroundColorHex)" class="h-10 w-full px-1 py-1 border border-border rounded-lg bg-cream" data-template-background-color />
+        </div>
+        <div>
+          <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Container position</label>
+          <select class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" data-template-container-position-select>
+            <option value="center" selected="@(Model.DraftTemplate.ContainerPosition == "center")">Centered</option>
+            <option value="top_left" selected="@(Model.DraftTemplate.ContainerPosition == "top_left")">Top left</option>
+            <option value="top_right" selected="@(Model.DraftTemplate.ContainerPosition == "top_right")">Top right</option>
+            <option value="bottom_left" selected="@(Model.DraftTemplate.ContainerPosition == "bottom_left")">Bottom left</option>
+            <option value="bottom_right" selected="@(Model.DraftTemplate.ContainerPosition == "bottom_right")">Bottom right</option>
+            <option value="center_right" selected="@(Model.DraftTemplate.ContainerPosition == "center_right")">Centered right</option>
+            <option value="center_left" selected="@(Model.DraftTemplate.ContainerPosition == "center_left")">Centered left</option>
+            <option value="center_top" selected="@(Model.DraftTemplate.ContainerPosition == "center_top")">Centered top</option>
+            <option value="center_bottom" selected="@(Model.DraftTemplate.ContainerPosition == "center_bottom")">Centered bottom</option>
+          </select>
+        </div>
+      </div>
+      <div class="flex items-center justify-between">
+        <a href="/shares/new?draftShareId=@Model.DraftShareId" class="text-sm text-ink-muted hover:text-ink">Cancel</a>
+        <button type="submit" class="px-6 py-2.5 bg-ink text-white text-sm font-medium rounded-lg hover:bg-ink/90">Save and return</button>
+      </div>
+    </form>
+  </div>
+  <div class="bg-white rounded-2xl border border-border p-6">
+    <p class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-2">Preview</p>
+    <div class="rounded-2xl border border-border p-4 bg-cover bg-center aspect-[4/3]" data-preview-surface style="background-color:#faf7f2;">
+      <div class="h-full w-full flex @previewAlignmentClasses" data-preview-wrapper>
+        @await Html.PartialAsync("/Pages/Shared/_ShareLandingCard.cshtml", previewModel)
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+(() => {
+  const form = document.getElementById('share-template-form'); if (!form) return;
+  const titleInput = form.querySelector('[data-template-title]');
+  const h1Input = form.querySelector('[data-template-h1]');
+  const descriptionInput = form.querySelector('[data-template-description]');
+  const backgroundFileInput = form.querySelector('[data-template-background-file]');
+  const backgroundUploadIdInput = form.querySelector('[data-template-background-upload-id]');
+  const backgroundColorHexInput = form.querySelector('[data-template-background-color-hex]');
+  const containerPositionInput = form.querySelector('[data-template-container-position]');
+  const containerPositionSelect = form.querySelector('[data-template-container-position-select]');
+  const backgroundColorModeInput = form.querySelector('[data-template-background-color-mode]');
+  const backgroundColorInput = form.querySelector('[data-template-background-color]');
+  const backgroundColorWrap = form.querySelector('[data-template-background-color-picker-wrap]');
+  const draftShareIdInput = form.querySelector('[data-draft-share-id]');
+  const uploadDropzone = form.querySelector('[data-template-upload-dropzone]');
+  const uploadPick = form.querySelector('[data-template-upload-pick]');
+  const uploadStatus = form.querySelector('[data-template-upload-status]');
+  const previewSubtitle = document.querySelector('[data-share-preview-subtitle]');
+  const previewH1 = document.querySelector('[data-share-preview-h1]');
+  const previewDescription = document.querySelector('[data-share-preview-description]');
+  const previewSurface = document.querySelector('[data-preview-surface]');
+  const previewWrapper = document.querySelector('[data-preview-wrapper]');
+  const defaultBackgroundColor = '#faf7f2';
+  let backgroundUploadId = '';
+  const initialBackgroundUrl = '@existingBackgroundPreviewUrl';
+  let uploadedPreviewUrl = initialBackgroundUrl;
+  const allPositionClasses = ['items-start', 'items-center', 'items-end', 'justify-start', 'justify-center', 'justify-end'];
+  const positionClassMap = {
+    top_left: ['items-start', 'justify-start'],
+    top_right: ['items-start', 'justify-end'],
+    bottom_left: ['items-end', 'justify-start'],
+    bottom_right: ['items-end', 'justify-end'],
+    center_right: ['items-center', 'justify-end'],
+    center_left: ['items-center', 'justify-start'],
+    center_top: ['items-start', 'justify-center'],
+    center_bottom: ['items-end', 'justify-center'],
+    center: ['items-center', 'justify-center']
+  };
+  const updatePreview = () => {
+    if (previewSubtitle) {
+      const subtitleText = titleInput.value || '';
+      previewSubtitle.textContent = subtitleText;
+      previewSubtitle.style.display = subtitleText ? '' : 'none';
+    }
+    if (previewH1) previewH1.textContent = h1Input.value || 'A file was shared with you';
+    if (previewDescription) previewDescription.textContent = descriptionInput.value || 'Use the button below to download your file.';
+    if (previewSurface) {
+      previewSurface.style.backgroundColor = (backgroundColorModeInput.value === 'custom' ? backgroundColorInput.value : defaultBackgroundColor);
+      previewSurface.style.backgroundImage = uploadedPreviewUrl ? ('url(' + uploadedPreviewUrl + ')') : '';
+      previewSurface.style.backgroundSize = uploadedPreviewUrl ? 'cover' : '';
+      previewSurface.style.backgroundPosition = uploadedPreviewUrl ? 'center' : '';
+    }
+    if (previewWrapper && containerPositionInput) {
+      previewWrapper.classList.remove(...allPositionClasses);
+      const next = positionClassMap[containerPositionInput.value] || positionClassMap.center;
+      previewWrapper.classList.add(...next);
+    }
+  };
+  const setStatus = (text, isError) => {
+    uploadStatus.textContent = text;
+    uploadStatus.classList.remove('text-ink-muted', 'text-danger');
+    uploadStatus.classList.add(isError ? 'text-danger' : 'text-ink-muted');
+  };
+  const stageBackground = (file) => {
+    setStatus('Uploading background image...', false);
+    const fd = new FormData();
+    fd.append('file', file, file.name);
+    fd.append('draftShareId', draftShareIdInput.value);
+    fetch('/api/uploads/stage-template-background', { method: 'POST', body: fd })
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((json) => {
+        backgroundUploadId = json.uploadId || '';
+        backgroundUploadIdInput.value = backgroundUploadId;
+        if (uploadedPreviewUrl) URL.revokeObjectURL(uploadedPreviewUrl);
+        uploadedPreviewUrl = URL.createObjectURL(file);
+        setStatus('Uploaded: ' + (json.fileName || file.name), false);
+        updatePreview();
+      }).catch(() => setStatus('Upload failed.', true));
+  };
+  [titleInput, h1Input, descriptionInput].forEach((el) => el.addEventListener('input', updatePreview));
+  const refreshColorMode = () => {
+    const isCustom = backgroundColorModeInput.value === 'custom';
+    backgroundColorWrap.classList.toggle('hidden', !isCustom);
+    backgroundColorHexInput.value = isCustom ? backgroundColorInput.value : '';
+    updatePreview();
+  };
+  backgroundColorModeInput.addEventListener('change', refreshColorMode);
+  backgroundColorInput.addEventListener('input', refreshColorMode);
+  if (containerPositionSelect && containerPositionInput) {
+    containerPositionSelect.addEventListener('change', () => {
+      containerPositionInput.value = containerPositionSelect.value || 'center';
+      updatePreview();
+    });
+  }
+  uploadPick.addEventListener('click', () => backgroundFileInput.click());
+  backgroundFileInput.addEventListener('change', () => { const f = backgroundFileInput.files && backgroundFileInput.files[0]; if (f) stageBackground(f); });
+  uploadDropzone.addEventListener('dragover', (e) => { e.preventDefault(); uploadDropzone.classList.add('ring-2', 'ring-terra/40'); });
+  uploadDropzone.addEventListener('dragleave', () => uploadDropzone.classList.remove('ring-2', 'ring-terra/40'));
+  uploadDropzone.addEventListener('drop', (e) => { e.preventDefault(); uploadDropzone.classList.remove('ring-2', 'ring-terra/40'); const f = e.dataTransfer?.files?.[0]; if (f) stageBackground(f); });
+  refreshColorMode();
+  if (initialBackgroundUrl || backgroundUploadIdInput.value) setStatus('Uploaded background image selected.', false);
+})();
+</script>

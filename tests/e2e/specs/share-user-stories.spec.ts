@@ -27,7 +27,7 @@ test.describe('Share user stories', () => {
     await expect(createButton).toBeEnabled();
     await createButton.click();
 
-    await page.waitForURL(/\/(\?.*)?$/);
+    await page.waitForURL(/\/shares\/created\?token=/);
     const messageText = await page.locator('main').innerText();
     const shareUrl = extractShareUrl(messageText);
 
@@ -42,7 +42,7 @@ test.describe('Share user stories', () => {
     expect(names).toEqual(['alpha.txt', 'beta.txt', 'gamma.txt']);
   });
 
-  test('allows download before 5-second expiry and shows expired landing page after', async ({ page, request }, testInfo) => {
+  test('allows download before 5-second expiry and shows expired download page after', async ({ page, request }, testInfo) => {
     const user = await createE2EUser(request, 'three-files-short-expiry');
     await login(page, user.email, user.password);
 
@@ -57,7 +57,7 @@ test.describe('Share user stories', () => {
     await expect(page.locator('[data-upload-list] li')).toHaveCount(3);
 
     await page.locator('[data-submit]').click();
-    await page.waitForURL(/\/(\?.*)?$/);
+    await page.waitForURL(/\/shares\/created\?token=/);
 
     const messageText = await page.locator('main').innerText();
     const shareUrl = extractShareUrl(messageText);

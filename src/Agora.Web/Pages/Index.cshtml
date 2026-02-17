@@ -1,0 +1,297 @@
+@page "/"
+@model Agora.Web.Pages.IndexModel
+@using System.Text.Json
+@{
+  var nowUtc = DateTime.UtcNow;
+}
+<section class="mb-10 rounded-2xl border border-border bg-white p-8">
+  <h1 class="font-display text-5xl tracking-tight leading-tight">Fast, branded file sharing for your team.</h1>
+  <p class="text-ink-muted text-sm mt-4 max-w-xl">Create expiring share links with customizable download pages, download notifications, and background processing built in.</p>
+
+  <input type="hidden" value="@Model.QuickDraftShareId" data-quick-share-draft-id />
+  <input type="file" multiple class="sr-only" data-quick-share-input />
+  <div class="mt-6 rounded-lg border border-dashed border-border bg-cream p-4 cursor-pointer" data-quick-share-dropzone tabindex="0" role="button">
+    <div class="flex items-center justify-between gap-3">
+      <p class="text-sm text-ink-light">Drop files here or click to select files</p>
+      <button type="button" class="px-3 py-1.5 bg-terra text-white text-xs font-medium rounded-md hover:bg-terra/90 transition-colors" data-quick-share-pick>Choose files</button>
+    </div>
+    <p class="text-xs text-ink-muted mt-2" data-quick-share-status>We'll take you to the next step as soon as your files are ready.</p>
+  </div>
+</section>
+
+@if (Model.Shares.Count > 0)
+{
+<section>
+  <div class="bg-white rounded-2xl border border-border overflow-hidden">
+    <div class="px-5 py-3 border-b border-border bg-cream-dark/50 flex items-center justify-between">
+      <h2 class="font-display text-xl">Previous shares</h2>
+      <span class="text-xs text-ink-muted">@Model.Shares.Count shown</span>
+    </div>
+    <table class="w-full">
+      <thead>
+        <tr class="text-xs font-medium text-ink-muted uppercase tracking-wider border-b border-border">
+          <th class="text-left px-4 py-2">Archive</th>
+          <th class="text-left px-4 py-2">Details</th>
+          <th class="text-left px-4 py-2">State</th>
+          <th class="text-left px-4 py-2">Created</th>
+          <th class="text-left px-4 py-2">Expires</th>
+          <th class="text-left px-4 py-2" title="Number of times downloaded by others">DLs</th>
+          <th class="text-right px-4 py-2">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        @foreach (var share in Model.Shares)
+        {
+          var isExpired = share.ExpiresAtUtc is not null && share.ExpiresAtUtc <= nowUtc;
+          var state = share.DeletedAtUtc is not null ? "Deleted" : isExpired ? "Expired" : "Active";
+          var stateClass = state == "Active" ? "bg-sage-wash text-sage" : state == "Expired" ? "bg-cream-dark text-ink-muted" : "bg-danger-wash text-danger";
+          var size = share.ZipSizeBytes >= 1024 * 1024 ? $"{share.ZipSizeBytes / (1024.0 * 1024.0):F1} MB" : $"{share.ZipSizeBytes / 1024.0:F0} KB";
+          var filesJson = JsonSerializer.Serialize(share.Files);
+          <tr class="border-b border-border/60 hover:bg-cream-dark/40 transition-colors">
+            <td class="px-4 py-3 text-sm">@share.ZipDisplayName</td>
+            <td class="px-4 py-3 text-xs text-ink-muted">
+              <button type="button" class="text-xs text-terra hover:underline" data-share-details-trigger data-share-name="@share.ZipDisplayName" data-share-files='@filesJson'>@share.FileCount file(s) - @size</button>
+            </td>
+            <td class="px-4 py-3"><span class="text-xs px-2 py-0.5 rounded-md @stateClass">@state</span></td>
+            <td class="px-4 py-3"><span class="text-xs text-ink-muted" data-local-datetime="@share.CreatedAtUtc.ToString("O")"></span></td>
+            <td class="px-4 py-3">
+              @if (share.ExpiresAtUtc is null)
+              {
+                <span class="text-xs text-ink-muted">Never</span>
+              }
+              else
+              {
+                <span class="text-xs text-ink-muted" data-local-datetime="@share.ExpiresAtUtc.Value.ToString("O")"></span>
+              }
+            </td>
+            <td class="px-4 py-3 text-xs text-ink-muted">@share.DownloadCount</td>
+            <td class="px-4 py-3 text-right space-x-2">
+              <form method="post" action="/shares/@share.ShareId/show-link" class="inline">
+                <button type="submit" class="text-xs text-terra hover:underline">Show link</button>
+              </form>
+              @if (isExpired)
+              {
+                <form method="post" action="/shares/@share.ShareId/reenable" class="inline">
+                  <button type="submit" class="text-xs text-sage hover:underline">Re-enable 24h</button>
+                </form>
+              }
+              <form method="post" action="/shares/@share.ShareId/delete" class="inline" data-share-delete-form data-share-name="@share.ZipDisplayName">
+                <button type="button" class="text-xs text-danger hover:underline" data-share-delete-trigger>Delete</button>
+              </form>
+            </td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+</section>
+}
+else
+{
+<section class="grid grid-cols-1 md:grid-cols-3 gap-4">
+  <article class="md:col-span-2 bg-white rounded-2xl border border-border p-6">
+    <p class="text-xs uppercase tracking-wider text-ink-muted">Get it done</p>
+    <h3 class="font-display text-3xl tracking-tight mt-2">Send large files without the back-and-forth</h3>
+    <p class="text-sm text-ink-muted mt-3">When you need to deliver files quickly, Agora gives you one simple flow: drop files, tune expiry, share the link.</p>
+  </article>
+  <article class="bg-white rounded-2xl border border-border p-6">
+    <p class="text-xs uppercase tracking-wider text-ink-muted">Full control</p>
+    <h3 class="font-display text-2xl mt-2">Host it where your data lives</h3>
+    <p class="text-sm text-ink-muted mt-2">Keep files, logs, and policies on your own infrastructure so governance and retention stay in your hands.</p>
+  </article>
+  <article class="bg-white rounded-2xl border border-border p-6">
+    <p class="text-xs uppercase tracking-wider text-ink-muted">Ease of use</p>
+    <h3 class="font-display text-2xl mt-2">Simple for senders and recipients</h3>
+    <p class="text-sm text-ink-muted mt-2">Your team gets a clean sharing workflow, while recipients get a clear branded page and one-click download.</p>
+  </article>
+  <article class="md:col-span-2 bg-white rounded-2xl border border-border p-6">
+    <p class="text-xs uppercase tracking-wider text-ink-muted">Operate with confidence</p>
+    <h3 class="font-display text-2xl mt-2">Automate lifecycle, keep visibility</h3>
+    <p class="text-sm text-ink-muted mt-2">Expiration, cleanup, and notifications run in the background so sharing stays reliable without manual follow-up.</p>
+  </article>
+</section>
+}
+
+<dialog class="rounded-xl border border-border bg-white p-0 w-full max-w-sm backdrop:bg-black/30 m-auto" style="margin: auto;" data-share-delete-dialog>
+  <form method="dialog" class="p-5">
+    <h3 class="font-display text-2xl tracking-tight">Delete share?</h3>
+    <p class="text-sm text-ink-muted mt-2">This removes the share immediately. File cleanup runs in the background.</p>
+    <p class="text-sm text-ink-light mt-2" data-share-delete-name></p>
+    <div class="mt-5 flex justify-end gap-2">
+      <button type="button" class="px-4 py-2 text-sm border border-border rounded-lg bg-cream hover:bg-cream-dark/70" data-share-delete-cancel>Cancel</button>
+      <button type="button" class="px-4 py-2 text-sm bg-danger text-white rounded-lg hover:bg-danger/90" data-share-delete-confirm>Delete</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="rounded-xl border border-border bg-white p-0 w-full max-w-xl backdrop:bg-black/30 m-auto" style="margin: auto;" data-share-details-dialog>
+  <form method="dialog" class="p-5">
+    <h3 class="font-display text-2xl tracking-tight">Share details</h3>
+    <p class="text-sm text-ink-light mt-2" data-share-details-name></p>
+    <div class="mt-4 rounded-lg border border-border overflow-hidden">
+      <table class="w-full">
+        <thead>
+          <tr class="text-xs font-medium text-ink-muted uppercase tracking-wider border-b border-border bg-cream-dark/40">
+            <th class="text-left px-3 py-2">File</th>
+            <th class="text-right px-3 py-2">Size</th>
+          </tr>
+        </thead>
+        <tbody data-share-details-list></tbody>
+      </table>
+    </div>
+    <div class="mt-5 flex justify-end">
+      <button type="button" class="px-4 py-2 text-sm border border-border rounded-lg bg-cream hover:bg-cream-dark/70" data-share-details-close>Close</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+(() => {
+  const nodes = document.querySelectorAll('[data-local-datetime]');
+  const formatter = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  nodes.forEach((node) => {
+    const value = node.getAttribute('data-local-datetime');
+    if (!value) return;
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) node.textContent = formatter.format(date);
+  });
+})();
+</script>
+<script>
+(() => {
+  const dialog = document.querySelector('[data-share-delete-dialog]');
+  if (!dialog) return;
+  const nameNode = dialog.querySelector('[data-share-delete-name]');
+  const cancelButton = dialog.querySelector('[data-share-delete-cancel]');
+  const confirmButton = dialog.querySelector('[data-share-delete-confirm]');
+  let pendingForm = null;
+  document.querySelectorAll('[data-share-delete-trigger]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const form = button.closest('[data-share-delete-form]');
+      if (!form) return;
+      pendingForm = form;
+      if (nameNode) nameNode.textContent = form.getAttribute('data-share-name') || '';
+      dialog.showModal();
+    });
+  });
+  cancelButton?.addEventListener('click', () => dialog.close());
+  confirmButton?.addEventListener('click', () => { if (pendingForm) pendingForm.submit(); dialog.close(); });
+})();
+</script>
+<script>
+(() => {
+  const dialog = document.querySelector('[data-share-details-dialog]');
+  if (!dialog) return;
+  const nameNode = dialog.querySelector('[data-share-details-name]');
+  const listNode = dialog.querySelector('[data-share-details-list]');
+  const closeButton = dialog.querySelector('[data-share-details-close]');
+  if (!listNode) return;
+
+  const formatBytes = (bytes) => {
+    const value = Number(bytes || 0);
+    if (!Number.isFinite(value) || value <= 0) return '0 B';
+    if (value >= 1024 * 1024 * 1024) return (value / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+    if (value >= 1024 * 1024) return (value / (1024 * 1024)).toFixed(1) + ' MB';
+    if (value >= 1024) return Math.round(value / 1024) + ' KB';
+    return Math.round(value) + ' B';
+  };
+
+  const getText = (item, key) => {
+    if (!item || typeof item !== 'object') return '';
+    return item[key] || item[key.charAt(0).toUpperCase() + key.slice(1)] || '';
+  };
+
+  const getNumber = (item, key) => {
+    if (!item || typeof item !== 'object') return 0;
+    const value = item[key] ?? item[key.charAt(0).toUpperCase() + key.slice(1)] ?? 0;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : 0;
+  };
+
+  document.querySelectorAll('[data-share-details-trigger]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const shareName = button.getAttribute('data-share-name') || '';
+      const raw = button.getAttribute('data-share-files') || '[]';
+
+      let files = [];
+      try {
+        files = JSON.parse(raw);
+      } catch {
+        files = [];
+      }
+
+      files.sort((a, b) => getText(a, 'originalFilename').localeCompare(getText(b, 'originalFilename'), undefined, { sensitivity: 'base' }));
+      listNode.innerHTML = '';
+
+      files.forEach((file) => {
+        const fileName = getText(file, 'originalFilename');
+        const fileSize = getNumber(file, 'originalSizeBytes');
+        const row = document.createElement('tr');
+        row.className = 'border-b border-border/60 last:border-b-0';
+        const nameCell = document.createElement('td');
+        nameCell.className = 'px-3 py-2 text-sm text-ink-light';
+        nameCell.textContent = fileName;
+        const sizeCell = document.createElement('td');
+        sizeCell.className = 'px-3 py-2 text-sm text-ink-muted text-right';
+        sizeCell.textContent = formatBytes(fileSize);
+        row.appendChild(nameCell);
+        row.appendChild(sizeCell);
+        listNode.appendChild(row);
+      });
+
+      if (files.length === 0) {
+        const row = document.createElement('tr');
+        row.innerHTML = '<td colspan="2" class="px-3 py-3 text-sm text-ink-muted">No file metadata available.</td>';
+        listNode.appendChild(row);
+      }
+
+      if (nameNode) nameNode.textContent = shareName;
+      dialog.showModal();
+    });
+  });
+
+  closeButton?.addEventListener('click', () => dialog.close());
+})();
+</script>
+<script>
+(() => {
+  const dropzone = document.querySelector('[data-quick-share-dropzone]');
+  const fileInput = document.querySelector('[data-quick-share-input]');
+  const pickButton = document.querySelector('[data-quick-share-pick]');
+  const status = document.querySelector('[data-quick-share-status]');
+  const draftIdInput = document.querySelector('[data-quick-share-draft-id]');
+  if (!dropzone || !fileInput || !pickButton || !status || !draftIdInput || !draftIdInput.value) return;
+  const draftShareId = draftIdInput.value;
+  const setStatus = (text, isError) => {
+    status.textContent = text;
+    status.classList.remove('text-ink-muted', 'text-danger');
+    status.classList.add(isError ? 'text-danger' : 'text-ink-muted');
+  };
+  const uploadSingleFile = async (file) => {
+    const formData = new FormData();
+    formData.append('draftShareId', draftShareId);
+    formData.append('file', file, file.name);
+    const response = await fetch('/api/uploads/stage', { method: 'POST', body: formData });
+    if (!response.ok) throw new Error('Upload failed.');
+  };
+  const queueAndUpload = async (files) => {
+    const list = Array.from(files || []);
+    if (list.length === 0) return;
+    setStatus('Uploading ' + list.length + ' file(s)...', false);
+    try {
+      for (const file of list) await uploadSingleFile(file);
+      setStatus('Upload complete. Redirecting...', false);
+      window.location.href = '/shares/new?draftShareId=' + encodeURIComponent(draftShareId);
+    } catch {
+      setStatus('Upload failed.', true);
+    }
+  };
+  pickButton.addEventListener('click', (e) => { e.stopPropagation(); fileInput.click(); });
+  dropzone.addEventListener('click', () => fileInput.click());
+  dropzone.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } });
+  fileInput.addEventListener('change', () => { queueAndUpload(fileInput.files); fileInput.value = ''; });
+  dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('ring-2', 'ring-terra/40'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('ring-2', 'ring-terra/40'));
+  dropzone.addEventListener('drop', (e) => { e.preventDefault(); dropzone.classList.remove('ring-2', 'ring-terra/40'); queueAndUpload(e.dataTransfer ? e.dataTransfer.files : []); });
+})();
+</script>

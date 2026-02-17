@@ -8,13 +8,30 @@ public sealed record DownloadNotification(
     DateTime DownloadedAtUtc,
     string DownloaderIp,
     string DownloaderUserAgent,
-    string BrowserMetadataJson);
+    string BrowserMetadataJson,
+    DateTime? ExpiresAtUtc,
+    int DownloadCount,
+    string BrowserFamily,
+    string OsFamily,
+    string DeviceType);
+
+public sealed record AuthEmailMessage(
+    string To,
+    string Subject,
+    string Preheader,
+    string Headline,
+    string IntroText,
+    string? DetailText,
+    string? ActionLabel,
+    string? ActionUrl,
+    string? SecondaryText);
 
 public sealed class EmailSenderOptions
 {
     public const string Section = "Email:Resend";
     public string ApiToken { get; set; } = string.Empty;
     public string ApiUrl { get; set; } = "https://api.resend.com";
+    public string FromDisplayName { get; set; } = string.Empty;
     public string FromAddress { get; set; } = "no-reply@example.com";
 }
 

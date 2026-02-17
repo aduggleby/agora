@@ -1,0 +1,25 @@
+@model Agora.Web.Pages.Shared.ShareLandingCardViewModel
+
+<div data-share-preview-card style="background:white;border-radius:1rem;padding:2.5rem;max-width:480px;width:100%;box-shadow:0 8px 30px rgba(26,22,20,0.08);">
+  <h1 class="font-display" data-share-preview-h1 style="font-size:1.75rem;letter-spacing:-0.01em;">@Model.Title</h1>
+  <p class="font-display" data-share-preview-subtitle style="color:#5C534A;font-size:1.1rem;line-height:1.35;margin-top:0.35rem;@((string.IsNullOrWhiteSpace(Model.Subtitle) ? "display:none;" : string.Empty))">@Model.Subtitle</p>
+  <p data-share-preview-description style="color:#5C534A;font-size:0.875rem;margin-top:0.75rem;">@Model.Description</p>
+  <div style="margin-top:1.5rem;padding:1rem;background:#FAF7F2;border-radius:0.75rem;border:1px solid #E5DFD7;">
+    <p style="font-weight:500;font-size:0.875rem;">@Model.ZipDisplayName</p>
+    <p style="color:#9B9189;font-size:0.75rem;">@Model.FileCount @(Model.FileCount == 1 ? "file" : "files") &middot; @Model.SizeDisplay</p>
+  </div>
+  @if (Model.IsExpired)
+  {
+    <p style="color:#7a3f20;font-size:0.875rem;margin-top:1rem;padding:0.75rem;border-radius:0.5rem;background:#f6e5dc;border:1px solid #e8c8b5;">This link has expired.</p>
+  }
+  <div style="margin-top:1.5rem;">
+    @if (Model.IsExpired)
+    {
+      <button type="button" style="display:inline-block;width:100%;padding:0.75rem 1.5rem;background:#C4663A;color:white;border:none;border-radius:0.5rem;font-size:0.875rem;font-weight:500;text-align:center;opacity:.6;cursor:not-allowed;" disabled title="This link has expired.">Download</button>
+    }
+    else
+    {
+      <a href="@Model.DownloadUrl" style="display:inline-block;width:100%;padding:0.75rem 1.5rem;background:#C4663A;color:white;border:none;border-radius:0.5rem;font-size:0.875rem;font-weight:500;text-align:center;text-decoration:none;">Download</a>
+    }
+  </div>
+</div>

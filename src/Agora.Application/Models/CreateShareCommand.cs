@@ -3,6 +3,7 @@ namespace Agora.Application.Models;
 public sealed class CreateShareCommand
 {
     public required string UploaderEmail { get; init; }
+    public string? ShareToken { get; init; }
     public string? Message { get; init; }
     public string? ZipFileName { get; init; }
     public required ExpiryMode ExpiryMode { get; init; }
@@ -14,6 +15,7 @@ public sealed class CreateShareCommand
     public string? TemplateDescription { get; init; }
     public string? TemplateBackgroundImageUrl { get; init; }
     public string? TemplateBackgroundColorHex { get; init; }
+    public string? TemplateContainerPosition { get; init; }
     public UploadSourceFile? TemplateBackgroundFile { get; init; }
     public required IReadOnlyList<UploadSourceFile> Files { get; init; }
 }

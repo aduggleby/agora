@@ -19,10 +19,12 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
             builder.HasKey(x => x.Id);
             builder.HasIndex(x => x.ShareTokenHash).IsUnique();
             builder.Property(x => x.UploaderEmail).HasMaxLength(320);
+            builder.Property(x => x.ShareToken).HasMaxLength(120);
             builder.Property(x => x.NotifyMode).HasMaxLength(20);
             builder.Property(x => x.ZipDisplayName).HasMaxLength(255);
             builder.Property(x => x.ShareTokenPrefix).HasMaxLength(16);
             builder.Property(x => x.PageBackgroundColorHex).HasMaxLength(16);
+            builder.Property(x => x.PageContainerPosition).HasMaxLength(32);
         });
 
         modelBuilder.Entity<ShareFile>(builder =>
@@ -44,6 +46,7 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
             builder.HasIndex(x => x.UploaderEmail).IsUnique();
             builder.Property(x => x.UploaderEmail).HasMaxLength(320);
             builder.Property(x => x.BackgroundColorHex).HasMaxLength(16);
+            builder.Property(x => x.ContainerPosition).HasMaxLength(32);
         });
 
         modelBuilder.Entity<UserAccount>(builder =>
@@ -55,6 +58,13 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
             builder.Property(x => x.Role).HasMaxLength(20);
             builder.Property(x => x.DefaultNotifyMode).HasMaxLength(20);
             builder.Property(x => x.DefaultExpiryMode).HasMaxLength(20);
+            builder.Property(x => x.EmailConfirmationTokenHash).HasMaxLength(64);
+            builder.Property(x => x.PendingEmail).HasMaxLength(320);
+            builder.Property(x => x.PendingEmailTokenHash).HasMaxLength(64);
+            builder.Property(x => x.PendingPasswordHash).HasMaxLength(1000);
+            builder.Property(x => x.PendingPasswordTokenHash).HasMaxLength(64);
+            builder.Property(x => x.PasswordResetTokenHash).HasMaxLength(64);
+            builder.Property(x => x.FailedLoginCount).HasDefaultValue(0);
         });
 
         modelBuilder.Entity<SystemSetting>(builder =>

@@ -18,4 +18,12 @@ public sealed class TokenCodecTests
         var prefix = TokenCodec.TokenPrefix("1234567890");
         Assert.Equal("12345678", prefix);
     }
+
+    [Fact]
+    public void AlphanumericTokenMatchesRequestedLengthAndCharset()
+    {
+        var token = TokenCodec.GenerateAlphanumericToken(8);
+        Assert.Equal(8, token.Length);
+        Assert.All(token, c => Assert.True(char.IsLetterOrDigit(c)));
+    }
 }

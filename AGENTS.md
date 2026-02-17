@@ -27,6 +27,7 @@ When working in this repository, agents should prioritize:
 
 ## Build/Test Commands
 
+- Build system: `Ando` (https://andobuild.com/llms.txt)
 - `dotnet restore Agora.slnx`
 - `dotnet build Agora.slnx`
 - `dotnet test tests/Agora.Application.Tests/Agora.Application.Tests.csproj`

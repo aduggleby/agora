@@ -1,0 +1,186 @@
+@page "/admin"
+@model Agora.Web.Pages.Admin.IndexModel
+
+<section class="mb-8">
+  <h2 class="font-display text-3xl tracking-tight">Manage users</h2>
+  <p class="text-ink-muted text-sm mt-1">Manage users and registration policy.</p>
+</section>
+<section class="mb-8">
+  <form method="post" action="/admin/settings/registration">
+    <label class="inline-flex items-center gap-3 cursor-pointer select-none">
+      <input type="hidden" name="enabled" value="false" />
+      <input type="checkbox" name="enabled" value="true" @(Model.AllowRegistration ? "checked" : "") class="peer sr-only" onchange="this.form.submit()" />
+      <span class="relative w-11 h-6 rounded-full bg-ink-muted/40 transition-colors peer-checked:bg-sage">
+        <span class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform peer-checked:translate-x-5"></span>
+      </span>
+      <span class="text-sm text-ink-light">Allow new user registration</span>
+      <span class="text-xs @(Model.AllowRegistration ? "bg-sage-wash text-sage" : "bg-cream-dark text-ink-muted") px-2 py-0.5 rounded-md">@(Model.AllowRegistration ? "Open" : "Closed")</span>
+    </label>
+  </form>
+</section>
+<section>
+  <div class="bg-white rounded-2xl border border-border overflow-hidden">
+    <div class="px-5 py-3 border-b border-border bg-cream-dark/50 flex items-center justify-between">
+      <h3 class="font-display text-lg">Users</h3>
+      <span class="text-xs text-ink-muted">@Model.Users.Count total</span>
+    </div>
+    <table class="w-full">
+      <thead>
+        <tr class="text-xs font-medium text-ink-muted uppercase tracking-wider border-b border-border">
+          <th class="text-left px-4 py-2">Email</th>
+          <th class="text-left px-4 py-2">Role</th>
+          <th class="text-right px-4 py-2">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+      @foreach (var user in Model.Users)
+      {
+        <tr class="border-b border-border/60 hover:bg-cream-dark/50 transition-colors">
+          <td class="px-4 py-3 text-sm">
+            <span>@user.Email</span>
+            <span class="ml-2 inline-flex items-center rounded-md bg-cream-dark px-2 py-0.5 text-[11px] font-medium text-ink-muted @(user.IsEnabled ? "hidden" : string.Empty)" data-user-disabled-badge>Disabled</span>
+          </td>
+          <td class="px-4 py-3">
+            @if (user.Id.ToString().Equals(Model.CurrentUserId, StringComparison.OrdinalIgnoreCase))
+            {
+              <select class="text-xs px-2 py-1 border border-border rounded-md bg-cream text-ink-muted cursor-not-allowed" disabled title="You cannot change your own role.">
+                <option value="user" selected="@(user.Role == "user")">user</option>
+                <option value="admin" selected="@(user.Role == "admin")">admin</option>
+              </select>
+            }
+            else
+            {
+              <select class="text-xs px-2 py-1 border border-border rounded-md bg-cream focus:outline-none focus:border-terra" data-user-role-select data-user-id="@user.Id" data-current-role="@user.Role">
+                  <option value="user" selected="@(user.Role == "user")">user</option>
+                  <option value="admin" selected="@(user.Role == "admin")">admin</option>
+              </select>
+            }
+          </td>
+          <td class="px-4 py-3 text-right">
+            <div class="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                class="text-xs @(user.IsEnabled ? "text-ink-muted hover:text-danger" : "text-sage hover:underline")"
+                data-user-enabled-toggle
+                data-user-id="@user.Id"
+                data-next-enabled="@(!user.IsEnabled).ToString().ToLowerInvariant()">
+                @(user.IsEnabled ? "Disable" : "Enable")
+              </button>
+              @if (user.Email == Model.CurrentUserEmail)
+              {
+                <span class="text-xs text-ink-muted">(you)</span>
+              }
+              else
+              {
+                <form method="post" action="/admin/users/@user.Id/delete" onsubmit="return confirm('Delete this user?');" class="inline">
+                  <button type="submit" class="text-xs text-danger hover:underline">Delete</button>
+                </form>
+              }
+            </div>
+          </td>
+        </tr>
+      }
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<div class="fixed right-5 bottom-5 z-50 pointer-events-none hidden" data-admin-toast></div>
+
+<script>
+(() => {
+  const selects = document.querySelectorAll('[data-user-role-select]');
+  const toggles = document.querySelectorAll('[data-user-enabled-toggle]');
+  const toast = document.querySelector('[data-admin-toast]');
+  if ((selects.length === 0 && toggles.length === 0) || !toast) return;
+
+  const showToast = (message, isError) => {
+    toast.innerHTML = '';
+    const node = document.createElement('div');
+    node.className = 'pointer-events-auto px-4 py-2 rounded-lg text-sm shadow-lg border ' + (isError ? 'bg-danger-wash text-danger border-danger/20' : 'bg-sage-wash text-sage border-sage/20');
+    node.textContent = message;
+    toast.appendChild(node);
+    toast.classList.remove('hidden');
+    window.setTimeout(() => {
+      toast.classList.add('hidden');
+      toast.innerHTML = '';
+    }, 2400);
+  };
+
+  const setEnabledToggleState = (button, isEnabled) => {
+    button.setAttribute('data-next-enabled', (!isEnabled).toString());
+    button.textContent = isEnabled ? 'Disable' : 'Enable';
+    button.classList.remove('text-ink-muted', 'hover:text-danger', 'text-sage', 'hover:underline');
+    if (isEnabled) {
+      button.classList.add('text-ink-muted', 'hover:text-danger');
+      return;
+    }
+    button.classList.add('text-sage', 'hover:underline');
+  };
+
+  selects.forEach((select) => {
+    select.addEventListener('change', async () => {
+      const userId = select.getAttribute('data-user-id') || '';
+      const previousRole = select.getAttribute('data-current-role') || '';
+      const role = select.value || '';
+      if (!userId || !role || role === previousRole) return;
+
+      select.disabled = true;
+      try {
+        const formData = new FormData();
+        formData.append('role', role);
+        const response = await fetch('/api/admin/users/' + encodeURIComponent(userId) + '/role', {
+          method: 'POST',
+          body: formData
+        });
+
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.ok) throw new Error(payload.message || 'Unable to update role.');
+        select.setAttribute('data-current-role', role);
+        showToast('Role updated.', false);
+      } catch (error) {
+        select.value = previousRole;
+        showToast((error && error.message) ? error.message : 'Unable to update role.', true);
+      } finally {
+        select.disabled = false;
+      }
+    });
+  });
+
+  toggles.forEach((button) => {
+    button.addEventListener('click', async () => {
+      const userId = button.getAttribute('data-user-id') || '';
+      const enabledRaw = button.getAttribute('data-next-enabled') || '';
+      const nextEnabled = enabledRaw === 'true';
+      if (!userId) return;
+
+      button.disabled = true;
+      try {
+        const formData = new FormData();
+        formData.append('enabled', nextEnabled ? 'true' : 'false');
+        const response = await fetch('/api/admin/users/' + encodeURIComponent(userId) + '/enabled', {
+          method: 'POST',
+          body: formData
+        });
+
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.ok) throw new Error(payload.message || 'Unable to update user status.');
+
+        const row = button.closest('tr');
+        const disabledBadge = row ? row.querySelector('[data-user-disabled-badge]') : null;
+        if (disabledBadge) {
+          if (nextEnabled) disabledBadge.classList.add('hidden');
+          else disabledBadge.classList.remove('hidden');
+        }
+
+        setEnabledToggleState(button, nextEnabled);
+        showToast(nextEnabled ? 'User enabled.' : 'User disabled.', false);
+      } catch (error) {
+        showToast((error && error.message) ? error.message : 'Unable to update user status.', true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+})();
+</script>

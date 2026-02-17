@@ -7,14 +7,20 @@ using Agora.Infrastructure.Persistence;
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging;
 
 namespace Agora.Infrastructure.Services;
 
 public sealed class ShareManager(
     AgoraDbContext db,
     IOptions<AgoraOptions> options,
-    IBackgroundJobClient backgroundJobs)
+    IBackgroundJobClient backgroundJobs,
+    ILogger<ShareManager> logger)
 {
+    public sealed record ShareArchiveFileSummary(
+        string OriginalFilename,
+        long OriginalSizeBytes);
+
     public sealed record UserShareSummary(
         Guid ShareId,
         string ZipDisplayName,
@@ -23,7 +29,8 @@ public sealed class ShareManager(
         int DownloadCount,
         DateTime CreatedAtUtc,
         DateTime? ExpiresAtUtc,
-        DateTime? DeletedAtUtc);
+        DateTime? DeletedAtUtc,
+        IReadOnlyList<ShareArchiveFileSummary> Files);
 
     public sealed record DraftTemplateState(
         string DraftShareId,
@@ -33,7 +40,8 @@ public sealed class ShareManager(
         string Description,
         string? BackgroundImageUrl,
         string? BackgroundUploadId,
-        string? BackgroundColorHex);
+        string? BackgroundColorHex,
+        string ContainerPosition);
 
     public sealed record StagedUploadFile(
         string UploadId,
@@ -62,16 +70,16 @@ public sealed class ShareManager(
         string Description,
         string? BackgroundImageUrl,
         string? BackgroundUploadId,
-        string? BackgroundColorHex);
+        string? BackgroundColorHex,
+        string? ContainerPosition);
 
     private readonly AgoraOptions _options = options.Value;
 
     public async Task<CreateShareResult> CreateShareAsync(CreateShareCommand command, CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
-        var token = TokenCodec.GenerateToken();
-        var tokenHash = TokenCodec.HashToken(token);
-        var tokenPrefix = TokenCodec.TokenPrefix(token);
+        var requestedToken = command.ShareToken?.Trim();
+        var hasRequestedToken = !string.IsNullOrWhiteSpace(requestedToken);
 
         var uploadFileNames = command.Files.Select(x => x.OriginalFileName).ToArray();
         var zipName = ArchiveNameResolver.Resolve(command.ZipFileName, uploadFileNames, now);
@@ -96,43 +104,89 @@ public sealed class ShareManager(
         var zipInfo = new FileInfo(zipAbsolutePath);
 
         var template = await ResolveTemplateAsync(command, cancellationToken);
+        logger.LogInformation(
+            "Resolved download page template for uploader {UploaderEmail} mode {TemplateMode} with background marker {BackgroundMarker}",
+            command.UploaderEmail,
+            command.TemplateMode,
+            template.BackgroundImageUrl ?? "<none>");
+
         if (command.TemplateMode == TemplateMode.PerUpload && command.TemplateBackgroundFile is not null)
         {
             var backgroundMarker = CopyTemplateBackgroundToShareDirectory(command.TemplateBackgroundFile, zipRelativePath);
             template = template with { BackgroundImageUrl = backgroundMarker };
+            logger.LogInformation(
+                "Copied per-share custom background for uploader {UploaderEmail} to marker {BackgroundMarker}",
+                command.UploaderEmail,
+                backgroundMarker ?? "<none>");
+        }
+        else if (command.TemplateMode == TemplateMode.AccountDefault &&
+                 !string.IsNullOrWhiteSpace(template.BackgroundImageUrl) &&
+                 template.BackgroundImageUrl.StartsWith("internal:", StringComparison.OrdinalIgnoreCase))
+        {
+            var sourceMarker = template.BackgroundImageUrl;
+            var copiedMarker = CopyInternalBackgroundToShareDirectory(template.BackgroundImageUrl, zipRelativePath);
+            template = template with { BackgroundImageUrl = copiedMarker };
+            logger.LogInformation(
+                "Copied account default background for uploader {UploaderEmail} from {SourceMarker} to {CopiedMarker}",
+                command.UploaderEmail,
+                sourceMarker ?? "<none>",
+                copiedMarker ?? "<none>");
         }
 
-        var share = new Share
+        for (var attempt = 0; attempt < 16; attempt += 1)
         {
-            Id = Guid.NewGuid(),
-            UploaderEmail = command.UploaderEmail.Trim(),
-            ShareTokenHash = tokenHash,
-            ShareTokenPrefix = tokenPrefix,
-            ZipDisplayName = zipName,
-            ZipDiskPath = zipRelativePath,
-            ZipSizeBytes = zipInfo.Length,
-            UploaderMessage = command.Message,
-            NotifyMode = command.NotifyMode,
-            ExpiresAtUtc = command.ExpiryMode == ExpiryMode.Indefinite ? null : command.ExpiresAtUtc,
-            CreatedAtUtc = now,
-            PageTitle = template.Title,
-            PageH1 = template.H1,
-            PageDescription = template.Description,
-            BackgroundImageUrl = template.BackgroundImageUrl,
-            PageBackgroundColorHex = template.BackgroundColorHex,
-            Files = command.Files.Select(x => new ShareFile
+            var token = hasRequestedToken
+                ? requestedToken!
+                : TokenCodec.GenerateAlphanumericToken(8);
+            var tokenHash = TokenCodec.HashToken(token);
+            var tokenPrefix = TokenCodec.TokenPrefix(token);
+
+            var share = new Share
             {
                 Id = Guid.NewGuid(),
-                OriginalFilename = x.OriginalFileName,
-                OriginalSizeBytes = x.OriginalSizeBytes,
-                DetectedContentType = x.ContentType
-            }).ToList()
-        };
+                UploaderEmail = command.UploaderEmail.Trim(),
+                ShareToken = token,
+                ShareTokenHash = tokenHash,
+                ShareTokenPrefix = tokenPrefix,
+                ZipDisplayName = zipName,
+                ZipDiskPath = zipRelativePath,
+                ZipSizeBytes = zipInfo.Length,
+                UploaderMessage = command.Message,
+                NotifyMode = command.NotifyMode,
+                ExpiresAtUtc = command.ExpiryMode == ExpiryMode.Indefinite ? null : command.ExpiresAtUtc,
+                CreatedAtUtc = now,
+                PageTitle = template.Title,
+                PageH1 = template.H1,
+                PageDescription = template.Description,
+                BackgroundImageUrl = template.BackgroundImageUrl,
+                PageBackgroundColorHex = template.BackgroundColorHex,
+                PageContainerPosition = NormalizeContainerPosition(template.ContainerPosition),
+                Files = command.Files.Select(x => new ShareFile
+                {
+                    Id = Guid.NewGuid(),
+                    OriginalFilename = x.OriginalFileName,
+                    OriginalSizeBytes = x.OriginalSizeBytes,
+                    DetectedContentType = x.ContentType
+                }).ToList()
+            };
 
-        db.Shares.Add(share);
-        await db.SaveChangesAsync(cancellationToken);
+            db.Shares.Add(share);
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+                return new CreateShareResult(share.Id, token, share.ZipDisplayName, share.ExpiresAtUtc);
+            }
+            catch (DbUpdateException ex) when (IsShareTokenConflict(ex))
+            {
+                db.Entry(share).State = EntityState.Detached;
+                if (hasRequestedToken)
+                {
+                    throw new InvalidOperationException("Share token is already in use.", ex);
+                }
+            }
+        }
 
-        return new CreateShareResult(share.Id, token, share.ZipDisplayName, share.ExpiresAtUtc);
+        throw new InvalidOperationException("Unable to generate a unique share token right now.");
     }
 
     public Task<Share?> FindByTokenAsync(string token, CancellationToken cancellationToken)
@@ -168,7 +222,12 @@ public sealed class ShareManager(
                 x.DownloadEvents.Count,
                 x.CreatedAtUtc,
                 x.ExpiresAtUtc,
-                x.DeletedAtUtc))
+                x.DeletedAtUtc,
+                x.Files
+                    .Select(file => new ShareArchiveFileSummary(
+                        file.OriginalFilename,
+                        file.OriginalSizeBytes))
+                    .ToList()))
             .ToListAsync(cancellationToken);
     }
 
@@ -217,6 +276,51 @@ public sealed class ShareManager(
         share.ExpiresAtUtc = now.AddHours(24);
         await db.SaveChangesAsync(cancellationToken);
         return true;
+    }
+
+    public async Task<string?> GetCopyableShareTokenAsync(Guid shareId, string uploaderEmail, CancellationToken cancellationToken)
+    {
+        var normalizedEmail = uploaderEmail.Trim();
+        var share = await db.Shares.SingleOrDefaultAsync(
+            x => x.Id == shareId && x.UploaderEmail == normalizedEmail && x.DeletedAtUtc == null,
+            cancellationToken);
+        if (share is null)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(share.ShareToken))
+        {
+            return share.ShareToken;
+        }
+
+        // Backfill legacy rows that predate recoverable token storage.
+        var generated = await GenerateUniqueShareTokenAsync(8, cancellationToken);
+        share.ShareToken = generated;
+        share.ShareTokenHash = TokenCodec.HashToken(generated);
+        share.ShareTokenPrefix = TokenCodec.TokenPrefix(generated);
+        await db.SaveChangesAsync(cancellationToken);
+        return generated;
+    }
+
+    public async Task<bool> IsShareTokenAvailableAsync(string token, CancellationToken cancellationToken)
+    {
+        var hash = TokenCodec.HashToken(token);
+        return !await db.Shares.AsNoTracking().AnyAsync(x => x.ShareTokenHash == hash, cancellationToken);
+    }
+
+    public async Task<string> GenerateUniqueShareTokenAsync(int length, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 32; attempt += 1)
+        {
+            var token = TokenCodec.GenerateAlphanumericToken(length);
+            if (await IsShareTokenAvailableAsync(token, cancellationToken))
+            {
+                return token;
+            }
+        }
+
+        throw new InvalidOperationException("Unable to generate a unique share token right now.");
     }
 
     public async Task DeleteShareFilesAsync(Guid shareId, CancellationToken cancellationToken)
@@ -305,6 +409,7 @@ public sealed class ShareManager(
                 Description = template.Description,
                 BackgroundImageUrl = template.BackgroundImageUrl,
                 BackgroundColorHex = template.BackgroundColorHex,
+                ContainerPosition = NormalizeContainerPosition(template.ContainerPosition),
                 UpdatedAtUtc = DateTime.UtcNow
             });
         }
@@ -315,6 +420,7 @@ public sealed class ShareManager(
             existing.Description = template.Description;
             existing.BackgroundImageUrl = template.BackgroundImageUrl;
             existing.BackgroundColorHex = template.BackgroundColorHex;
+            existing.ContainerPosition = NormalizeContainerPosition(template.ContainerPosition);
             existing.UpdatedAtUtc = DateTime.UtcNow;
         }
 
@@ -328,14 +434,21 @@ public sealed class ShareManager(
         if (existing is null)
         {
             return new ShareTemplateData(
-                "Shared file",
+                $"by {normalizedEmail}",
                 "A file was shared with you",
                 "Use the button below to download your file.",
                 null,
-                null);
+                null,
+                "center");
         }
 
-        return new ShareTemplateData(existing.Title, existing.H1, existing.Description, existing.BackgroundImageUrl, existing.BackgroundColorHex);
+        return new ShareTemplateData(
+            existing.Title,
+            existing.H1,
+            existing.Description,
+            existing.BackgroundImageUrl,
+            existing.BackgroundColorHex,
+            NormalizeContainerPosition(existing.ContainerPosition));
     }
 
     public async Task<int> CleanupExpiredSharesAsync(CancellationToken cancellationToken)
@@ -667,7 +780,8 @@ public sealed class ShareManager(
                 Description: string.Empty,
                 BackgroundImageUrl: null,
                 BackgroundUploadId: null,
-                BackgroundColorHex: null)
+                BackgroundColorHex: null,
+                ContainerPosition: "center")
             : metadata with { LastActivityUtc = now };
 
         await WriteDraftMetadataAsync(next, cancellationToken);
@@ -679,7 +793,7 @@ public sealed class ShareManager(
         var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
         if (metadata is null || !string.Equals(metadata.UploaderEmail, uploaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
         {
-            return new DraftTemplateState(draftShareId, "account_default", string.Empty, string.Empty, string.Empty, null, null, null);
+            return new DraftTemplateState(draftShareId, "account_default", string.Empty, string.Empty, string.Empty, null, null, null, "center");
         }
 
         var updated = metadata with { LastActivityUtc = DateTime.UtcNow };
@@ -692,7 +806,8 @@ public sealed class ShareManager(
             updated.Description,
             updated.BackgroundImageUrl,
             updated.BackgroundUploadId,
-            updated.BackgroundColorHex);
+            updated.BackgroundColorHex,
+            NormalizeContainerPosition(updated.ContainerPosition));
     }
 
     public async Task SaveDraftTemplateAsync(
@@ -720,7 +835,8 @@ public sealed class ShareManager(
             Description: template.Description,
             BackgroundImageUrl: template.BackgroundImageUrl,
             BackgroundUploadId: string.IsNullOrWhiteSpace(backgroundUploadId) ? null : backgroundUploadId.Trim(),
-            BackgroundColorHex: template.BackgroundColorHex);
+            BackgroundColorHex: template.BackgroundColorHex,
+            ContainerPosition: NormalizeContainerPosition(template.ContainerPosition));
 
         await WriteDraftMetadataAsync(next, cancellationToken);
     }
@@ -749,16 +865,47 @@ public sealed class ShareManager(
                 string.IsNullOrWhiteSpace(command.TemplateH1) ? "A file was shared with you" : command.TemplateH1.Trim(),
                 string.IsNullOrWhiteSpace(command.TemplateDescription) ? "Use the button below to download your file." : command.TemplateDescription.Trim(),
                 string.IsNullOrWhiteSpace(command.TemplateBackgroundImageUrl) ? null : command.TemplateBackgroundImageUrl.Trim(),
-                string.IsNullOrWhiteSpace(command.TemplateBackgroundColorHex) ? null : command.TemplateBackgroundColorHex.Trim());
+                string.IsNullOrWhiteSpace(command.TemplateBackgroundColorHex) ? null : command.TemplateBackgroundColorHex.Trim(),
+                NormalizeContainerPosition(command.TemplateContainerPosition));
         }
 
         var template = await db.AccountTemplates.SingleOrDefaultAsync(x => x.UploaderEmail == command.UploaderEmail.Trim(), cancellationToken);
         if (template is null)
         {
-            return new ShareTemplateData("Shared file", "A file was shared with you", "Use the button below to download your file.", null, null);
+            return new ShareTemplateData(
+                $"by {command.UploaderEmail.Trim()}",
+                "A file was shared with you",
+                "Use the button below to download your file.",
+                null,
+                null,
+                "center");
         }
 
-        return new ShareTemplateData(template.Title, template.H1, template.Description, template.BackgroundImageUrl, template.BackgroundColorHex);
+        return new ShareTemplateData(
+            template.Title,
+            template.H1,
+            template.Description,
+            template.BackgroundImageUrl,
+            template.BackgroundColorHex,
+            NormalizeContainerPosition(template.ContainerPosition));
+    }
+
+    public static string NormalizeContainerPosition(string? raw)
+    {
+        var value = raw?.Trim().ToLowerInvariant();
+        return value switch
+        {
+            "center" => "center",
+            "top_left" => "top_left",
+            "top_right" => "top_right",
+            "bottom_left" => "bottom_left",
+            "bottom_right" => "bottom_right",
+            "center_right" => "center_right",
+            "center_left" => "center_left",
+            "center_top" => "center_top",
+            "center_bottom" => "center_bottom",
+            _ => "center"
+        };
     }
 
     private string GetStagingRoot()
@@ -882,6 +1029,13 @@ public sealed class ShareManager(
         }
     }
 
+    private static bool IsShareTokenConflict(DbUpdateException ex)
+    {
+        var text = ex.ToString();
+        return text.Contains("ShareTokenHash", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("IX_Shares_ShareTokenHash", StringComparison.OrdinalIgnoreCase);
+    }
+
     private string CopyTemplateBackgroundToShareDirectory(UploadSourceFile backgroundFile, string zipRelativePath)
     {
         var zipDirectory = Path.GetDirectoryName(zipRelativePath) ?? "zips";
@@ -919,10 +1073,75 @@ public sealed class ShareManager(
             return;
         }
 
+        var normalizedRelativePath = relativePath.Replace('\\', '/');
+        if (!normalizedRelativePath.StartsWith("zips/", StringComparison.OrdinalIgnoreCase))
+        {
+            logger.LogInformation(
+                "Skipping background deletion for non-share-owned marker {BackgroundMarker}",
+                backgroundImageMarker ?? "<none>");
+            return;
+        }
+
         var backgroundAbsolutePath = Path.Combine(_options.StorageRoot, relativePath);
         if (File.Exists(backgroundAbsolutePath))
         {
             File.Delete(backgroundAbsolutePath);
         }
+    }
+
+    private string? CopyInternalBackgroundToShareDirectory(string internalMarker, string zipRelativePath)
+    {
+        var marker = internalMarker ?? string.Empty;
+        if (!marker.StartsWith("internal:", StringComparison.OrdinalIgnoreCase))
+        {
+            logger.LogWarning(
+                "Cannot copy background marker because it is not internal. Marker: {BackgroundMarker}",
+                internalMarker ?? "<none>");
+            return null;
+        }
+
+        var relativePath = marker["internal:".Length..].TrimStart('/', '\\');
+        if (relativePath.Length == 0)
+        {
+            logger.LogWarning("Cannot copy background marker because relative path was empty. Marker: {BackgroundMarker}", marker);
+            return null;
+        }
+
+        var storageRoot = Path.GetFullPath(_options.StorageRoot);
+        var sourceAbsolutePath = Path.GetFullPath(Path.Combine(storageRoot, relativePath));
+        if (!sourceAbsolutePath.StartsWith(storageRoot, StringComparison.Ordinal))
+        {
+            logger.LogWarning(
+                "Cannot copy background marker because source path escaped storage root. Marker: {BackgroundMarker}",
+                marker);
+            return null;
+        }
+
+        if (!File.Exists(sourceAbsolutePath))
+        {
+            logger.LogWarning(
+                "Cannot copy background marker because source file does not exist. Marker: {BackgroundMarker} SourcePath: {SourcePath}",
+                marker,
+                sourceAbsolutePath);
+            return null;
+        }
+
+        var zipDirectory = Path.GetDirectoryName(zipRelativePath) ?? "zips";
+        var zipStem = Path.GetFileNameWithoutExtension(zipRelativePath);
+        var safeExtension = Path.GetExtension(relativePath);
+        if (string.IsNullOrWhiteSpace(safeExtension))
+        {
+            safeExtension = ".bin";
+        }
+
+        var backgroundRelativePath = Path.Combine(zipDirectory, $"{zipStem}-background{safeExtension}");
+        var backgroundAbsolutePath = Path.Combine(storageRoot, backgroundRelativePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(backgroundAbsolutePath)!);
+        File.Copy(sourceAbsolutePath, backgroundAbsolutePath, overwrite: true);
+        logger.LogInformation(
+            "Copied internal background from {SourcePath} to {TargetPath}",
+            sourceAbsolutePath,
+            backgroundAbsolutePath);
+        return $"internal:{backgroundRelativePath.Replace('\\', '/')}";
     }
 }

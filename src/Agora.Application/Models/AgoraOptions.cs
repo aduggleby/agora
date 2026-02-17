@@ -3,6 +3,7 @@ namespace Agora.Application.Models;
 public sealed class AgoraOptions
 {
     public const string Section = "Agora";
+    public string? PublicBaseUrl { get; set; }
     public string StorageRoot { get; set; } = "storage";
     public int MaxFilesPerShare { get; set; } = 20;
     public long MaxFileSizeBytes { get; set; } = 250L * 1024 * 1024;

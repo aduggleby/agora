@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.1.0] - 2026-02-17
+## [0.9.0] - 2026-02-17
 
 ### Added
 - Initial Agora ASP.NET Core 10 file sharing service implementation.

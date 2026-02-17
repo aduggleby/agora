@@ -4,6 +4,7 @@ public sealed class Share
 {
     public Guid Id { get; set; }
     public string UploaderEmail { get; set; } = string.Empty;
+    public string ShareToken { get; set; } = string.Empty;
     public string ShareTokenHash { get; set; } = string.Empty;
     public string ShareTokenPrefix { get; set; } = string.Empty;
     public string ZipDisplayName { get; set; } = string.Empty;
@@ -21,6 +22,7 @@ public sealed class Share
     public string PageDescription { get; set; } = "Use the button below to download your file.";
     public string? BackgroundImageUrl { get; set; }
     public string? PageBackgroundColorHex { get; set; }
+    public string PageContainerPosition { get; set; } = "center";
 
     public ICollection<ShareFile> Files { get; set; } = new List<ShareFile>();
     public ICollection<DownloadEvent> DownloadEvents { get; set; } = new List<DownloadEvent>();

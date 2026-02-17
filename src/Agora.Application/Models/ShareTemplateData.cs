@@ -5,4 +5,5 @@ public sealed record ShareTemplateData(
     string H1,
     string Description,
     string? BackgroundImageUrl,
-    string? BackgroundColorHex);
+    string? BackgroundColorHex,
+    string ContainerPosition);

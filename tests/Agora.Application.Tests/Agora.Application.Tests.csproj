@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Agora.Application\Agora.Application.csproj" />
     <ProjectReference Include="..\..\src\Agora.Domain\Agora.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Agora.Infrastructure\Agora.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

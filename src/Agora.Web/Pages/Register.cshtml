@@ -1,0 +1,32 @@
+@page "/register"
+@model Agora.Web.Pages.RegisterModel
+
+@if (!Model.RegistrationAllowed)
+{
+  <div class="max-w-sm mx-auto mt-16 text-center">
+    <h1 class="font-display text-3xl tracking-tight">Registration disabled</h1>
+    <p class="text-ink-muted text-sm mt-2">Ask an administrator to enable registrations.</p>
+    <a href="/login" class="inline-block mt-6 text-sm text-terra font-medium hover:underline">Back to sign in</a>
+  </div>
+}
+else
+{
+  <div class="max-w-sm mx-auto mt-16">
+    <div class="text-center mb-8">
+      <h1 class="font-display text-3xl tracking-tight">Create account</h1>
+      <p class="text-ink-muted text-sm mt-1">Get started sharing files</p>
+    </div>
+    <form method="post" action="/register" class="space-y-4">
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Email</label>
+        <input type="email" name="email" required class="w-full px-3 py-2.5 text-sm border border-border rounded-lg bg-white focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all" />
+      </div>
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Password</label>
+        <input type="password" name="password" required class="w-full px-3 py-2.5 text-sm border border-border rounded-lg bg-white focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all" />
+      </div>
+      <button type="submit" class="w-full px-6 py-2.5 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors">Register</button>
+    </form>
+    <p class="text-sm text-ink-muted mt-6 text-center"><a href="/login" class="text-terra font-medium hover:underline">Back to sign in</a></p>
+  </div>
+}

@@ -13,7 +13,7 @@ Build an ASP.NET Core 10 file sharing service where uploaders submit one or more
 ## Problem Statement
 
 Teams need a controlled way to share files externally with:
-- Simple recipient UX (landing page + download button)
+- Simple recipient UX (download page + download button)
 - Expiration controls
 - Audit visibility via download notifications
 - Customizable branding/page content
@@ -201,7 +201,7 @@ erDiagram
 - Persist share + file metadata.
 - Return `shareUrl`.
 
-2. Landing page GET (`src/Agora.Web/Features/Shares/ViewSharePage.cshtml`)
+2. Download page GET (`src/Agora.Web/Features/Shares/ViewSharePage.cshtml`)
 - Validate token and expiry.
 - Render page template fields (share override > account default > system default).
 - Show file summary, uploader message, download CTA.
@@ -242,7 +242,7 @@ Serilog configuration (`src/Agora.Web/appsettings.Production.json`):
 - Use random unguessable tokens (>=128-bit entropy).
 - Add rate limiting to upload and download endpoints.
 - Use antiforgery for browser form posts.
-- Validate/sanitize all user-provided text rendered in landing page.
+- Validate/sanitize all user-provided text rendered in download page.
 - Restrict background image handling to URL allowlist or controlled upload pipeline.
 - Store timestamps in UTC only.
 
@@ -273,7 +273,7 @@ Authentication modes:
 - Response `201`:
   - `shareId`, `shareUrl`, `zipDisplayName`, `expiresAtUtc`, `createdAtUtc`
 
-2. View landing page metadata
+2. View download page metadata
 - `GET /api/shares/{token}`
 - Response `200`:
   - `zipDisplayName`, `zipSizeBytes`, `fileCount`, `uploaderMessage`
@@ -466,11 +466,11 @@ Success criteria:
 
 - [x] Implement upload form + endpoint + validation (`src/Agora.Web/Features/Shares/Create*`)
 - [x] Implement ZIP creation service (`src/Agora.Application/Archiving/ZipArchiveService.cs`)
-- [x] Implement landing page rendering (`src/Agora.Web/Features/Shares/View*`)
+- [x] Implement download page rendering (`src/Agora.Web/Features/Shares/View*`)
 - [x] Implement download endpoint and event persistence (`src/Agora.Web/Features/Shares/Download*`)
 
 Success criteria:
-- User can upload files, receive URL, recipient can view landing page and download ZIP.
+- User can upload files, receive URL, recipient can view download page and download ZIP.
 
 ### Phase 3: Notifications + Expiration
 
@@ -495,7 +495,7 @@ Success criteria:
 
 - [x] Unit tests for filename resolution, expiry logic, notification mode rules (`tests/Agora.Application.Tests/*`)
 - [ ] Integration tests for upload/download lifecycle (`tests/Agora.IntegrationTests/*`)
-- [ ] End-to-end browser tests for landing page and download UX (`tests/Agora.E2E/*`)
+- [ ] End-to-end browser tests for download page and download UX (`tests/Agora.E2E/*`)
 - [ ] Run load tests for concurrent downloads and large uploads (`tests/Agora.Performance/*`)
 
 Success criteria:
@@ -509,7 +509,7 @@ Success criteria:
 2. Store ZIP in object storage (S3/Azure Blob) only
 - Good future direction; disk storage selected for initial simplicity.
 
-3. Use signed short-lived download URLs only, no landing page
+3. Use signed short-lived download URLs only, no download page
 - Rejected because requirement mandates customizable intermediary page.
 
 ## Acceptance Criteria
@@ -522,8 +522,8 @@ Success criteria:
   - [x] Provided custom filename is used.
   - [x] Single upload defaults to uploaded filename without extension, emitted as `<basename>.zip`.
 - [x] Uploader can set expiry to a specific date/time or indefinite.
-- [x] Share URL opens a landing page before download.
-- [x] Landing page shows file info, uploader message, and download button.
+- [x] Share URL opens a download page before download.
+- [x] Download page shows file info, uploader message, and download button.
 - [x] Uploader can customize title, H1, description, and background image per account or per upload.
 - [x] Download event is recorded with IP, browser metadata, and timestamp.
 - [x] Notification email mode `once` and `every_time` behave correctly.

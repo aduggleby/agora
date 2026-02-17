@@ -1,0 +1,161 @@
+@{
+    var safeTitle = ViewData["Title"]?.ToString() ?? "Agora";
+    var message = ViewData["Message"]?.ToString();
+    var isAuthenticated = User?.Identity?.IsAuthenticated == true;
+    var email = User?.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+    var isAdmin = User?.IsInRole("admin") == true;
+}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>@safeTitle</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/site.css" />
+</head>
+<body class="bg-cream text-ink min-h-screen relative" style="background-image:url('/images/safwan-thottoli-ZOjLtBNuY2E-unsplash.jpg');background-size:cover;background-position:center;background-attachment:fixed;">
+  <div style="position:fixed;inset:0;background:rgba(255,255,255,0.75);pointer-events:none;"></div>
+  <header class="border-b border-border relative z-50">
+    <div class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-3 no-underline">
+        <div class="w-8 h-8 bg-terra rounded-lg flex items-center justify-center">
+          <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+        </div>
+        <span class="font-display text-2xl tracking-tight">Agora</span>
+      </a>
+
+      @if (isAuthenticated)
+      {
+          <nav class="flex items-center gap-4">
+            <details class="relative" style="z-index: 2000;">
+              <summary class="list-none cursor-pointer">
+                <span class="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-3 py-1.5 text-sm text-ink-light hover:border-terra/40">
+                  <span class="w-6 h-6 rounded-full bg-cream-dark text-ink-muted flex items-center justify-center" aria-hidden="true">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6.75a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.5 19.125a7.5 7.5 0 0115 0" />
+                    </svg>
+                  </span>
+                  <span class="text-[11px] text-ink-muted leading-tight">@email</span>
+                </span>
+              </summary>
+              <div class="absolute right-0 mt-2 w-56 rounded-xl border border-border bg-white p-2 shadow-lg z-20" style="z-index: 2100;">
+                <a href="/account/settings" class="block rounded-lg px-3 py-2 text-sm text-ink-light hover:bg-cream-dark/60">Account settings</a>
+                <a href="/account/landing-page-designer" class="block rounded-lg px-3 py-2 text-sm text-ink-light hover:bg-cream-dark/60">Download page settings</a>
+                <a href="/account/share-defaults" class="block rounded-lg px-3 py-2 text-sm text-ink-light hover:bg-cream-dark/60">Share defaults</a>
+                @if (isAdmin)
+                {
+                    <div class="my-1 border-t border-border"></div>
+                    <p class="px-3 py-1 text-[11px] font-medium uppercase tracking-wider text-ink-muted">Admin</p>
+                    <a href="/admin" class="block rounded-lg px-3 py-2 text-sm text-ink-light hover:bg-cream-dark/60">Manage users</a>
+                    <a href="/hangfire" class="block rounded-lg px-3 py-2 text-sm text-ink-light hover:bg-cream-dark/60">Manage jobs</a>
+                }
+                <div class="my-1 border-t border-border"></div>
+                <form method="post" action="/logout">
+                  <button type="submit" class="w-full text-left rounded-lg px-3 py-2 text-sm text-ink-muted hover:bg-cream-dark/60">Sign out</button>
+                </form>
+              </div>
+            </details>
+          </nav>
+      }
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-6 py-10 relative z-10">
+    @if (!string.IsNullOrWhiteSpace(message))
+    {
+      <div class="mb-6 px-4 py-3 bg-terra-wash border border-terra-light/30 rounded-xl text-sm text-ink-light">@message</div>
+    }
+    @RenderBody()
+  </main>
+
+  <footer class="border-t border-border mt-8 relative z-10">
+    <div class="max-w-5xl mx-auto px-6 py-6">
+      <div class="flex items-center justify-between gap-4 text-xs text-ink-muted">
+        <a href="https://github.com/aduggleby/agora" target="_blank" rel="noreferrer" class="hover:text-ink transition-colors">Agora - Self hosted secure file transfer</a>
+        <a href="https://github.com/aduggleby" target="_blank" rel="noreferrer" class="hover:text-ink transition-colors">Made by Alex Duggleby</a>
+      </div>
+    </div>
+  </footer>
+  <script>
+    (() => {
+      const cookieName = 'agora.csrf.request';
+      const formFieldName = '__RequestVerificationToken';
+      const headerName = 'X-CSRF-TOKEN';
+
+      const getCookie = (name) => {
+        const prefix = name + '=';
+        const parts = document.cookie ? document.cookie.split(';') : [];
+        for (const part of parts) {
+          const value = part.trim();
+          if (value.startsWith(prefix)) {
+            return decodeURIComponent(value.slice(prefix.length));
+          }
+        }
+        return '';
+      };
+
+      const csrfToken = getCookie(cookieName);
+      if (!csrfToken) return;
+
+      const isUnsafeMethod = (method) => {
+        const upper = (method || 'GET').toUpperCase();
+        return upper !== 'GET' && upper !== 'HEAD' && upper !== 'OPTIONS' && upper !== 'TRACE';
+      };
+
+      const isSameOriginUrl = (input) => {
+        try {
+          const url = new URL(input || window.location.href, window.location.href);
+          return url.origin === window.location.origin;
+        } catch {
+          return false;
+        }
+      };
+
+      document.querySelectorAll('form').forEach((form) => {
+        const method = form.getAttribute('method') || 'GET';
+        if (!isUnsafeMethod(method)) return;
+        if (form.querySelector('input[name="' + formFieldName + '"]')) return;
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = formFieldName;
+        input.value = csrfToken;
+        form.appendChild(input);
+      });
+
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const method = (init && init.method) || 'GET';
+        const url = typeof input === 'string' ? input : (input && input.url) || window.location.href;
+        if (!isUnsafeMethod(method) || !isSameOriginUrl(url)) {
+          return originalFetch(input, init);
+        }
+
+        const requestInit = init ? { ...init } : {};
+        const headers = new Headers(requestInit.headers || (typeof input !== 'string' ? input.headers : undefined));
+        if (!headers.has(headerName)) {
+          headers.set(headerName, csrfToken);
+        }
+        requestInit.headers = headers;
+        return originalFetch(input, requestInit);
+      };
+
+      const originalOpen = XMLHttpRequest.prototype.open;
+      const originalSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function(method, url) {
+        this._csrfMethod = method || 'GET';
+        this._csrfUrl = url || window.location.href;
+        return originalOpen.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function(body) {
+        if (isUnsafeMethod(this._csrfMethod) && isSameOriginUrl(this._csrfUrl)) {
+          this.setRequestHeader(headerName, csrfToken);
+        }
+        return originalSend.call(this, body);
+      };
+    })();
+  </script>
+</body>
+</html>

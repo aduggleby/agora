@@ -1,0 +1,183 @@
+@page "/account/landing-page-designer"
+@model Agora.Web.Pages.Account.LandingPageDesignerModel
+@{
+  var existingBackgroundPreviewUrl = string.IsNullOrWhiteSpace(Model.Template.BackgroundImageUrl)
+    ? string.Empty
+    : Model.Template.BackgroundImageUrl.StartsWith("internal:", StringComparison.OrdinalIgnoreCase)
+      ? "/account/template/background"
+      : Model.Template.BackgroundImageUrl;
+  var previewModel = new Agora.Web.Pages.Shared.ShareLandingCardViewModel(
+    Title: string.IsNullOrWhiteSpace(Model.Template.H1) ? "A file was shared with you" : Model.Template.H1,
+    Subtitle: string.IsNullOrWhiteSpace(Model.Template.Title) ? null : Model.Template.Title,
+    Description: string.IsNullOrWhiteSpace(Model.Template.Description) ? "Use the button below to download your file." : Model.Template.Description,
+    ZipDisplayName: "example-share.zip",
+    FileCount: 3,
+    SizeDisplay: "2.4 MB",
+    IsExpired: false,
+    DownloadUrl: "#");
+  var previewAlignmentClasses = Model.Template.ContainerPosition switch
+  {
+    "top_left" => "items-start justify-start",
+    "top_right" => "items-start justify-end",
+    "bottom_left" => "items-end justify-start",
+    "bottom_right" => "items-end justify-end",
+    "center_right" => "items-center justify-end",
+    "center_left" => "items-center justify-start",
+    "center_top" => "items-start justify-center",
+    "center_bottom" => "items-end justify-center",
+    _ => "items-center justify-center"
+  };
+}
+
+<section class="mb-8">
+  <h2 class="font-display text-3xl tracking-tight">Download page settings</h2>
+  <p class="text-ink-muted text-sm mt-1">Set your account-wide default download page template.</p>
+</section>
+<section class="space-y-6">
+  <div class="bg-white rounded-2xl border border-border p-6">
+    <form method="post" action="/api/account/template" enctype="multipart/form-data" class="space-y-4" id="account-template-form">
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Title</label>
+        <input name="h1" value="@Model.Template.H1" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" data-preview-h1 />
+      </div>
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Subtitle</label>
+        <input name="title" value="@Model.Template.Title" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" data-preview-title />
+      </div>
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Description</label>
+        <textarea name="description" rows="3" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" data-preview-description>@Model.Template.Description</textarea>
+      </div>
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Background image</label>
+        <input type="file" name="backgroundImageFile" accept=".jpg,.jpeg,.png,.svg,.webp" class="sr-only" data-preview-background-file />
+        <div class="rounded-lg border border-dashed border-border bg-cream p-4" data-preview-upload-dropzone>
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-xs text-ink-muted">.jpg, .jpeg, .png, .svg, .webp</p>
+            <button type="button" class="px-3 py-1.5 bg-ink text-white text-xs font-medium rounded-md hover:bg-ink/90 transition-colors" data-preview-upload-pick>Select image</button>
+          </div>
+          <div class="mt-2 text-xs text-ink-muted" data-preview-upload-status>No file selected.</div>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Background color</label>
+          <select name="backgroundColorMode" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" data-preview-background-color-mode>
+            <option value="default" selected="@(string.IsNullOrWhiteSpace(Model.Template.BackgroundColorHex))">Default</option>
+            <option value="custom" selected="@(!string.IsNullOrWhiteSpace(Model.Template.BackgroundColorHex))">Custom</option>
+          </select>
+        </div>
+        <div data-preview-background-color-picker-wrap>
+          <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Pick color</label>
+          <input type="color" name="backgroundColorHex" value="@(string.IsNullOrWhiteSpace(Model.Template.BackgroundColorHex) ? "#faf7f2" : Model.Template.BackgroundColorHex)" class="h-10 w-10 p-0 border border-border rounded-md bg-cream" data-preview-background-color />
+        </div>
+      </div>
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Container position</label>
+        <select name="containerPosition" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" data-preview-container-position>
+          <option value="center" selected="@(Model.Template.ContainerPosition == "center")">Centered</option>
+          <option value="top_left" selected="@(Model.Template.ContainerPosition == "top_left")">Top left</option>
+          <option value="top_right" selected="@(Model.Template.ContainerPosition == "top_right")">Top right</option>
+          <option value="bottom_left" selected="@(Model.Template.ContainerPosition == "bottom_left")">Bottom left</option>
+          <option value="bottom_right" selected="@(Model.Template.ContainerPosition == "bottom_right")">Bottom right</option>
+          <option value="center_right" selected="@(Model.Template.ContainerPosition == "center_right")">Centered right</option>
+          <option value="center_left" selected="@(Model.Template.ContainerPosition == "center_left")">Centered left</option>
+          <option value="center_top" selected="@(Model.Template.ContainerPosition == "center_top")">Centered top</option>
+          <option value="center_bottom" selected="@(Model.Template.ContainerPosition == "center_bottom")">Centered bottom</option>
+        </select>
+      </div>
+      <div class="flex items-center justify-end">
+        <button type="submit" class="px-6 py-2.5 bg-ink text-white text-sm font-medium rounded-lg hover:bg-ink/90">Save template</button>
+      </div>
+    </form>
+  </div>
+  <div class="bg-white rounded-2xl border border-border p-6">
+    <p class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-2">Preview</p>
+    <div class="rounded-2xl border border-border p-4 bg-cover bg-center aspect-[4/3]" data-preview-surface style="background-color:#faf7f2;">
+      <div class="h-full w-full flex @previewAlignmentClasses" data-preview-wrapper>
+        @await Html.PartialAsync("/Pages/Shared/_ShareLandingCard.cshtml", previewModel)
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+(() => {
+  const form = document.getElementById('account-template-form'); if (!form) return;
+  const titleInput = form.querySelector('[data-preview-title]');
+  const h1Input = form.querySelector('[data-preview-h1]');
+  const descriptionInput = form.querySelector('[data-preview-description]');
+  const backgroundFileInput = form.querySelector('[data-preview-background-file]');
+  const backgroundColorModeInput = form.querySelector('[data-preview-background-color-mode]');
+  const backgroundColorInput = form.querySelector('[data-preview-background-color]');
+  const containerPositionInput = form.querySelector('[data-preview-container-position]');
+  const backgroundColorWrap = form.querySelector('[data-preview-background-color-picker-wrap]');
+  const uploadPick = form.querySelector('[data-preview-upload-pick]');
+  const uploadDropzone = form.querySelector('[data-preview-upload-dropzone]');
+  const uploadStatus = form.querySelector('[data-preview-upload-status]');
+  const subtitleTarget = document.querySelector('[data-share-preview-subtitle]');
+  const h1Target = document.querySelector('[data-share-preview-h1]');
+  const descriptionTarget = document.querySelector('[data-share-preview-description]');
+  const previewSurface = document.querySelector('[data-preview-surface]');
+  const previewWrapper = document.querySelector('[data-preview-wrapper]');
+  const defaultBackgroundColor = '#faf7f2';
+  const initialBackgroundUrl = '@existingBackgroundPreviewUrl';
+  let uploadedPreviewUrl = initialBackgroundUrl;
+  const allPositionClasses = ['items-start', 'items-center', 'items-end', 'justify-start', 'justify-center', 'justify-end'];
+  const positionClassMap = {
+    top_left: ['items-start', 'justify-start'],
+    top_right: ['items-start', 'justify-end'],
+    bottom_left: ['items-end', 'justify-start'],
+    bottom_right: ['items-end', 'justify-end'],
+    center_right: ['items-center', 'justify-end'],
+    center_left: ['items-center', 'justify-start'],
+    center_top: ['items-start', 'justify-center'],
+    center_bottom: ['items-end', 'justify-center'],
+    center: ['items-center', 'justify-center']
+  };
+  const update = () => {
+    if (subtitleTarget) {
+      const subtitleText = titleInput.value || '';
+      subtitleTarget.textContent = subtitleText;
+      subtitleTarget.style.display = subtitleText ? '' : 'none';
+    }
+    if (h1Target) h1Target.textContent = h1Input.value || 'A file was shared with you';
+    if (descriptionTarget) descriptionTarget.textContent = descriptionInput.value || 'Use the button below to download your file.';
+    if (previewSurface) {
+      previewSurface.style.backgroundColor = (backgroundColorModeInput.value === 'custom' ? backgroundColorInput.value : defaultBackgroundColor);
+      previewSurface.style.backgroundImage = uploadedPreviewUrl ? ('url(' + uploadedPreviewUrl + ')') : '';
+      previewSurface.style.backgroundSize = uploadedPreviewUrl ? 'cover' : '';
+      previewSurface.style.backgroundPosition = uploadedPreviewUrl ? 'center' : '';
+    }
+    if (previewWrapper && containerPositionInput) {
+      previewWrapper.classList.remove(...allPositionClasses);
+      const next = positionClassMap[containerPositionInput.value] || positionClassMap.center;
+      previewWrapper.classList.add(...next);
+    }
+  };
+  [titleInput, h1Input, descriptionInput].forEach((el) => el.addEventListener('input', update));
+  const refreshColorMode = () => {
+    const isCustom = backgroundColorModeInput.value === 'custom';
+    backgroundColorWrap.classList.toggle('hidden', !isCustom);
+    backgroundColorInput.name = isCustom ? 'backgroundColorHex' : '';
+    if (!isCustom) backgroundColorInput.value = '#faf7f2';
+    update();
+  };
+  backgroundColorModeInput.addEventListener('change', refreshColorMode);
+  backgroundColorInput.addEventListener('input', update);
+  containerPositionInput?.addEventListener('change', update);
+  const applyFile = (file) => {
+    if (uploadedPreviewUrl) URL.revokeObjectURL(uploadedPreviewUrl);
+    uploadedPreviewUrl = URL.createObjectURL(file);
+    uploadStatus.textContent = 'Selected: ' + file.name;
+    update();
+  };
+  uploadPick.addEventListener('click', () => backgroundFileInput.click());
+  backgroundFileInput.addEventListener('change', () => { const f = backgroundFileInput.files && backgroundFileInput.files[0]; if (f) applyFile(f); });
+  uploadDropzone.addEventListener('dragover', (e) => { e.preventDefault(); uploadDropzone.classList.add('ring-2', 'ring-terra/40'); });
+  uploadDropzone.addEventListener('dragleave', () => uploadDropzone.classList.remove('ring-2', 'ring-terra/40'));
+  uploadDropzone.addEventListener('drop', (e) => { e.preventDefault(); uploadDropzone.classList.remove('ring-2', 'ring-terra/40'); const f = e.dataTransfer?.files?.[0]; if (f) applyFile(f); });
+  refreshColorMode();
+  if (initialBackgroundUrl) uploadStatus.textContent = 'Uploaded background image selected.';
+})();
+</script>

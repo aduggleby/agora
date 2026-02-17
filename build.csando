@@ -1,10 +1,7 @@
-var publish = DefineProfile("publish");
-
 Ando.UseImage("mcr.microsoft.com/dotnet/sdk:10.0");
 
 var web = Dotnet.Project("./src/Agora.Web/Agora.Web.csproj");
 var tests = Dotnet.Project("./tests/Agora.Application.Tests/Agora.Application.Tests.csproj");
-
 Dotnet.Restore(web);
 Dotnet.Build(web, o =>
 {
@@ -18,17 +15,3 @@ Dotnet.Test(tests, o =>
     o.NoRestore = true;
     o.NoBuild = false;
 });
-
-if (publish)
-{
-    Dotnet.Publish(web, o => o
-        .WithConfiguration(Configuration.Release)
-        .SkipRestore()
-        .Output(Root / "artifacts" / "publish"));
-
-    Docker.Build("Dockerfile", o => o
-        .WithContext(".")
-        .WithTag("agora:latest"));
-
-    Ando.CopyZippedArtifactsToHost("artifacts", "./artifacts");
-}

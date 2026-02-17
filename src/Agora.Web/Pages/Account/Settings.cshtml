@@ -1,0 +1,51 @@
+@page "/account/settings"
+@model Agora.Web.Pages.Account.SettingsModel
+
+<section class="mb-8">
+  <h2 class="font-display text-3xl tracking-tight">Account settings</h2>
+  <p class="text-ink-muted text-sm mt-1">Manage your profile and password.</p>
+</section>
+
+<section id="profile-settings" class="mb-10 scroll-mt-24">
+  <div class="bg-white rounded-2xl border border-border p-6">
+    <h3 class="font-display text-xl mb-2">Email address</h3>
+    <p class="text-sm text-ink-muted mb-4">Current email: @Model.CurrentEmail</p>
+    <form method="post" asp-page-handler="ChangeEmail" class="space-y-4">
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">New email</label>
+        <input type="email" name="newEmail" required class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
+      </div>
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Current password</label>
+        <input type="password" name="currentPasswordForEmail" required class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
+      </div>
+      <div class="flex justify-end">
+        <button type="submit" class="px-5 py-2 bg-ink text-white text-sm font-medium rounded-lg hover:bg-ink/90 transition-colors">Send email confirmation</button>
+      </div>
+    </form>
+  </div>
+</section>
+
+<section id="security-settings" class="mb-10 scroll-mt-24">
+  <div class="bg-white rounded-2xl border border-border p-6">
+    <h3 class="font-display text-xl mb-2">Password</h3>
+    <p class="text-sm text-ink-muted mb-4">Use at least 8 characters and avoid reusing old passwords. The change applies after email confirmation.</p>
+    <form method="post" asp-page-handler="ChangePassword" class="space-y-4">
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Current password</label>
+        <input type="password" name="currentPasswordForPassword" required class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
+      </div>
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">New password</label>
+        <input type="password" name="newPassword" required minlength="8" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
+      </div>
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Confirm new password</label>
+        <input type="password" name="confirmPassword" required minlength="8" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
+      </div>
+      <div class="flex justify-end">
+        <button type="submit" class="px-5 py-2 bg-ink text-white text-sm font-medium rounded-lg hover:bg-ink/90 transition-colors">Send password confirmation</button>
+      </div>
+    </form>
+  </div>
+</section>

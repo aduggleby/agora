@@ -23,11 +23,44 @@ export async function createE2EUser(request: APIRequestContext, suffix: string) 
 }
 
 export async function login(page: Page, email: string, password: string) {
-  await page.goto('/login');
-  await page.locator('input[name="email"]').fill(email);
-  await page.locator('input[name="password"]').fill(password);
-  await page.locator('form[action="/login"] button[type="submit"]').click();
-  await page.waitForURL('/');
+  const targetUrl = /\/($|dashboard|shares\/new(\?.*)?)/;
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await page.goto('/login');
+    const loginForm = page.locator('form[action="/login"]').first();
+    await loginForm.locator('input[name="email"]').fill(email);
+    await loginForm.locator('input[name="password"]').fill(password);
+
+    await page.evaluate(() => {
+      const form = document.querySelector('form[action="/login"]');
+      if (!form) return;
+      const parts = document.cookie ? document.cookie.split(';') : [];
+      const tokenCookie = parts
+        .map((x) => x.trim())
+        .find((x) => x.startsWith('agora.csrf.request='));
+      if (!tokenCookie) return;
+      const token = decodeURIComponent(tokenCookie.slice('agora.csrf.request='.length));
+      let input = form.querySelector('input[name="__RequestVerificationToken"]') as HTMLInputElement | null;
+      if (!input) {
+        input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = '__RequestVerificationToken';
+        form.appendChild(input);
+      }
+      input.value = token;
+    });
+
+    await loginForm.locator('button[type="submit"]').click();
+
+    try {
+      await page.waitForURL(targetUrl, { timeout: 12_000 });
+      return;
+    } catch {
+      if (attempt === 3) {
+        throw new Error('Login did not complete after 3 attempts.');
+      }
+    }
+  }
 }
 
 export async function createTempFiles(baseDir: string, files: Array<{ name: string; content: string }>) {

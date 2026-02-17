@@ -1,0 +1,52 @@
+@page "/login"
+@model Agora.Web.Pages.LoginModel
+
+<div class="max-w-sm mx-auto mt-16">
+  <div class="text-center mb-8">
+    <div class="inline-flex items-center justify-center w-12 h-12 bg-terra rounded-xl mb-4">
+      <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+    </div>
+    <h1 class="font-display text-3xl tracking-tight">Sign in</h1>
+    <p class="text-ink-muted text-sm mt-1">Welcome back to Agora</p>
+  </div>
+  <form method="post" action="/login" class="space-y-4">
+    <div>
+      <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Email</label>
+      <input type="email" name="email" required class="w-full px-3 py-2.5 text-sm border border-border rounded-lg bg-white focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all" />
+    </div>
+    <div>
+      <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Password</label>
+      <input type="password" name="password" required class="w-full px-3 py-2.5 text-sm border border-border rounded-lg bg-white focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all" />
+    </div>
+    <button type="submit" class="w-full px-6 py-2.5 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors">Sign in</button>
+  </form>
+  <p class="text-sm text-ink-muted mt-3 text-center"><a href="/forgot-password" class="text-terra font-medium hover:underline">Forgot password?</a></p>
+  <div class="mt-5 rounded-xl border border-border bg-cream-dark/40 p-4">
+    <p class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-2">Email confirmation</p>
+    <p class="text-sm text-ink-muted mb-3">Didn't receive your confirmation email?</p>
+    <form method="post" action="/auth/resend-confirmation" class="space-y-3">
+      <input type="email" name="email" required placeholder="you@example.com" class="w-full px-3 py-2.5 text-sm border border-border rounded-lg bg-white focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all" />
+      <button type="submit" class="w-full px-4 py-2 bg-ink text-white text-sm font-medium rounded-lg hover:bg-ink/90 transition-colors">Resend confirmation email</button>
+    </form>
+  </div>
+
+  @if (Model.ShowDevelopmentLogin)
+  {
+    <div class="mt-5 rounded-xl border border-border bg-cream-dark/40 p-4">
+      <p class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-2">Development Login</p>
+      <p class="text-sm text-ink-muted mb-3">Sign in instantly as <span class="font-medium text-ink">@AuthService.DevelopmentUserEmail</span>.</p>
+      <form method="post" action="/login/development">
+        <button type="submit" class="w-full px-4 py-2 bg-ink text-white text-sm font-medium rounded-lg hover:bg-ink/90 transition-colors">Sign in as development user</button>
+      </form>
+    </div>
+  }
+
+  @if (Model.ShowRegister)
+  {
+    <p class="text-sm text-ink-muted mt-6 text-center">No account yet? <a href="/register" class="text-terra font-medium hover:underline">Register here</a>.</p>
+  }
+  else
+  {
+    <p class="text-sm text-ink-muted mt-6 text-center">Registration is currently disabled.</p>
+  }
+</div>
