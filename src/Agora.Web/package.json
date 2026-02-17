@@ -1,0 +1,12 @@
+{
+  "name": "agora-web-assets",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "tailwind:build": "npx @tailwindcss/cli -i ./Styles/tailwind.css -o ./wwwroot/css/site.css",
+    "tailwind:watch": "npx @tailwindcss/cli -i ./Styles/tailwind.css -o ./wwwroot/css/site.css --watch"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.1.13"
+  }
+}

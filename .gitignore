@@ -8,6 +8,7 @@ src/Agora.Web/storage/
 src/Agora.Web/logs/
 src/Agora.Web/emails/
 .dev/
+**/node_modules/
 
 # Local temp/build artifacts
 build.csando.log

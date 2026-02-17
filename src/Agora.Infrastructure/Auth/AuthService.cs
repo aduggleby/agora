@@ -3,11 +3,14 @@ using Agora.Application.Utilities;
 using Agora.Domain.Entities;
 using Agora.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Cryptography;
 
 namespace Agora.Infrastructure.Auth;
 
 public sealed class AuthService(AgoraDbContext db)
 {
+    public const string DevelopmentUserEmail = "ad@dualconsult.com";
+
     public async Task<(bool Success, string Error, UserAccount? User)> RegisterAsync(string email, string password, CancellationToken cancellationToken)
     {
         email = NormalizeEmail(email);
@@ -64,6 +67,55 @@ public sealed class AuthService(AgoraDbContext db)
         }
 
         return (true, string.Empty, user);
+    }
+
+    public Task<UserAccount?> FindByEmailAsync(string email, CancellationToken cancellationToken)
+    {
+        email = NormalizeEmail(email);
+        return db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
+    }
+
+    public async Task<(UserAccount User, bool Created, string? GeneratedPassword)> EnsureDevelopmentUserAsync(CancellationToken cancellationToken)
+    {
+        var email = NormalizeEmail(DevelopmentUserEmail);
+        var existing = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
+        if (existing is not null)
+        {
+            var changed = false;
+            if (!existing.IsEnabled)
+            {
+                existing.IsEnabled = true;
+                changed = true;
+            }
+
+            if (existing.Role != "admin")
+            {
+                existing.Role = "admin";
+                changed = true;
+            }
+
+            if (changed)
+            {
+                await db.SaveChangesAsync(cancellationToken);
+            }
+
+            return (existing, false, null);
+        }
+
+        var generatedPassword = GenerateDevelopmentPassword();
+        var user = new UserAccount
+        {
+            Id = Guid.NewGuid(),
+            Email = email,
+            PasswordHash = PasswordHasher.Hash(generatedPassword),
+            Role = "admin",
+            IsEnabled = true,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+
+        db.Users.Add(user);
+        await db.SaveChangesAsync(cancellationToken);
+        return (user, true, generatedPassword);
     }
 
     public Task<List<UserAccount>> GetUsersAsync(CancellationToken cancellationToken)
@@ -186,5 +238,13 @@ public sealed class AuthService(AgoraDbContext db)
     private static string NormalizeEmail(string value)
     {
         return (value ?? string.Empty).Trim().ToLowerInvariant();
+    }
+
+    private static string GenerateDevelopmentPassword()
+    {
+        Span<byte> bytes = stackalloc byte[18];
+        RandomNumberGenerator.Fill(bytes);
+        var password = Convert.ToBase64String(bytes);
+        return password.Replace('+', '-').Replace('/', '_');
     }
 }

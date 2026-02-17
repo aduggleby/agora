@@ -6,14 +6,22 @@ if ! command -v tmux >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm is required for Tailwind CSS watch mode. Please install Node.js and retry."
+  exit 1
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEV_DIR="$ROOT_DIR/.dev"
 SESSION_NAME="agora-dev"
 APP_DIR="$ROOT_DIR/src/Agora.Web"
 APP_LOG_DIR="$APP_DIR/logs"
 APP_EMAIL_DIR="$APP_DIR/emails"
+TAILWIND_INPUT="$APP_DIR/Styles/tailwind.css"
+TAILWIND_OUTPUT="$APP_DIR/wwwroot/css/site.css"
+TAILWIND_LOG_FILE="$DEV_DIR/tailwind.log"
 
-mkdir -p "$DEV_DIR" "$ROOT_DIR/storage" "$APP_LOG_DIR" "$APP_EMAIL_DIR"
+mkdir -p "$DEV_DIR" "$ROOT_DIR/storage" "$APP_LOG_DIR" "$APP_EMAIL_DIR" "$(dirname "$TAILWIND_OUTPUT")"
 
 SQL_CONTAINER_NAME="agora-dev-sql"
 SQL_IMAGE="mcr.microsoft.com/mssql/server:2022-latest"
@@ -36,7 +44,25 @@ APP_PORT="$APP_PORT"
 APP_LOG_FILE="$APP_LOG_FILE"
 APP_EMAIL_DIR="$APP_EMAIL_DIR"
 SERILOG_PATH="$SERILOG_PATH"
+TAILWIND_INPUT="$TAILWIND_INPUT"
+TAILWIND_OUTPUT="$TAILWIND_OUTPUT"
+TAILWIND_LOG_FILE="$TAILWIND_LOG_FILE"
 ENV_EOF
+
+if [[ ! -f "$APP_DIR/package.json" ]]; then
+  echo "Missing $APP_DIR/package.json. Add Tailwind tooling config and retry."
+  exit 1
+fi
+
+if [[ ! -f "$TAILWIND_INPUT" ]]; then
+  echo "Missing Tailwind input CSS: $TAILWIND_INPUT"
+  exit 1
+fi
+
+if [[ ! -d "$APP_DIR/node_modules" ]]; then
+  echo "Installing frontend dependencies in $APP_DIR..."
+  npm install --prefix "$APP_DIR"
+fi
 
 SQL_SCRIPT="$DEV_DIR/tmux-sql.sh"
 cat > "$SQL_SCRIPT" <<'SQL_EOF'
@@ -108,16 +134,30 @@ ConnectionStrings__Default="$CONNECTION_STRING" \
 Email__Provider=filesystem \
 Email__FileSystem__OutputDirectory="$APP_EMAIL_DIR" \
 Serilog__WriteTo__0__Args__path="$SERILOG_PATH" \
-dotnet run --project src/Agora.Web/Agora.Web.csproj --no-launch-profile 2>&1 | tee -a "$APP_LOG_FILE"
+dotnet watch --project src/Agora.Web/Agora.Web.csproj run --no-launch-profile 2>&1 | tee -a "$APP_LOG_FILE"
 APP_EOF
 chmod +x "$APP_SCRIPT"
+
+TAILWIND_SCRIPT="$DEV_DIR/tmux-tailwind.sh"
+cat > "$TAILWIND_SCRIPT" <<'TAILWIND_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dev.env"
+
+echo "[tailwind] Building and watching ${TAILWIND_INPUT}"
+cd "$ROOT_DIR/src/Agora.Web"
+npx @tailwindcss/cli -i "$TAILWIND_INPUT" -o "$TAILWIND_OUTPUT" --watch 2>&1 | tee -a "$TAILWIND_LOG_FILE"
+TAILWIND_EOF
+chmod +x "$TAILWIND_SCRIPT"
 
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   echo "tmux session '${SESSION_NAME}' is already running."
 else
   tmux new-session -d -s "$SESSION_NAME" -n servers "bash '$SQL_SCRIPT'"
   tmux split-window -h -t "$SESSION_NAME:servers" "bash '$APP_SCRIPT'"
-  tmux select-layout -t "$SESSION_NAME:servers" even-horizontal
+  tmux split-window -v -t "$SESSION_NAME:servers.1" "bash '$TAILWIND_SCRIPT'"
+  tmux select-layout -t "$SESSION_NAME:servers" tiled
 fi
 
 echo "Waiting for Agora app to be ready..."
@@ -139,10 +179,11 @@ echo "- App URL:            http://127.0.0.1:${APP_PORT}"
 echo "- SQL Server:         localhost:${SQL_PORT} (container: ${SQL_CONTAINER_NAME})"
 echo "- SQL Database:       ${SQL_DB_NAME}"
 echo "- App log file:       ${APP_LOG_FILE}"
+echo "- Tailwind log file:  ${TAILWIND_LOG_FILE}"
 echo "- Serilog log folder: ${APP_LOG_DIR}"
 echo "- Email dump folder:  ${APP_EMAIL_DIR}"
 echo ""
-echo "Attaching to tmux session '${SESSION_NAME}' (split panes: SQL | app)..."
+echo "Attaching to tmux session '${SESSION_NAME}' (split panes: SQL | app watch | tailwind watch)..."
 
 if [[ -n "${TMUX:-}" ]]; then
   tmux switch-client -t "${SESSION_NAME}:servers"

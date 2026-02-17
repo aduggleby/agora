@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+@theme {
+  /* Warm Craft palette */
+  --color-cream: #FAF7F2;
+  --color-cream-dark: #F0EBE3;
+  --color-ink: #1A1614;
+  --color-ink-light: #5C534A;
+  --color-ink-muted: #9B9189;
+  --color-terra: #C4663A;
+  --color-terra-light: #E8A17D;
+  --color-terra-wash: #FFF3ED;
+  --color-sage: #5B7A5E;
+  --color-sage-wash: #EDF5EE;
+  --color-border: #E5DFD7;
+  --color-danger: #B91C1C;
+  --color-danger-wash: #FEF2F2;
+
+  /* Typography */
+  --font-display: 'Instrument Serif', serif;
+  --font-body: 'DM Sans', sans-serif;
+}
+
+@layer base {
+  body {
+    background-color: var(--color-cream);
+    color: var(--color-ink);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+  }
+}
