@@ -17,3 +17,9 @@ public sealed class EmailSenderOptions
     public string ApiUrl { get; set; } = "https://api.resend.com";
     public string FromAddress { get; set; } = "no-reply@example.com";
 }
+
+public sealed class FileSystemEmailOptions
+{
+    public const string Section = "Email:FileSystem";
+    public string OutputDirectory { get; set; } = "emails";
+}

@@ -1,11 +1,10 @@
 using System.IO.Compression;
-using Agora.Application.Abstractions;
 using Agora.Application.Models;
 using Agora.Application.Utilities;
 using Agora.Domain.Entities;
 using Agora.Infrastructure.Persistence;
+using Hangfire;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Agora.Infrastructure.Services;
@@ -13,8 +12,7 @@ namespace Agora.Infrastructure.Services;
 public sealed class ShareManager(
     AgoraDbContext db,
     IOptions<AgoraOptions> options,
-    IEmailSender emailSender,
-    ILogger<ShareManager> logger)
+    IBackgroundJobClient backgroundJobs)
 {
     private readonly AgoraOptions _options = options.Value;
 
@@ -145,28 +143,8 @@ public sealed class ShareManager(
 
         if (shouldSend)
         {
-            try
-            {
-                var notification = new DownloadNotification(
-                    To: share.UploaderEmail,
-                    ShareId: share.Id.ToString(),
-                    ShareUrl: $"/s/{token}",
-                    ZipDisplayName: share.ZipDisplayName,
-                    DownloadedAtUtc: now,
-                    DownloaderIp: ipAddress,
-                    DownloaderUserAgent: userAgent,
-                    BrowserMetadataJson: metadata);
-
-                await emailSender.SendDownloadNotificationAsync(notification, cancellationToken);
-                downloadEvent.NotificationSent = true;
-                await db.SaveChangesAsync(cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Download notification failed for share {ShareId}", share.Id);
-                downloadEvent.NotificationError = ex.Message;
-                await db.SaveChangesAsync(cancellationToken);
-            }
+            backgroundJobs.Enqueue<EmailNotificationJob>(x =>
+                x.ProcessDownloadEventAsync(downloadEvent.Id, token, CancellationToken.None));
         }
     }
 

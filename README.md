@@ -37,6 +37,37 @@ dotnet run --project src/Agora.Web/Agora.Web.csproj --urls http://127.0.0.1:1808
 
 Then open `http://127.0.0.1:18080`.
 
+## Development Scripts
+
+Use the provided scripts to run local development with a dedicated SQL Server container and tmux orchestration:
+
+```bash
+./run-dev.sh
+```
+
+This starts:
+- tmux session `agora-dev`
+- SQL Server container `agora-dev-sql` on `localhost:18033`
+- Agora app on `http://127.0.0.1:18080`
+
+During development, emails are written to the filesystem instead of being sent:
+- `src/Agora.Web/emails`
+
+Logs are written to:
+- `src/Agora.Web/logs`
+
+Stop everything:
+
+```bash
+./stop-dev.sh
+```
+
+Stop and delete dev SQL container:
+
+```bash
+./stop-dev.sh --delete
+```
+
 ## ANDO Build
 
 This repository includes `build.csando`.

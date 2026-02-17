@@ -9,6 +9,8 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
     public DbSet<ShareFile> ShareFiles => Set<ShareFile>();
     public DbSet<DownloadEvent> DownloadEvents => Set<DownloadEvent>();
     public DbSet<AccountTemplate> AccountTemplates => Set<AccountTemplate>();
+    public DbSet<UserAccount> Users => Set<UserAccount>();
+    public DbSet<SystemSetting> SystemSettings => Set<SystemSetting>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -40,6 +42,22 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
             builder.HasKey(x => x.Id);
             builder.HasIndex(x => x.UploaderEmail).IsUnique();
             builder.Property(x => x.UploaderEmail).HasMaxLength(320);
+        });
+
+        modelBuilder.Entity<UserAccount>(builder =>
+        {
+            builder.HasKey(x => x.Id);
+            builder.HasIndex(x => x.Email).IsUnique();
+            builder.Property(x => x.Email).HasMaxLength(320);
+            builder.Property(x => x.PasswordHash).HasMaxLength(1000);
+            builder.Property(x => x.Role).HasMaxLength(20);
+        });
+
+        modelBuilder.Entity<SystemSetting>(builder =>
+        {
+            builder.HasKey(x => x.Key);
+            builder.Property(x => x.Key).HasMaxLength(120);
+            builder.Property(x => x.Value).HasMaxLength(4000);
         });
     }
 }
