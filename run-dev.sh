@@ -15,8 +15,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEV_DIR="$ROOT_DIR/.dev"
 SESSION_NAME="agora-dev"
 APP_DIR="$ROOT_DIR/src/Agora.Web"
-APP_LOG_DIR="$APP_DIR/logs"
-APP_EMAIL_DIR="$APP_DIR/emails"
+APP_LOG_DIR="$ROOT_DIR/logs"
+APP_EMAIL_DIR="$ROOT_DIR/emails"
 TAILWIND_INPUT="$APP_DIR/Styles/tailwind.css"
 TAILWIND_OUTPUT="$APP_DIR/wwwroot/css/site.css"
 TAILWIND_LOG_FILE="$DEV_DIR/tailwind.log"
@@ -134,7 +134,20 @@ ConnectionStrings__Default="$CONNECTION_STRING" \
 Email__Provider=filesystem \
 Email__FileSystem__OutputDirectory="$APP_EMAIL_DIR" \
 Serilog__WriteTo__0__Args__path="$SERILOG_PATH" \
-dotnet watch --project src/Agora.Web/Agora.Web.csproj run --no-launch-profile 2>&1 | tee -a "$APP_LOG_FILE"
+dotnet watch --project src/Agora.Web/Agora.Web.csproj \
+  --exclude "src/Agora.Web/storage/**" \
+  --exclude "src/Agora.Web/logs/**" \
+  --exclude "src/Agora.Web/emails/**" \
+  --exclude "storage/**" \
+  --exclude "logs/**" \
+  --exclude "emails/**" \
+  --exclude "$ROOT_DIR/logs/**" \
+  --exclude "$ROOT_DIR/emails/**" \
+  --exclude "$ROOT_DIR/storage/**" \
+  --exclude "$ROOT_DIR/src/Agora.Web/storage/**" \
+  --exclude "$ROOT_DIR/src/Agora.Web/logs/**" \
+  --exclude "$ROOT_DIR/src/Agora.Web/emails/**" \
+  run --no-launch-profile 2>&1 | tee -a "$APP_LOG_FILE"
 APP_EOF
 chmod +x "$APP_SCRIPT"
 
@@ -154,6 +167,14 @@ chmod +x "$TAILWIND_SCRIPT"
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   echo "tmux session '${SESSION_NAME}' is already running."
 else
+  if ss -ltn "( sport = :${APP_PORT} )" | rg -q ":${APP_PORT}"; then
+    echo "Port ${APP_PORT} is already in use."
+    echo "Stop the conflicting process, or run ./stop-dev.sh if an old dev session is still active."
+    echo "Process info:"
+    ss -ltnp | rg ":${APP_PORT}" || true
+    exit 1
+  fi
+
   tmux new-session -d -s "$SESSION_NAME" -n servers "bash '$SQL_SCRIPT'"
   tmux split-window -h -t "$SESSION_NAME:servers" "bash '$APP_SCRIPT'"
   tmux split-window -v -t "$SESSION_NAME:servers.1" "bash '$TAILWIND_SCRIPT'"
