@@ -51,6 +51,7 @@
     .preview-subtitle { font-size:0.95rem; color:var(--ink-light); margin-top:0.22rem; }
     .preview-description { font-size:0.82rem; color:var(--ink-light); margin-top:0.52rem; }
     .preview-content { flex:1; min-height:0; overflow:scroll; }
+    .preview-content.mixed { overflow:hidden; display:flex; flex-direction:column; }
     .mosaic-grid { padding:1rem; display:grid; grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:0.75rem; }
     .mosaic-item { border:1px solid var(--border); border-radius:0.75rem; overflow:hidden; background:#f8f4ef; position:relative; }
     .mosaic-open { display:block; text-decoration:none; }
@@ -65,7 +66,7 @@
     .preview-frame img { width:100%; height:100%; object-fit:contain; display:block; }
     .single-actions { display:flex; justify-content:flex-end; margin-top:0.65rem; }
     .file-download { display:inline-block; text-decoration:none; font-size:0.76rem; font-weight:600; color:#fff; background:var(--terra); border-radius:0.5rem; padding:0.45rem 0.62rem; }
-    .file-browser { display:flex; height:100%; overflow:hidden; }
+    .file-browser { display:flex; flex:1; min-height:0; overflow:hidden; }
     .file-list { width:220px; flex:0 0 220px; border-right:1px solid var(--border); overflow-y:auto; min-height:0; padding:0.7rem; background:#fcfaf7; }
     .file-list-item { width:100%; text-align:left; background:white; border:1px solid var(--border); border-radius:0.62rem; padding:0.62rem; margin-bottom:0.5rem; cursor:pointer; transition:border-color .14s ease, box-shadow .14s ease, background-color .14s ease; }
     .file-list-item:hover { border-color:var(--terra); background:#fffaf6; box-shadow:0 2px 10px rgba(26,22,20,0.08); }
@@ -74,10 +75,10 @@
     .file-list-row { display:flex; align-items:center; gap:0.4rem; min-width:0; }
     .file-list-name { display:block; color:var(--ink); font-size:0.79rem; line-height:1.25; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:1; }
     .file-list-meta { display:flex; justify-content:space-between; gap:0.5rem; color:var(--ink-muted); font-size:0.7rem; margin-top:0.25rem; }
-    .viewer { flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden; height:100%; }
+    .viewer { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
     .viewer-body { flex:1; min-height:0; overflow:hidden; display:flex; align-items:center; justify-content:center; }
-    .viewer-body .preview-frame { width:auto; aspect-ratio:unset; max-width:100%; max-height:100%; }
-    .viewer-body .preview-frame img { max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; }
+    .viewer-body .preview-frame { width:auto; height:100%; aspect-ratio:unset; overflow:hidden; }
+    .viewer-body .preview-frame img { width:auto; height:100%; object-fit:contain; }
     .download-bar { border-top:1px solid var(--border); padding:0.95rem 1.05rem; background:#fff; }
     .download-password-label { display:block;font-size:0.75rem;font-weight:600;color:#5C534A;text-transform:uppercase;letter-spacing:.08em;margin-bottom:0.4rem; }
     .download-password-input { width:100%;padding:0.7rem 0.8rem;border:1px solid #E5DFD7;border-radius:0.5rem;margin-bottom:0.6rem;font-size:0.875rem; }
