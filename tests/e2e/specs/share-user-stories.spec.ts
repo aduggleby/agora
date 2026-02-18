@@ -61,12 +61,71 @@ test.describe('Share user stories', () => {
     await page.goto(shareUrl);
     await expect(page.getByRole('button', { name: 'Download' }).or(page.getByRole('link', { name: 'Download' }))).toBeVisible();
 
-    const download = await page.request.get(`${shareUrl}/download`);
+    const csrfToken = await page.locator('input[name="__RequestVerificationToken"]').inputValue();
+    const download = await page.request.post(`${shareUrl}/download`, {
+      form: {
+        __RequestVerificationToken: csrfToken,
+      },
+    });
     expect(download.ok()).toBeTruthy();
     const zipBuffer = Buffer.from(await download.body());
     const zip = new AdmZip(zipBuffer);
     const names = zip.getEntries().map((entry) => entry.entryName).sort();
     expect(names).toEqual(['alpha.txt', 'beta.txt', 'gamma.txt']);
+  });
+
+  test('uploads a PDF and creates a downloadable shared archive', async ({ page, request }, testInfo) => {
+    const user = await createE2EUser(request, 'pdf-share');
+    await login(page, user.email, user.password);
+
+    const minimalPdf = `%PDF-1.1
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF
+`;
+
+    const inputFiles = await createTempFiles(testInfo.outputPath('files-pdf'), [
+      { name: 'proof.pdf', content: minimalPdf },
+    ]);
+
+    await page.goto('/shares/new');
+    await page.setInputFiles('[data-file-input]', inputFiles);
+
+    const uploadList = page.locator('[data-upload-list] li');
+    await expect(uploadList).toHaveCount(1);
+    await expect(uploadList.filter({ hasText: 'proof.pdf' })).toBeVisible();
+
+    await page.locator('[data-submit]').click();
+    await page.waitForURL(/\/shares\/created\?token=/);
+
+    const messageText = await page.locator('main').innerText();
+    const shareUrl = extractShareUrl(messageText);
+
+    await page.goto(shareUrl);
+    await expect(page.getByRole('button', { name: 'Download' }).or(page.getByRole('link', { name: 'Download' }))).toBeVisible();
+
+    const csrfToken = await page.locator('input[name="__RequestVerificationToken"]').inputValue();
+    const download = await page.request.post(`${shareUrl}/download`, {
+      form: {
+        __RequestVerificationToken: csrfToken,
+      },
+    });
+    expect(download.ok()).toBeTruthy();
+    expect(download.headers()['content-type'] || '').toContain('application/zip');
+
+    const zipBuffer = Buffer.from(await download.body());
+    const zip = new AdmZip(zipBuffer);
+    const names = zip.getEntries().map((entry) => entry.entryName);
+    expect(names).toContain('proof.pdf');
   });
 
   test('allows download before 5-second expiry and shows expired download page after', async ({ page, request }, testInfo) => {
