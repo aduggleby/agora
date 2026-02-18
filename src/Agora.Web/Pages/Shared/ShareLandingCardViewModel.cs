@@ -8,4 +8,6 @@ public sealed record ShareLandingCardViewModel(
     int FileCount,
     string SizeDisplay,
     bool IsExpired,
-    string DownloadUrl);
+    string DownloadUrl,
+    bool RequiresPassword = false,
+    string? DownloadError = null);

@@ -26,6 +26,7 @@ using Microsoft.Extensions.Options;
 using Serilog;
 using System.Data;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -175,6 +176,8 @@ builder.Services.AddScoped<ShareManager>();
 builder.Services.AddScoped<AuthEmailJob>();
 builder.Services.AddScoped<EmailNotificationJob>();
 builder.Services.AddSingleton<IEmailTemplateRenderer, RazorEmailTemplateRenderer>();
+builder.Services.AddSingleton(new Agora.Web.Services.OgImageGenerator(
+    System.IO.Path.Combine(builder.Environment.ContentRootPath, "Fonts")));
 
 var emailProvider = (builder.Configuration["Email:Provider"] ?? "resend").Trim().ToLowerInvariant();
 if (emailProvider == "filesystem")
@@ -677,7 +680,7 @@ app.MapGet("/_legacy", async (HttpContext httpContext, ShareManager manager, Can
 """
     : $"""
   <input type="hidden" value="{Html(quickDraftShareId)}" data-quick-share-draft-id />
-  <input type="file" multiple class="sr-only" data-quick-share-input />
+  <input type="file" multiple accept="*/*" class="sr-only" data-quick-share-input />
   <div class="mt-6 rounded-lg border border-dashed border-border bg-cream p-4 cursor-pointer" data-quick-share-dropzone tabindex="0" role="button">
     <div class="flex items-center justify-between gap-3">
       <p class="text-sm text-ink-light">Drop files here or click to select files</p>
@@ -1603,6 +1606,12 @@ app.MapPost("/api/shares", async (HttpContext context, ShareManager manager, Aut
         return Results.BadRequest("notifyMode must be account_default|none|once|every_time");
     }
 
+    var downloadPasswordRaw = form["downloadPassword"].ToString();
+    if (!TryNormalizeOptionalSharePassword(downloadPasswordRaw, out var downloadPassword))
+    {
+        return Results.BadRequest("downloadPassword must be at least 8 characters when provided");
+    }
+
     var templateModeRaw = form["templateMode"].ToString();
     var templateMode = string.Equals(templateModeRaw, "per_upload", StringComparison.OrdinalIgnoreCase)
         ? TemplateMode.PerUpload
@@ -1682,6 +1691,7 @@ app.MapPost("/api/shares", async (HttpContext context, ShareManager manager, Aut
             UploaderEmail = uploaderEmail,
             ShareToken = shareToken,
             Message = form["message"].ToString(),
+            DownloadPassword = downloadPassword,
             ZipFileName = form["zipFileName"].ToString(),
             ExpiryMode = expiryMode,
             ExpiresAtUtc = expiresAtUtc,
@@ -1750,6 +1760,7 @@ app.MapGet("/api/shares/{token}", async (ShareManager manager, string token, Can
         share.ZipDisplayName,
         share.ZipSizeBytes,
         FileCount = share.Files.Count,
+        RequiresPassword = !string.IsNullOrWhiteSpace(share.DownloadPasswordHash),
         UploaderMessage = share.UploaderMessage,
         Page = new
         {
@@ -1783,7 +1794,9 @@ app.MapGet("/_legacy/s/{token}", async (ShareManager manager, string token, Canc
         : string.Empty;
     var downloadButtonHtml = isExpired
         ? """<button type="button" class="btn" style="opacity:.6;cursor:not-allowed;" disabled title="This link has expired.">Download</button>"""
-        : $"""<a href="/s/{token}/download" class="btn">Download</a>""";
+        : string.IsNullOrWhiteSpace(share.DownloadPasswordHash)
+            ? $"""<a href="/s/{token}/download" class="btn">Download</a>"""
+            : $"""<p style="color:#5C534A;font-size:0.8125rem;line-height:1.4;">This share is password-protected. Open <a href="/s/{token}" style="color:#C4663A;text-decoration:underline;">the current download page</a> to enter the password.</p>""";
 
     var backgroundImageUrl = ResolveLandingBackgroundUrl(share.BackgroundImageUrl, token);
     var backgroundColor = NormalizeHexColor(share.PageBackgroundColorHex);
@@ -1945,7 +1958,55 @@ app.MapGet("/s/{token}/background", async (ShareManager manager, IOptions<AgoraO
     return Results.File(absolutePath, GuessImageContentType(Path.GetExtension(absolutePath)));
 });
 
-app.MapGet("/s/{token}/download", async (ShareManager manager, IOptions<AgoraOptions> options, string token, HttpRequest request, CancellationToken ct) =>
+app.MapGet("/s/{token}/og-image", async (
+    ShareManager manager,
+    IOptions<AgoraOptions> options,
+    Agora.Web.Services.OgImageGenerator ogGenerator,
+    string token,
+    CancellationToken ct) =>
+{
+    var share = await manager.FindByTokenAsync(token, ct);
+    if (share is null) return Results.NotFound();
+
+    // Resolve background image path for the generator
+    string? bgPath = null;
+    var marker = share.BackgroundImageUrl ?? string.Empty;
+    if (marker.StartsWith("internal:", StringComparison.OrdinalIgnoreCase))
+    {
+        var relativePath = marker["internal:".Length..].TrimStart('/', '\\');
+        var storageRoot = Path.GetFullPath(options.Value.StorageRoot);
+        var absolutePath = Path.GetFullPath(Path.Combine(storageRoot, relativePath));
+        if (absolutePath.StartsWith(storageRoot, StringComparison.Ordinal) && File.Exists(absolutePath))
+        {
+            bgPath = absolutePath;
+        }
+    }
+
+    var isExpired = ShareManager.IsExpired(share, DateTime.UtcNow);
+    var sizeDisplay = share.ZipSizeBytes >= 1024 * 1024
+        ? $"{share.ZipSizeBytes / (1024.0 * 1024.0):F1} MB"
+        : $"{share.ZipSizeBytes / 1024.0:F0} KB";
+
+    var imageBytes = await ogGenerator.GenerateShareOgImageAsync(
+        backgroundImagePath: bgPath,
+        backgroundColorHex: share.PageBackgroundColorHex,
+        title: share.PageH1,
+        subtitle: share.PageTitle,
+        fileName: share.ZipDisplayName,
+        fileCount: share.Files.Count,
+        sizeDisplay: sizeDisplay,
+        isExpired: isExpired);
+
+    return Results.File(imageBytes, "image/png");
+});
+
+app.MapGet("/s/{token}/download", (string token) =>
+{
+    // Avoid recording speculative GET/HEAD requests as real downloads.
+    return Results.Redirect($"/s/{token}");
+}).RequireRateLimiting("DownloadEndpoints");
+
+app.MapPost("/s/{token}/download", async (ShareManager manager, IOptions<AgoraOptions> options, string token, HttpRequest request, CancellationToken ct) =>
 {
     var share = await manager.FindByTokenAsync(token, ct);
     if (share is null)
@@ -1962,6 +2023,73 @@ app.MapGet("/s/{token}/download", async (ShareManager manager, IOptions<AgoraOpt
     if (!File.Exists(absolutePath))
     {
         return Results.StatusCode(StatusCodes.Status410Gone);
+    }
+
+    var requiresPassword = !string.IsNullOrWhiteSpace(share.DownloadPasswordHash);
+    if (requiresPassword)
+    {
+        var form = request.HasFormContentType
+            ? await request.ReadFormAsync(ct)
+            : null;
+        var downloadPassword = form?["downloadPassword"].ToString() ?? string.Empty;
+
+        if (string.IsNullOrWhiteSpace(downloadPassword))
+        {
+            return Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=password_required");
+        }
+
+        var passwordHash = share.DownloadPasswordHash ?? string.Empty;
+        if (!PasswordHasher.Verify(downloadPassword, passwordHash))
+        {
+            return Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=invalid_password");
+        }
+
+        var tempRoot = Path.Combine(options.Value.StorageRoot, "downloads", "tmp");
+        Directory.CreateDirectory(tempRoot);
+        var decryptedPath = Path.Combine(tempRoot, $"{Guid.NewGuid():N}.zip");
+
+        try
+        {
+            await ZipEncryption.DecryptFileAsync(absolutePath, decryptedPath, downloadPassword, ct);
+        }
+        catch (CryptographicException)
+        {
+            if (File.Exists(decryptedPath))
+            {
+                File.Delete(decryptedPath);
+            }
+
+            return Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=invalid_password");
+        }
+
+        var isAuthenticated = request.HttpContext.User.Identity?.IsAuthenticated == true;
+        if (!isAuthenticated)
+        {
+            var ip = request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            var userAgent = request.Headers.UserAgent.ToString();
+            await manager.RecordDownloadAsync(share, token, ip, userAgent, ct);
+        }
+
+        var decryptedStream = File.OpenRead(decryptedPath);
+        request.HttpContext.Response.OnCompleted(() =>
+        {
+            try
+            {
+                decryptedStream.Dispose();
+                if (File.Exists(decryptedPath))
+                {
+                    File.Delete(decryptedPath);
+                }
+            }
+            catch
+            {
+                // Best effort cleanup for temporary decrypted files.
+            }
+
+            return Task.CompletedTask;
+        });
+
+        return Results.File(decryptedStream, "application/zip", share.ZipDisplayName);
     }
 
     var isAuthenticatedRequester = request.HttpContext.User.Identity?.IsAuthenticated == true;
@@ -2016,6 +2144,17 @@ static bool IsValidShareToken(string token)
     }
 
     return true;
+}
+
+static bool TryNormalizeOptionalSharePassword(string? raw, out string? password)
+{
+    password = string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
+    if (password is null)
+    {
+        return true;
+    }
+
+    return password.Length >= 8 && password.Length <= 256;
 }
 
 static async Task EnsureSchemaUpgradesAsync(AgoraDbContext db, CancellationToken cancellationToken)
@@ -2197,6 +2336,14 @@ static async Task EnsureSchemaUpgradesAsync(AgoraDbContext db, CancellationToken
                 """ALTER TABLE "Shares" ADD COLUMN "ShareToken" TEXT NOT NULL DEFAULT ''""",
                 cancellationToken);
         }
+
+        var hasShareDownloadPasswordHash = await SqliteColumnExistsAsync(db, "Shares", "DownloadPasswordHash", cancellationToken);
+        if (!hasShareDownloadPasswordHash)
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """ALTER TABLE "Shares" ADD COLUMN "DownloadPasswordHash" TEXT NULL""",
+                cancellationToken);
+        }
     }
     else if (db.Database.IsSqlServer())
     {
@@ -2376,6 +2523,14 @@ static async Task EnsureSchemaUpgradesAsync(AgoraDbContext db, CancellationToken
             END
             """,
             cancellationToken);
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            IF COL_LENGTH('Shares', 'DownloadPasswordHash') IS NULL
+            BEGIN
+              ALTER TABLE [Shares] ADD [DownloadPasswordHash] nvarchar(1000) NULL
+            END
+            """,
+            cancellationToken);
     }
 }
 
@@ -2452,7 +2607,7 @@ static string RenderCreateSharePageBody(
     <form action="/api/shares" method="post" enctype="multipart/form-data" class="space-y-5" data-share-form>
       <div>
         <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Files</label>
-        <input type="file" name="files" multiple class="sr-only" data-file-input />
+        <input type="file" name="files" multiple accept="*/*" class="sr-only" data-file-input />
         <div class="rounded-lg border border-dashed border-border bg-cream p-5" data-dropzone>
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -2482,6 +2637,11 @@ static string RenderCreateSharePageBody(
         <div>
           <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Zip filename</label>
           <input name="zipFileName" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all" placeholder="Auto-generated if blank" />
+        </div>
+        <div>
+          <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Download password (optional)</label>
+          <input type="password" name="downloadPassword" minlength="8" maxlength="256" autocomplete="new-password" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all" placeholder="At least 8 characters" />
+          <p class="text-[11px] text-ink-muted mt-1">When set, the ZIP is encrypted at rest and recipients must enter this password to download.</p>
         </div>
         <div>
           <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Download notifications</label>

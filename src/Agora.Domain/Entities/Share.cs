@@ -10,6 +10,7 @@ public sealed class Share
     public string ZipDisplayName { get; set; } = string.Empty;
     public string ZipDiskPath { get; set; } = string.Empty;
     public long ZipSizeBytes { get; set; }
+    public string? DownloadPasswordHash { get; set; }
     public string? UploaderMessage { get; set; }
     public string NotifyMode { get; set; } = "none";
     public DateTime? ExpiresAtUtc { get; set; }

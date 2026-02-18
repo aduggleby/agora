@@ -42,7 +42,8 @@ public class CreatedModel(IOptions<AgoraOptions> options, ShareManager manager) 
                 FileCount: share.Files.Count,
                 SizeDisplay: sizeDisplay,
                 IsExpired: isExpired,
-                DownloadUrl: $"/s/{Uri.EscapeDataString(token)}/download");
+                DownloadUrl: $"/s/{Uri.EscapeDataString(token)}/download",
+                RequiresPassword: !string.IsNullOrWhiteSpace(share.DownloadPasswordHash));
         }
 
         ViewData["Title"] = "Share created";

@@ -11,7 +11,7 @@
     <form action="/api/shares" method="post" enctype="multipart/form-data" class="space-y-5" data-share-form>
       <div>
         <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Files</label>
-        <input type="file" name="files" multiple class="sr-only" data-file-input />
+        <input type="file" name="files" multiple accept="*/*" class="sr-only" data-file-input />
         <div class="rounded-lg border border-dashed border-border bg-cream p-5" data-dropzone>
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -73,6 +73,11 @@
             <div>
               <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Zip filename</label>
               <input name="zipFileName" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all" placeholder="Auto-generated if blank" />
+            </div>
+            <div>
+              <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Download password (optional)</label>
+              <input type="password" name="downloadPassword" minlength="8" maxlength="256" autocomplete="new-password" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all" placeholder="At least 8 characters" />
+              <p class="text-[11px] text-ink-muted mt-1">When set, the ZIP is encrypted at rest and recipients must enter this password to download.</p>
             </div>
             <div>
               <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Download notifications</label>
@@ -163,6 +168,7 @@
   const optionsToggleIcon = form.querySelector('[data-options-icon]');
   const optionsPanel = form.querySelector('[data-options-panel]');
   const shareTokenInput = form.querySelector('[data-share-token]');
+  const downloadPasswordInput = form.querySelector('[name="downloadPassword"]');
   const suggestedShareTokenButton = form.querySelector('[data-suggested-share-token]');
   const draftShareIdInput = form.querySelector('[data-draft-share-id]');
   const uploadedIds = new Set();
@@ -280,6 +286,10 @@
       const token = (shareTokenInput.value || '').trim();
       if (token.length < 3 || token.length > 64 || !/^[A-Za-z0-9_-]+$/.test(token)) reason = 'Share link must be 3-64 letters, numbers, hyphens, or underscores.';
     }
+    if (!reason && downloadPasswordInput) {
+      const value = (downloadPasswordInput.value || '').trim();
+      if (value.length > 0 && value.length < 8) reason = 'Download password must be at least 8 characters.';
+    }
     if (!reason && effectiveExpiryMode === 'date') {
       if (!expiresAtInput.value) reason = 'Pick an expiry date and time.';
       else if (Number.isNaN(new Date(expiresAtInput.value).getTime()) || new Date(expiresAtInput.value).getTime() <= Date.now()) reason = 'Expiry date must be in the future.';
@@ -358,6 +368,7 @@
   expiryModeInput?.addEventListener('change', refreshState);
   expiresAtInput?.addEventListener('input', refreshState);
   shareTokenInput?.addEventListener('input', refreshState);
+  downloadPasswordInput?.addEventListener('input', refreshState);
   suggestedShareTokenButton?.addEventListener('click', () => {
     if (!shareTokenInput) return;
     shareTokenInput.value = suggestedShareTokenButton.getAttribute('data-suggested-share-token') || shareTokenInput.value;

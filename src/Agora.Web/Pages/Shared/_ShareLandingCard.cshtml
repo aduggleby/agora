@@ -19,7 +19,19 @@
     }
     else
     {
-      <a href="@Model.DownloadUrl" style="display:inline-block;width:100%;padding:0.75rem 1.5rem;background:#C4663A;color:white;border:none;border-radius:0.5rem;font-size:0.875rem;font-weight:500;text-align:center;text-decoration:none;">Download</a>
+      <form method="post" action="@Model.DownloadUrl" style="margin:0;">
+        @Html.AntiForgeryToken()
+        @if (Model.RequiresPassword)
+        {
+          <label for="download-password" style="display:block;font-size:0.75rem;font-weight:600;color:#5C534A;text-transform:uppercase;letter-spacing:.08em;margin-bottom:0.4rem;">Download password</label>
+          <input id="download-password" name="downloadPassword" type="password" required autocomplete="current-password" style="width:100%;padding:0.7rem 0.8rem;border:1px solid #E5DFD7;border-radius:0.5rem;margin-bottom:0.6rem;font-size:0.875rem;" />
+        }
+        @if (!string.IsNullOrWhiteSpace(Model.DownloadError))
+        {
+          <p style="color:#7a3f20;font-size:0.75rem;margin-bottom:0.6rem;padding:0.55rem;border-radius:0.5rem;background:#f6e5dc;border:1px solid #e8c8b5;">@Model.DownloadError</p>
+        }
+        <button type="submit" style="display:inline-block;width:100%;padding:0.75rem 1.5rem;background:#C4663A;color:white;border:none;border-radius:0.5rem;font-size:0.875rem;font-weight:500;text-align:center;text-decoration:none;cursor:pointer;">Download</button>
+      </form>
     }
   </div>
 </div>

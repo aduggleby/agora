@@ -23,6 +23,7 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
             builder.Property(x => x.NotifyMode).HasMaxLength(20);
             builder.Property(x => x.ZipDisplayName).HasMaxLength(255);
             builder.Property(x => x.ShareTokenPrefix).HasMaxLength(16);
+            builder.Property(x => x.DownloadPasswordHash).HasMaxLength(1000);
             builder.Property(x => x.PageBackgroundColorHex).HasMaxLength(16);
             builder.Property(x => x.PageContainerPosition).HasMaxLength(32);
         });

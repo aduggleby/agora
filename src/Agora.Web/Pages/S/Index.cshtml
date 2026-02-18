@@ -10,14 +10,32 @@
         FileCount: Model.Share?.Files.Count ?? 0,
         SizeDisplay: Model.SizeDisplay,
         IsExpired: Model.IsExpired,
-        DownloadUrl: $"/s/{Model.Token}/download");
+        DownloadUrl: $"/s/{Model.Token}/download",
+        RequiresPassword: Model.RequiresPassword,
+        DownloadError: Model.DownloadError);
 }
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>File Download</title>
+  <title>@(Model.Share?.PageH1 ?? "File Download") - Agora</title>
+  <meta name="description" content="@(Model.Share?.PageDescription ?? "Download shared files")" />
+
+  @* Open Graph *@
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="@(Model.Share?.PageH1 ?? "File Download")" />
+  <meta property="og:description" content="@(Model.Share?.PageDescription ?? "Download shared files")" />
+  <meta property="og:image" content="@Model.OgImageUrl" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:url" content="@Model.PageUrl" />
+
+  @* Twitter Card *@
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="@(Model.Share?.PageH1 ?? "File Download")" />
+  <meta name="twitter:description" content="@(Model.Share?.PageDescription ?? "Download shared files")" />
+  <meta name="twitter:image" content="@Model.OgImageUrl" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">

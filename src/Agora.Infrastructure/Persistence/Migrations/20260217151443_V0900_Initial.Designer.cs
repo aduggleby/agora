@@ -125,6 +125,10 @@ namespace Agora.Infrastructure.Persistence.Migrations
                     b.Property<DateTime?>("FirstDownloadedAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("DownloadPasswordHash")
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("NotifyMode")
                         .IsRequired()
                         .HasMaxLength(20)

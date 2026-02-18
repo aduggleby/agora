@@ -1,6 +1,6 @@
 # Agora
 
-Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, generate a ZIP archive on disk, and share a URL for recipients to access a branded download page and download the archive.
+Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, generate a ZIP archive on disk, and share a URL for recipients to access a branded download page and download the archive. Shares can optionally require a download password and keep the ZIP encrypted at rest.
 
 ## Screenshots
 
@@ -11,6 +11,7 @@ Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, gene
 ## Features
 
 - Multi-file upload with ZIP archive generation
+- Optional per-share download password with encrypted-at-rest ZIP storage
 - Share URL with download page before download
 - Share-created success screen with one-click link copy
 - Previous shares support reopening the Share Ready link screen
@@ -27,6 +28,7 @@ Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, gene
 - Signed-in downloads are excluded from download totals
 - Expiry options: date-based or indefinite
 - Download notifications (`none`, `once`, `every_time`)
+- Download notifications are sent only for explicit download submissions, not share-page visits
 - Download event metadata: IP, user-agent, timestamp
 - Resend-compatible email integration with configurable API base URL
 - Auth emails are queued and sent asynchronously via Hangfire
@@ -248,7 +250,7 @@ Rate limiting defaults (built in):
 
 - Auth endpoints (`POST /login`, `POST /register`, `POST /login/development`): `10 requests/minute` per source IP
 - Authenticated requests (global): `120 requests/minute` per authenticated account
-- Download endpoint (`GET /s/{token}/download`): `20 requests/minute` per `(token, source IP)` pair
+- Download endpoint (`POST /s/{token}/download`): `20 requests/minute` per `(token, source IP)` pair
 
 ### 5. Replace Placeholder Values
 

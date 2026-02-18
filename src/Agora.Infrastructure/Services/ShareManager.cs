@@ -83,6 +83,9 @@ public sealed class ShareManager(
 
         var uploadFileNames = command.Files.Select(x => x.OriginalFileName).ToArray();
         var zipName = ArchiveNameResolver.Resolve(command.ZipFileName, uploadFileNames, now);
+        var downloadPassword = string.IsNullOrWhiteSpace(command.DownloadPassword)
+            ? null
+            : command.DownloadPassword;
 
         var zipRelativePath = Path.Combine("zips", now.ToString("yyyy"), now.ToString("MM"), $"{Guid.NewGuid()}.zip");
         var zipAbsolutePath = Path.Combine(_options.StorageRoot, zipRelativePath);
@@ -102,6 +105,16 @@ public sealed class ShareManager(
         }
 
         var zipInfo = new FileInfo(zipAbsolutePath);
+        var archiveDiskPath = zipRelativePath;
+        if (downloadPassword is not null)
+        {
+            var encryptedRelativePath = Path.Combine("zips", now.ToString("yyyy"), now.ToString("MM"), $"{Guid.NewGuid()}.agz");
+            var encryptedAbsolutePath = Path.Combine(_options.StorageRoot, encryptedRelativePath);
+            Directory.CreateDirectory(Path.GetDirectoryName(encryptedAbsolutePath)!);
+            await ZipEncryption.EncryptFileAsync(zipAbsolutePath, encryptedAbsolutePath, downloadPassword, cancellationToken);
+            File.Delete(zipAbsolutePath);
+            archiveDiskPath = encryptedRelativePath;
+        }
 
         var template = await ResolveTemplateAsync(command, cancellationToken);
         logger.LogInformation(
@@ -149,8 +162,9 @@ public sealed class ShareManager(
                 ShareTokenHash = tokenHash,
                 ShareTokenPrefix = tokenPrefix,
                 ZipDisplayName = zipName,
-                ZipDiskPath = zipRelativePath,
+                ZipDiskPath = archiveDiskPath,
                 ZipSizeBytes = zipInfo.Length,
+                DownloadPasswordHash = downloadPassword is null ? null : PasswordHasher.Hash(downloadPassword),
                 UploaderMessage = command.Message,
                 NotifyMode = command.NotifyMode,
                 ExpiresAtUtc = command.ExpiryMode == ExpiryMode.Indefinite ? null : command.ExpiresAtUtc,
