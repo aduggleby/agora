@@ -9,7 +9,7 @@ namespace Agora.Web.Pages.Account;
 [Authorize]
 public class LandingPageDesignerModel(ShareManager manager) : PageModel
 {
-    public ShareTemplateData Template { get; private set; } = new("Shared file", "A file was shared with you", "Use the button below to download your file.", null, null, "center");
+    public ShareTemplateData Template { get; private set; } = new("Shared file", "A file was shared with you", string.Empty, null, null, "center");
 
     public async Task OnGet(CancellationToken ct)
     {

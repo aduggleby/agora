@@ -86,7 +86,7 @@ public sealed class AuthService(
                 UploaderEmail = email,
                 Title = $"by {email}",
                 H1 = "A file was shared with you",
-                Description = "Use the button below to download your file.",
+                Description = string.Empty,
                 UpdatedAtUtc = DateTime.UtcNow
             });
         }
@@ -274,7 +274,7 @@ public sealed class AuthService(
             UploaderEmail = email,
             Title = $"by {email}",
             H1 = "A file was shared with you",
-            Description = "Use the button below to download your file.",
+            Description = string.Empty,
             UpdatedAtUtc = DateTime.UtcNow
         });
         await db.SaveChangesAsync(cancellationToken);

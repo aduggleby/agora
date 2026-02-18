@@ -1,0 +1,14 @@
+namespace Agora.Web.Services;
+
+public static class SharePreviewPaths
+{
+    public static string Relative(Guid shareId, Guid fileId)
+    {
+        return Path.Combine("previews", shareId.ToString("N"), $"{fileId}.jpg");
+    }
+
+    public static string Absolute(string storageRoot, Guid shareId, Guid fileId)
+    {
+        return Path.Combine(storageRoot, Relative(shareId, fileId));
+    }
+}

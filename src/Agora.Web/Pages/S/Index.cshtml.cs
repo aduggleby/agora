@@ -15,6 +15,7 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
         string SizeDisplay,
         string PreviewKind,
         string RenderType,
+        string PreviewImageUrl,
         string FileUrl,
         string DownloadUrl,
         string ThumbnailUrl,
@@ -31,6 +32,7 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
     public string PageUrl { get; private set; } = string.Empty;
     public string? DownloadError { get; private set; }
     public bool RequiresPassword { get; private set; }
+    public string DisplayH1 { get; private set; } = "File Download";
     public bool AllowsPreview { get; private set; }
     public bool AllowsZipDownload { get; private set; }
     public IReadOnlyList<PreviewItemViewModel> PreviewItems { get; private set; } = [];
@@ -50,19 +52,24 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
         }
 
         IsExpired = ShareManager.IsExpired(Share, DateTime.UtcNow);
+        DisplayH1 = ResolveDisplayH1(Share.PageH1, Share.Files.Count);
         var presentation = shareExperienceRendererResolver.Resolve(Share);
         AllowsPreview = presentation.AllowsPreview;
         AllowsZipDownload = presentation.AllowsZipDownload;
-        PreviewItems = presentation.PreviewFiles.Select(file => new PreviewItemViewModel(
-            file.Id,
-            file.OriginalFilename,
-            FormatSize(file.OriginalSizeBytes),
-            ResolvePreviewKind(file.RenderType),
-            file.RenderType,
-            $"/s/{token}/files/{file.Id}",
-            $"/s/{token}/files/{file.Id}?download=1",
-            $"/s/{token}/files/{file.Id}/thumbnail?width=420&height=300",
-            ResolveExtensionLabel(file.OriginalFilename))).ToList();
+        PreviewItems = presentation.PreviewFiles
+            .OrderBy(file => file.OriginalFilename, StringComparer.OrdinalIgnoreCase)
+            .Select(file => new PreviewItemViewModel(
+                file.Id,
+                file.OriginalFilename,
+                FormatSize(file.OriginalSizeBytes),
+                ResolvePreviewKind(file.RenderType),
+                file.RenderType,
+                $"/s/{token}/files/{file.Id}/preview?width=960&height=720",
+                $"/s/{token}/files/{file.Id}",
+                $"/s/{token}/files/{file.Id}?download=1",
+                $"/s/{token}/files/{file.Id}/thumbnail?width=420&height=300",
+                ResolveExtensionLabel(file.OriginalFilename)))
+            .ToList();
         InitialPreviewItem = PreviewItems.FirstOrDefault();
         RequiresPassword = !string.IsNullOrWhiteSpace(Share.DownloadPasswordHash);
         DownloadError = (Request.Query["downloadError"].ToString().Trim().ToLowerInvariant()) switch
@@ -111,6 +118,17 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
 
         ViewData["Title"] = "File Download";
         return Page();
+    }
+
+    private static string ResolveDisplayH1(string? rawH1, int fileCount)
+    {
+        var h1 = string.IsNullOrWhiteSpace(rawH1) ? "File Download" : rawH1;
+        if (fileCount > 1 && string.Equals(h1.Trim(), "A file was shared with you", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{fileCount} files were shared with you";
+        }
+
+        return h1;
     }
 
     private static string ResolvePreviewKind(string? renderType)

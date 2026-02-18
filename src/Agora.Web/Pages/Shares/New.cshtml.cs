@@ -11,6 +11,8 @@ namespace Agora.Web.Pages.Shares;
 [Authorize]
 public class NewModel(AuthService authService, ShareManager manager, IOptions<AgoraOptions> options) : PageModel
 {
+    private readonly AgoraOptions _options = options.Value;
+
     public string DraftShareId { get; private set; } = string.Empty;
     public ShareManager.DraftTemplateState DraftTemplate { get; private set; } = new("", "account_default", "", "", "", null, null, null, "center");
     public IReadOnlyList<ShareManager.StagedUploadFile> StagedUploads { get; private set; } = [];
@@ -21,6 +23,8 @@ public class NewModel(AuthService authService, ShareManager manager, IOptions<Ag
     public string ShareToken { get; private set; } = string.Empty;
     public string SuggestedShareToken { get; private set; } = string.Empty;
     public string ShareLinkPrefix { get; private set; } = string.Empty;
+    public long MaxFileSizeBytes => _options.MaxFileSizeBytes;
+    public long MaxTotalUploadBytes => _options.MaxTotalUploadBytes;
 
     public async Task OnGet(CancellationToken ct)
     {

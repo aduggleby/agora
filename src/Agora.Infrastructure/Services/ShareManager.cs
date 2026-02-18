@@ -461,7 +461,7 @@ public sealed class ShareManager(
             return new ShareTemplateData(
                 $"by {normalizedEmail}",
                 "A file was shared with you",
-                "Use the button below to download your file.",
+                string.Empty,
                 null,
                 null,
                 "center");
@@ -900,7 +900,7 @@ public sealed class ShareManager(
             return new ShareTemplateData(
                 $"by {command.UploaderEmail.Trim()}",
                 "A file was shared with you",
-                "Use the button below to download your file.",
+                string.Empty,
                 null,
                 null,
                 "center");
