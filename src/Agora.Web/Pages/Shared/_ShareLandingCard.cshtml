@@ -13,9 +13,9 @@
     <p style="color:#7a3f20;font-size:0.875rem;margin-top:1rem;padding:0.75rem;border-radius:0.5rem;background:#f6e5dc;border:1px solid #e8c8b5;">This link has expired.</p>
   }
   <div style="margin-top:1.5rem;">
-    @if (Model.IsExpired)
+    @if (Model.IsExpired || !Model.IsDownloadAllowed)
     {
-      <button type="button" style="display:inline-block;width:100%;padding:0.75rem 1.5rem;background:#C4663A;color:white;border:none;border-radius:0.5rem;font-size:0.875rem;font-weight:500;text-align:center;opacity:.6;cursor:not-allowed;" disabled title="This link has expired.">Download</button>
+      <button type="button" style="display:inline-block;width:100%;padding:0.75rem 1.5rem;background:#C4663A;color:white;border:none;border-radius:0.5rem;font-size:0.875rem;font-weight:500;text-align:center;opacity:.6;cursor:not-allowed;" disabled title="@(Model.IsExpired ? "This link has expired." : (Model.DownloadDisabledReason ?? "Download is disabled for this share mode."))">Download</button>
     }
     else
     {

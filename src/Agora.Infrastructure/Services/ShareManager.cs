@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Text.Json;
+using Agora.Application.Abstractions;
 using Agora.Application.Models;
 using Agora.Application.Utilities;
 using Agora.Domain.Entities;
@@ -14,6 +15,7 @@ namespace Agora.Infrastructure.Services;
 public sealed class ShareManager(
     AgoraDbContext db,
     IOptions<AgoraOptions> options,
+    IShareContentStore contentStore,
     IBackgroundJobClient backgroundJobs,
     ILogger<ShareManager> logger)
 {
@@ -80,12 +82,17 @@ public sealed class ShareManager(
         var now = DateTime.UtcNow;
         var requestedToken = command.ShareToken?.Trim();
         var hasRequestedToken = !string.IsNullOrWhiteSpace(requestedToken);
+        var shareExperienceType = ShareModes.ToStorageValue(ShareModes.ParseExperienceType(command.ShareExperienceType));
+        var accessMode = ShareModes.ToStorageValue(ShareModes.ParseAccessMode(command.AccessMode));
 
         var uploadFileNames = command.Files.Select(x => x.OriginalFileName).ToArray();
         var zipName = ArchiveNameResolver.Resolve(command.ZipFileName, uploadFileNames, now);
         var downloadPassword = string.IsNullOrWhiteSpace(command.DownloadPassword)
             ? null
             : command.DownloadPassword;
+        var persistedContent = await contentStore.PersistShareFilesAsync(command.Files, now, cancellationToken);
+        var shareContentRelativePath = persistedContent.ContentRootPath;
+        var storedFiles = persistedContent.Files;
 
         var zipRelativePath = Path.Combine("zips", now.ToString("yyyy"), now.ToString("MM"), $"{Guid.NewGuid()}.zip");
         var zipAbsolutePath = Path.Combine(_options.StorageRoot, zipRelativePath);
@@ -94,12 +101,11 @@ public sealed class ShareManager(
         await using (var outStream = File.Create(zipAbsolutePath))
         await using (var zip = new ZipArchive(outStream, ZipArchiveMode.Create))
         {
-            foreach (var file in command.Files)
+            foreach (var file in storedFiles)
             {
-                var entryName = ArchiveNameResolver.Sanitize(file.OriginalFileName);
-                var entry = zip.CreateEntry(entryName, CompressionLevel.Fastest);
+                var entry = zip.CreateEntry(file.EntryName, CompressionLevel.Fastest);
                 await using var entryStream = entry.Open();
-                await using var source = File.OpenRead(file.TempPath);
+                await using var source = File.OpenRead(file.StoredAbsolutePath);
                 await source.CopyToAsync(entryStream, cancellationToken);
             }
         }
@@ -164,6 +170,9 @@ public sealed class ShareManager(
                 ZipDisplayName = zipName,
                 ZipDiskPath = archiveDiskPath,
                 ZipSizeBytes = zipInfo.Length,
+                ShareExperienceType = shareExperienceType,
+                AccessMode = accessMode,
+                ContentRootPath = shareContentRelativePath,
                 DownloadPasswordHash = downloadPassword is null ? null : PasswordHasher.Hash(downloadPassword),
                 UploaderMessage = command.Message,
                 NotifyMode = command.NotifyMode,
@@ -175,11 +184,13 @@ public sealed class ShareManager(
                 BackgroundImageUrl = template.BackgroundImageUrl,
                 PageBackgroundColorHex = template.BackgroundColorHex,
                 PageContainerPosition = NormalizeContainerPosition(template.ContainerPosition),
-                Files = command.Files.Select(x => new ShareFile
+                Files = storedFiles.Select(x => new ShareFile
                 {
                     Id = Guid.NewGuid(),
-                    OriginalFilename = x.OriginalFileName,
-                    OriginalSizeBytes = x.OriginalSizeBytes,
+                    OriginalFilename = x.EntryName,
+                    StoredRelativePath = x.StoredRelativePath,
+                    RenderType = DetectRenderType(x.EntryName, x.ContentType),
+                    OriginalSizeBytes = x.SizeBytes,
                     DetectedContentType = x.ContentType
                 }).ToList()
             };
@@ -345,7 +356,7 @@ public sealed class ShareManager(
             return;
         }
 
-        DeleteShareContentFiles(share.ZipDiskPath, share.BackgroundImageUrl);
+        DeleteShareContentFiles(share.ZipDiskPath, share.BackgroundImageUrl, share.ContentRootPath);
     }
 
     public static bool IsExpired(Share share, DateTime utcNow)
@@ -476,7 +487,7 @@ public sealed class ShareManager(
         var count = 0;
         foreach (var share in expired)
         {
-            DeleteShareContentFiles(share.ZipDiskPath, share.BackgroundImageUrl);
+            DeleteShareContentFiles(share.ZipDiskPath, share.BackgroundImageUrl, share.ContentRootPath);
             share.DeletedAtUtc = now;
             count++;
         }
@@ -922,6 +933,65 @@ public sealed class ShareManager(
         };
     }
 
+    public static string NormalizeShareExperienceType(string? raw)
+    {
+        return ShareModes.ToStorageValue(ShareModes.ParseExperienceType(raw));
+    }
+
+    public static string NormalizeAccessMode(string? raw)
+    {
+        return ShareModes.ToStorageValue(ShareModes.ParseAccessMode(raw));
+    }
+
+    public static bool AllowsZipDownload(Share share)
+    {
+        return ShareModes.AllowsZipDownload(ShareModes.ParseAccessMode(share.AccessMode));
+    }
+
+    public static bool AllowsPreview(Share share)
+    {
+        return ShareModes.AllowsPreview(ShareModes.ParseAccessMode(share.AccessMode));
+    }
+
+    private static string DetectRenderType(string fileName, string contentType)
+    {
+        var normalizedContentType = (contentType ?? string.Empty).Trim().ToLowerInvariant();
+        var extension = (Path.GetExtension(fileName) ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalizedContentType.StartsWith("image/", StringComparison.Ordinal))
+        {
+            return "image";
+        }
+
+        if (normalizedContentType.StartsWith("video/", StringComparison.Ordinal))
+        {
+            return "video";
+        }
+
+        if (normalizedContentType.StartsWith("audio/", StringComparison.Ordinal))
+        {
+            return "audio";
+        }
+
+        if (normalizedContentType.Contains("pdf", StringComparison.Ordinal))
+        {
+            return "pdf";
+        }
+
+        return extension switch
+        {
+            ".jpg" or ".jpeg" or ".png" or ".gif" or ".webp" or ".bmp" => "image",
+            ".svg" => "svg",
+            ".pdf" => "pdf",
+            ".mp4" or ".webm" or ".mov" => "video",
+            ".mp3" or ".wav" or ".ogg" => "audio",
+            ".txt" or ".md" or ".csv" or ".json" => "text",
+            ".html" or ".htm" => "html",
+            ".css" => "css",
+            ".js" => "js",
+            _ => "binary"
+        };
+    }
+
     private string GetStagingRoot()
     {
         return Path.Combine(_options.StorageRoot, "uploads", "staged");
@@ -1067,13 +1137,15 @@ public sealed class ShareManager(
         return $"internal:{backgroundRelativePath.Replace('\\', '/')}";
     }
 
-    private void DeleteShareContentFiles(string zipDiskPath, string? backgroundImageMarker)
+    private void DeleteShareContentFiles(string zipDiskPath, string? backgroundImageMarker, string? contentRootPath)
     {
         var zipAbsolutePath = Path.Combine(_options.StorageRoot, zipDiskPath);
         if (File.Exists(zipAbsolutePath))
         {
             File.Delete(zipAbsolutePath);
         }
+
+        contentStore.DeleteContentRoot(contentRootPath);
 
         var marker = backgroundImageMarker ?? string.Empty;
         if (!marker.StartsWith("internal:", StringComparison.OrdinalIgnoreCase))

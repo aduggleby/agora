@@ -43,6 +43,8 @@ public class CreatedModel(IOptions<AgoraOptions> options, ShareManager manager) 
                 SizeDisplay: sizeDisplay,
                 IsExpired: isExpired,
                 DownloadUrl: $"/s/{Uri.EscapeDataString(token)}/download",
+                IsDownloadAllowed: ShareManager.AllowsZipDownload(share),
+                DownloadDisabledReason: "ZIP download is disabled for this share mode.",
                 RequiresPassword: !string.IsNullOrWhiteSpace(share.DownloadPasswordHash));
         }
 

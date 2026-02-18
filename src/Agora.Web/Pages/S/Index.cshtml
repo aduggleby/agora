@@ -11,6 +11,8 @@
         SizeDisplay: Model.SizeDisplay,
         IsExpired: Model.IsExpired,
         DownloadUrl: $"/s/{Model.Token}/download",
+        IsDownloadAllowed: Model.AllowsZipDownload,
+        DownloadDisabledReason: "ZIP download is disabled for this share mode.",
         RequiresPassword: Model.RequiresPassword,
         DownloadError: Model.DownloadError);
 }
@@ -49,6 +51,47 @@
   @if (Model.Share is not null)
   {
   @await Html.PartialAsync("/Pages/Shared/_ShareLandingCard.cshtml", cardModel)
+
+  @if (!Model.IsExpired && Model.AllowsPreview)
+  {
+    @if (Model.ShareExperienceType == "site")
+    {
+      <div style="margin-top:1rem;background:white;border:1px solid var(--border);border-radius:0.75rem;padding:1rem;max-width:480px;width:100%;">
+        <p style="font-size:0.78rem;color:var(--ink-light);margin-bottom:0.65rem;">This share is a hosted single-page site.</p>
+        <a href="/s/@Model.Token/site" style="display:inline-block;background:var(--ink);color:white;padding:0.6rem 0.9rem;border-radius:0.45rem;text-decoration:none;font-size:0.82rem;">Open site</a>
+      </div>
+    }
+    else if (Model.ShareExperienceType == "gallery")
+    {
+      <div style="margin-top:1rem;background:white;border:1px solid var(--border);border-radius:0.75rem;padding:1rem;max-width:720px;width:100%;">
+        <p style="font-size:0.78rem;color:var(--ink-light);margin-bottom:0.65rem;">Image gallery</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:0.6rem;">
+          @foreach (var file in Model.GalleryFiles)
+          {
+            <a href="/s/@Model.Token/files/@file.Id" target="_blank" rel="noreferrer" style="display:block;border:1px solid var(--border);border-radius:0.5rem;overflow:hidden;background:#fff;">
+              <img src="/s/@Model.Token/files/@file.Id" alt="@file.OriginalFilename" loading="lazy" style="display:block;width:100%;height:110px;object-fit:cover;" />
+            </a>
+          }
+        </div>
+      </div>
+    }
+    else
+    {
+      <div style="margin-top:1rem;background:white;border:1px solid var(--border);border-radius:0.75rem;padding:1rem;max-width:720px;width:100%;">
+        <p style="font-size:0.78rem;color:var(--ink-light);margin-bottom:0.65rem;">Direct-open files</p>
+        <ul style="list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:0.5rem;">
+          @foreach (var file in Model.PreviewFiles)
+          {
+            <li style="border:1px solid var(--border);border-radius:0.5rem;padding:0.55rem 0.6rem;background:#fff;">
+              <a href="/s/@Model.Token/files/@file.Id" target="_blank" rel="noreferrer" style="color:var(--terra);text-decoration:none;">@file.OriginalFilename</a>
+              <p style="font-size:0.7rem;color:var(--ink-muted);margin-top:0.2rem;">@file.OriginalSizeBytes B</p>
+            </li>
+          }
+        </ul>
+      </div>
+    }
+  }
+
   <p style="color:var(--ink-muted);font-size:0.6875rem;margin-top:1.25rem;padding-bottom:0.5rem;text-align:center;">
     <a href="https://github.com/aduggleby/agora" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:none;">
       Powered by Agora - Self hosted file transfer

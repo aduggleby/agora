@@ -6,6 +6,8 @@ public sealed class CreateShareCommand
     public string? ShareToken { get; init; }
     public string? Message { get; init; }
     public string? DownloadPassword { get; init; }
+    public string ShareExperienceType { get; init; } = "archive";
+    public string AccessMode { get; init; } = "download_only";
     public string? ZipFileName { get; init; }
     public required ExpiryMode ExpiryMode { get; init; }
     public DateTime? ExpiresAtUtc { get; init; }

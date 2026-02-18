@@ -23,6 +23,9 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
             builder.Property(x => x.NotifyMode).HasMaxLength(20);
             builder.Property(x => x.ZipDisplayName).HasMaxLength(255);
             builder.Property(x => x.ShareTokenPrefix).HasMaxLength(16);
+            builder.Property(x => x.ShareExperienceType).HasMaxLength(32);
+            builder.Property(x => x.AccessMode).HasMaxLength(32);
+            builder.Property(x => x.ContentRootPath).HasMaxLength(400);
             builder.Property(x => x.DownloadPasswordHash).HasMaxLength(1000);
             builder.Property(x => x.PageBackgroundColorHex).HasMaxLength(16);
             builder.Property(x => x.PageContainerPosition).HasMaxLength(32);
@@ -32,6 +35,8 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
         {
             builder.HasKey(x => x.Id);
             builder.Property(x => x.OriginalFilename).HasMaxLength(255);
+            builder.Property(x => x.StoredRelativePath).HasMaxLength(400);
+            builder.Property(x => x.RenderType).HasMaxLength(32);
             builder.Property(x => x.DetectedContentType).HasMaxLength(150);
         });
 

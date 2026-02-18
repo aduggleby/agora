@@ -122,6 +122,15 @@ namespace Agora.Infrastructure.Persistence.Migrations
                     b.Property<DateTime?>("FirstDownloadedAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("AccessMode")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ContentRootPath")
+                        .HasMaxLength(400)
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("DownloadPasswordHash")
                         .HasMaxLength(1000)
                         .HasColumnType("TEXT");
@@ -164,6 +173,11 @@ namespace Agora.Infrastructure.Persistence.Migrations
                     b.Property<string>("ShareTokenPrefix")
                         .IsRequired()
                         .HasMaxLength(16)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ShareExperienceType")
+                        .IsRequired()
+                        .HasMaxLength(32)
                         .HasColumnType("TEXT");
 
                     b.Property<string>("UploaderEmail")
@@ -210,10 +224,19 @@ namespace Agora.Infrastructure.Persistence.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("RenderType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
                     b.Property<long>("OriginalSizeBytes")
                         .HasColumnType("INTEGER");
 
                     b.Property<Guid>("ShareId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("StoredRelativePath")
+                        .HasMaxLength(400)
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");

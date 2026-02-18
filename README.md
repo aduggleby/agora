@@ -46,6 +46,18 @@ Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, gene
 - `tests/Agora.Application.Tests` - unit tests
 - `tests/e2e` - Playwright end-to-end tests
 
+## Maintainability Architecture
+
+Recent refactors introduced explicit extension points for safer feature growth:
+
+- Public share HTTP surface is grouped under `src/Agora.Web/Endpoints/PublicShareEndpoints.cs`
+- Runtime schema compatibility upgrades are isolated in `src/Agora.Web/Startup/SchemaUpgradeRunner.cs`
+- Share content storage/path safety is centralized behind `IShareContentStore` (`src/Agora.Application/Abstractions/IShareContentStore.cs`, `src/Agora.Infrastructure/Services/ShareContentStore.cs`)
+- Share recipient rendering behavior is strategy-based (`archive`/`site`/`gallery`) via `IShareExperienceRenderer` in `src/Agora.Web/Services/ShareExperienceRendering.cs`
+- Share mode values are strongly typed through `ShareModes` in `src/Agora.Application/Models/ShareModes.cs`
+
+For future additions, prefer extending these components instead of growing `Program.cs` or `ShareManager` responsibilities.
+
 ## Local Development
 
 Requirements:

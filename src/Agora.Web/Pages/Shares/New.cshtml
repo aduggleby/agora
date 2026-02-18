@@ -80,6 +80,22 @@
               <p class="text-[11px] text-ink-muted mt-1">When set, the ZIP is encrypted at rest and recipients must enter this password to download.</p>
             </div>
             <div>
+              <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Share experience</label>
+              <select name="shareExperienceType" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all appearance-none">
+                <option value="archive" selected>Archive download</option>
+                <option value="site">Hosted single-page site</option>
+                <option value="gallery">Image gallery</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Access mode</label>
+              <select name="accessMode" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all appearance-none">
+                <option value="download_only" selected>Download only</option>
+                <option value="preview_only">Preview only</option>
+                <option value="preview_and_download">Preview and download</option>
+              </select>
+            </div>
+            <div>
               <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Download notifications</label>
               <select name="notifyMode" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all appearance-none">
                 <option value="account_default" selected>Account default (@Model.AccountDefaultNotifyModeLabel)</option>

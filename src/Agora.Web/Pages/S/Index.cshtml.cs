@@ -1,12 +1,13 @@
 using Agora.Application.Models;
 using Agora.Infrastructure.Services;
+using Agora.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.Extensions.Options;
 
 namespace Agora.Web.Pages.S;
 
-public class IndexModel(ShareManager manager, IOptions<AgoraOptions> agoraOptions, ILogger<IndexModel> logger) : PageModel
+public class IndexModel(ShareManager manager, ShareExperienceRendererResolver shareExperienceRendererResolver, IOptions<AgoraOptions> agoraOptions, ILogger<IndexModel> logger) : PageModel
 {
     public Domain.Entities.Share? Share { get; private set; }
     public string Token { get; private set; } = string.Empty;
@@ -19,6 +20,12 @@ public class IndexModel(ShareManager manager, IOptions<AgoraOptions> agoraOption
     public string PageUrl { get; private set; } = string.Empty;
     public string? DownloadError { get; private set; }
     public bool RequiresPassword { get; private set; }
+    public string ShareExperienceType { get; private set; } = "archive";
+    public string AccessMode { get; private set; } = "download_only";
+    public bool AllowsPreview { get; private set; }
+    public bool AllowsZipDownload { get; private set; }
+    public IReadOnlyList<Domain.Entities.ShareFile> PreviewFiles { get; private set; } = [];
+    public IReadOnlyList<Domain.Entities.ShareFile> GalleryFiles { get; private set; } = [];
 
     public async Task<IActionResult> OnGet(string token, CancellationToken ct)
     {
@@ -30,11 +37,19 @@ public class IndexModel(ShareManager manager, IOptions<AgoraOptions> agoraOption
         }
 
         IsExpired = ShareManager.IsExpired(Share, DateTime.UtcNow);
+        var presentation = shareExperienceRendererResolver.Resolve(Share);
+        ShareExperienceType = presentation.ExperienceType;
+        AccessMode = ShareManager.NormalizeAccessMode(Share.AccessMode);
+        AllowsPreview = presentation.AllowsPreview;
+        AllowsZipDownload = presentation.AllowsZipDownload;
+        PreviewFiles = presentation.PreviewFiles;
+        GalleryFiles = presentation.GalleryFiles;
         RequiresPassword = !string.IsNullOrWhiteSpace(Share.DownloadPasswordHash);
         DownloadError = (Request.Query["downloadError"].ToString().Trim().ToLowerInvariant()) switch
         {
             "password_required" => "Enter the password to download this file.",
             "invalid_password" => "Password was incorrect or the encrypted file could not be unlocked.",
+            "download_disabled" => "ZIP download is disabled for this share mode.",
             _ => null
         };
         BackgroundImageUrl = string.IsNullOrWhiteSpace(Share.BackgroundImageUrl)

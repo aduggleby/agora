@@ -9,5 +9,7 @@ public sealed record ShareLandingCardViewModel(
     string SizeDisplay,
     bool IsExpired,
     string DownloadUrl,
+    bool IsDownloadAllowed = true,
+    string? DownloadDisabledReason = null,
     bool RequiresPassword = false,
     string? DownloadError = null);

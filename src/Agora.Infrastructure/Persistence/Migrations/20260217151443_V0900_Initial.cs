@@ -42,6 +42,9 @@ namespace Agora.Infrastructure.Persistence.Migrations
                     ZipDisplayName = table.Column<string>(type: "TEXT", maxLength: 255, nullable: false),
                     ZipDiskPath = table.Column<string>(type: "TEXT", nullable: false),
                     ZipSizeBytes = table.Column<long>(type: "INTEGER", nullable: false),
+                    ShareExperienceType = table.Column<string>(type: "TEXT", maxLength: 32, nullable: false),
+                    AccessMode = table.Column<string>(type: "TEXT", maxLength: 32, nullable: false),
+                    ContentRootPath = table.Column<string>(type: "TEXT", maxLength: 400, nullable: true),
                     DownloadPasswordHash = table.Column<string>(type: "TEXT", maxLength: 1000, nullable: true),
                     UploaderMessage = table.Column<string>(type: "TEXT", nullable: true),
                     NotifyMode = table.Column<string>(type: "TEXT", maxLength: 20, nullable: false),
@@ -138,6 +141,8 @@ namespace Agora.Infrastructure.Persistence.Migrations
                     Id = table.Column<Guid>(type: "TEXT", nullable: false),
                     ShareId = table.Column<Guid>(type: "TEXT", nullable: false),
                     OriginalFilename = table.Column<string>(type: "TEXT", maxLength: 255, nullable: false),
+                    StoredRelativePath = table.Column<string>(type: "TEXT", maxLength: 400, nullable: true),
+                    RenderType = table.Column<string>(type: "TEXT", maxLength: 32, nullable: false),
                     OriginalSizeBytes = table.Column<long>(type: "INTEGER", nullable: false),
                     DetectedContentType = table.Column<string>(type: "TEXT", maxLength: 150, nullable: false)
                 },
