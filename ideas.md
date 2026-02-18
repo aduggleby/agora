@@ -1,4 +1,4 @@
-# Flora Feature Ideas (Research-Informed)
+# Agora Feature Ideas (Research-Informed)
 
 Date: 2026-02-18
 
@@ -23,7 +23,7 @@ Key references:
 - https://www.pcloud.com/it/help/general-help-center/how-to-enable-branding-for-my-shared-links
 - https://www.pcloud.com/features/file-versioning.html
 
-## 10 Suggestions For Flora
+## 7 Suggestions For Flora
 
 1. **Direct-Open Share Modes (`preview-only`, `download-only`, `preview+download`)**
 Enable sender-controlled access mode per share. This maps directly to your idea of opening files directly in-browser (without forcing ZIP download).
@@ -31,33 +31,24 @@ Enable sender-controlled access mode per share. This maps directly to your idea 
 2. **Single-Page Site Publishing Mode**
 Let uploaders publish a static mini-site from uploaded files (`index.html` + assets) at a share URL. Include sandboxing and strict content security policy.
 
-3. **Image Gallery / Contact Sheet Shares**
-Add a gallery share type with lightbox, keyboard navigation, EXIF-safe metadata display, and optional original-file download toggle.
-
-4. **Per-File Preview Navigator For Large Transfers**
-Show file tree + instant preview for supported formats (images, PDF, office docs, audio/video) so recipients can download only what they need.
-
-5. **Verified Download Access (Tracked vs Restricted)**
+3. **Verified Download Access (Tracked vs Restricted)**
 Add optional downloader verification mode:
 - tracked: anyone with link can access, but event identity is captured
 - restricted: only pre-approved emails can unlock download
 
-6. **Request Portal (Inbound Upload Collection)**
+4. **Request Portal (Inbound Upload Collection)**
 Add “request files” links so recipients upload to a controlled inbox for a share/project, with instructions and deadline.
 
-7. **Share Recovery Window After Expiry**
+5. **Share Recovery Window After Expiry**
 Allow optional post-expiry recovery for a limited period (policy-based by size/plan), reducing accidental data loss and support tickets.
 
-8. **Branded Download Experiences Per Share**
-Expand branding with reusable templates: cover image, logo, title, CTA, social/footer links, and per-share overrides.
-
-9. **Download Analytics Dashboard**
+6. **Download Analytics Dashboard**
 Provide per-share and global analytics: views, previews, downloads, unique recipients, geo/device summary, and “never downloaded” alerts.
 
-10. **Versioned Shares + Safe Rewind**
+7. **Versioned Shares + Safe Rewind**
 Allow replacing share contents while preserving URL, with version history, rollback, and clear recipient-facing version labels.
 
 ## Quick Prioritization (Suggested)
-- **Near-term (high impact, lower complexity):** 1, 3, 4, 8, 9
-- **Mid-term:** 6, 7
-- **Strategic / platform step-up:** 2, 5, 10
+- **Near-term (high impact, lower complexity):** 1, 3, 6
+- **Mid-term:** 4, 5
+- **Strategic / platform step-up:** 2, 7
