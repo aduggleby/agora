@@ -311,7 +311,7 @@ public static class PublicShareEndpoints
                 var isAuthenticated = request.HttpContext.User.Identity?.IsAuthenticated == true;
                 if (!isAuthenticated)
                 {
-                    var ip = request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                    var ip = ResolveRequesterIp(request);
                     var userAgent = request.Headers.UserAgent.ToString();
                     await manager.RecordDownloadAsync(share, token, ip, userAgent, ct);
                 }
@@ -340,7 +340,7 @@ public static class PublicShareEndpoints
             var isAuthenticatedRequester = request.HttpContext.User.Identity?.IsAuthenticated == true;
             if (!isAuthenticatedRequester)
             {
-                var ip = request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                var ip = ResolveRequesterIp(request);
                 var userAgent = request.Headers.UserAgent.ToString();
                 await manager.RecordDownloadAsync(share, token, ip, userAgent, ct);
             }
@@ -363,5 +363,54 @@ public static class PublicShareEndpoints
             ".svg" => "image/svg+xml",
             _ => "application/octet-stream"
         };
+    }
+
+    private static string ResolveRequesterIp(HttpRequest request)
+    {
+        var remoteRaw = request.HttpContext.Connection.RemoteIpAddress?.ToString();
+        if (IpAddressUtilities.TryNormalizeIp(remoteRaw, out var remoteIp) && IpAddressUtilities.IsPublicRoutable(remoteIp))
+        {
+            return remoteIp;
+        }
+
+        var directHeaderCandidates = new[]
+        {
+            request.Headers["CF-Connecting-IP"].ToString(),
+            request.Headers["True-Client-IP"].ToString(),
+            request.Headers["X-Real-IP"].ToString()
+        };
+
+        foreach (var candidate in directHeaderCandidates)
+        {
+            if (!IpAddressUtilities.TryNormalizeIp(candidate, out var normalized))
+            {
+                continue;
+            }
+
+            if (IpAddressUtilities.IsPublicRoutable(normalized))
+            {
+                return normalized;
+            }
+        }
+
+        var forwardedForHeader = request.Headers["X-Forwarded-For"].ToString();
+        var fromForwardedFor = IpAddressUtilities.ExtractFromForwardedFor(forwardedForHeader, preferPublic: true);
+        if (!string.IsNullOrWhiteSpace(fromForwardedFor))
+        {
+            return fromForwardedFor;
+        }
+
+        if (!string.IsNullOrWhiteSpace(remoteIp))
+        {
+            return remoteIp;
+        }
+
+        var fallbackForwarded = IpAddressUtilities.ExtractFromForwardedFor(forwardedForHeader, preferPublic: false);
+        if (!string.IsNullOrWhiteSpace(fallbackForwarded))
+        {
+            return fallbackForwarded;
+        }
+
+        return "unknown";
     }
 }

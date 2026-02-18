@@ -27,6 +27,7 @@ public sealed class FileSystemEmailSender(
                 notification.ZipDisplayName,
                 notification.DownloadedAtUtc,
                 notification.DownloaderIp,
+                notification.DownloaderIpDisplay,
                 notification.DownloaderUserAgent,
                 notification.BrowserMetadataJson
             },

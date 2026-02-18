@@ -22,7 +22,7 @@
 <!-- Headline -->
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
   <tr>
-    <td style="font-size:32px;line-height:1.1;color:#1a1614;font-family:Georgia,'Times New Roman',serif;font-weight:normal;letter-spacing:-0.02em;">
+    <td class="email-heading" style="font-size:32px;line-height:1.1;color:#1a1614;font-family:Georgia,'Times New Roman',serif;font-weight:normal;letter-spacing:-0.02em;">
       Your file was<br />downloaded
     </td>
   </tr>
@@ -31,8 +31,8 @@
 <!-- Subline -->
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
   <tr>
-    <td style="padding:12px 0 0;font-size:15px;line-height:1.6;color:#5C534A;">
-      Someone downloaded <strong style="color:#1a1614;">@Model.ZipDisplayName</strong> from your share.
+    <td class="email-body" style="padding:12px 0 0;font-size:15px;line-height:1.6;color:#5C534A;">
+      Someone downloaded <strong class="email-strong" style="color:#1a1614;">@Model.ZipDisplayName</strong> from your share.
     </td>
   </tr>
 </table>
@@ -42,34 +42,34 @@
 </table>
 
 <!-- Metadata grid -->
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#F7F4EE;border:1px solid #E8E2D8;border-radius:10px;">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="email-surface email-border" style="background-color:#F7F4EE;border:1px solid #E8E2D8;border-radius:10px;">
   <!-- Row 1: Time + Device -->
   <tr>
-    <td class="meta-col" width="50%" valign="top" style="padding:16px 16px 14px;border-bottom:1px solid #E8E2D8;">
+    <td class="meta-col email-border" width="50%" valign="top" style="padding:16px 16px 14px;border-bottom:1px solid #E8E2D8;">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0">
-        <tr><td style="font-size:10px;line-height:1;color:#9B9189;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;padding-bottom:6px;">Time</td></tr>
-        <tr><td style="font-size:14px;line-height:1.4;color:#1a1614;">@downloadTime</td></tr>
+        <tr><td class="email-label" style="font-size:10px;line-height:1;color:#9B9189;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;padding-bottom:6px;">Time</td></tr>
+        <tr><td class="email-value" style="font-size:14px;line-height:1.4;color:#1a1614;">@downloadTime</td></tr>
       </table>
     </td>
-    <td class="meta-col" width="50%" valign="top" style="padding:16px 16px 14px;border-bottom:1px solid #E8E2D8;border-left:1px solid #E8E2D8;">
+    <td class="meta-col email-border" width="50%" valign="top" style="padding:16px 16px 14px;border-bottom:1px solid #E8E2D8;border-left:1px solid #E8E2D8;">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0">
-        <tr><td style="font-size:10px;line-height:1;color:#9B9189;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;padding-bottom:6px;">Device</td></tr>
-        <tr><td style="font-size:14px;line-height:1.4;color:#1a1614;">@Model.DeviceType</td></tr>
+        <tr><td class="email-label" style="font-size:10px;line-height:1;color:#9B9189;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;padding-bottom:6px;">Device</td></tr>
+        <tr><td class="email-value" style="font-size:14px;line-height:1.4;color:#1a1614;">@Model.DeviceType</td></tr>
       </table>
     </td>
   </tr>
   <!-- Row 2: Browser + IP -->
   <tr>
-    <td class="meta-col" width="50%" valign="top" style="padding:14px 16px;border-bottom:1px solid #E8E2D8;">
+    <td class="meta-col email-border" width="50%" valign="top" style="padding:14px 16px;border-bottom:1px solid #E8E2D8;">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0">
-        <tr><td style="font-size:10px;line-height:1;color:#9B9189;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;padding-bottom:6px;">Browser</td></tr>
-        <tr><td style="font-size:14px;line-height:1.4;color:#1a1614;">@Model.BrowserFamily on @Model.OsFamily</td></tr>
+        <tr><td class="email-label" style="font-size:10px;line-height:1;color:#9B9189;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;padding-bottom:6px;">Browser</td></tr>
+        <tr><td class="email-value" style="font-size:14px;line-height:1.4;color:#1a1614;">@Model.BrowserFamily on @Model.OsFamily</td></tr>
       </table>
     </td>
-    <td class="meta-col" width="50%" valign="top" style="padding:14px 16px;border-bottom:1px solid #E8E2D8;border-left:1px solid #E8E2D8;">
+    <td class="meta-col email-border" width="50%" valign="top" style="padding:14px 16px;border-bottom:1px solid #E8E2D8;border-left:1px solid #E8E2D8;">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0">
-        <tr><td style="font-size:10px;line-height:1;color:#9B9189;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;padding-bottom:6px;">IP Address</td></tr>
-        <tr><td style="font-size:14px;line-height:1.4;color:#1a1614;font-family:Menlo,Consolas,'Courier New',monospace;font-size:13px;">@Model.DownloaderIp</td></tr>
+        <tr><td class="email-label" style="font-size:10px;line-height:1;color:#9B9189;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;padding-bottom:6px;">IP Address</td></tr>
+        <tr><td class="email-value" style="font-size:14px;line-height:1.4;color:#1a1614;font-family:Menlo,Consolas,'Courier New',monospace;font-size:13px;">@Model.DownloaderIpDisplay</td></tr>
       </table>
     </td>
   </tr>
@@ -77,14 +77,14 @@
   <tr>
     <td class="meta-col" width="50%" valign="top" style="padding:14px 16px 16px;">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0">
-        <tr><td style="font-size:10px;line-height:1;color:#9B9189;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;padding-bottom:6px;">Downloads</td></tr>
-        <tr><td style="font-size:14px;line-height:1.4;color:#1a1614;">@Model.DownloadCount total</td></tr>
+        <tr><td class="email-label" style="font-size:10px;line-height:1;color:#9B9189;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;padding-bottom:6px;">Downloads</td></tr>
+        <tr><td class="email-value" style="font-size:14px;line-height:1.4;color:#1a1614;">@Model.DownloadCount total</td></tr>
       </table>
     </td>
-    <td class="meta-col" width="50%" valign="top" style="padding:14px 16px 16px;border-left:1px solid #E8E2D8;">
+    <td class="meta-col email-border" width="50%" valign="top" style="padding:14px 16px 16px;border-left:1px solid #E8E2D8;">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0">
-        <tr><td style="font-size:10px;line-height:1;color:#9B9189;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;padding-bottom:6px;">Expires</td></tr>
-        <tr><td style="font-size:14px;line-height:1.4;color:#1a1614;">@expiresText</td></tr>
+        <tr><td class="email-label" style="font-size:10px;line-height:1;color:#9B9189;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;padding-bottom:6px;">Expires</td></tr>
+        <tr><td class="email-value" style="font-size:14px;line-height:1.4;color:#1a1614;">@expiresText</td></tr>
       </table>
     </td>
   </tr>
@@ -99,7 +99,7 @@
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
   <tr>
     <td align="center" style="padding:2px 0 0;font-size:22px;line-height:1.35;word-break:break-all;">
-      <a href="@Model.ShareUrl" style="color:#C4663A;text-decoration:none;" target="_blank">@Model.ShareUrl</a>
+      <a class="email-link" href="@Model.ShareUrl" style="color:#C4663A;text-decoration:none;" target="_blank">@Model.ShareUrl</a>
     </td>
   </tr>
 </table>

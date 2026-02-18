@@ -12,6 +12,7 @@ namespace Agora.Infrastructure.Services;
 public sealed class EmailNotificationJob(
     AgoraDbContext db,
     IEmailSender emailSender,
+    IDownloaderGeoLookup downloaderGeoLookup,
     IOptions<AgoraOptions> options,
     ILogger<EmailNotificationJob> logger)
 {
@@ -44,6 +45,7 @@ public sealed class EmailNotificationJob(
             var downloadCount = await db.DownloadEvents.CountAsync(x => x.ShareId == share.Id, cancellationToken);
             var browser = ParseBrowserMetadata(downloadEvent.BrowserMetadataJson);
             var shareUrl = BuildShareUrl(token);
+            var downloaderIpDisplay = await downloaderGeoLookup.FormatForNotificationAsync(downloadEvent.IpAddress, cancellationToken);
 
             var notification = new DownloadNotification(
                 To: share.UploaderEmail,
@@ -58,7 +60,8 @@ public sealed class EmailNotificationJob(
                 DownloadCount: downloadCount,
                 BrowserFamily: browser.BrowserFamily,
                 OsFamily: browser.OsFamily,
-                DeviceType: browser.DeviceType);
+                DeviceType: browser.DeviceType,
+                DownloaderIpDisplay: downloaderIpDisplay);
 
             await emailSender.SendDownloadNotificationAsync(notification, cancellationToken);
             downloadEvent.NotificationSent = true;

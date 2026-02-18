@@ -33,6 +33,7 @@ Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, gene
 - Download notifications are sent only for explicit download submissions, not share-page visits
 - Download event metadata: IP, user-agent, timestamp
 - Notification emails attempt IP geolocation (`City, Country`) via free `ipwho.is`; if lookup fails, the raw IP is shown
+- Email templates include dark-mode-aware styling for clients that support `prefers-color-scheme`
 - Resend-compatible email integration with configurable API base URL
 - Auth emails are queued and sent asynchronously via Hangfire
 - Daily rolling Serilog file logs with 30-day retention

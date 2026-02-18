@@ -13,7 +13,8 @@ public sealed record DownloadNotification(
     int DownloadCount,
     string BrowserFamily,
     string OsFamily,
-    string DeviceType);
+    string DeviceType,
+    string DownloaderIpDisplay);
 
 public sealed record AuthEmailMessage(
     string To,

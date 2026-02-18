@@ -3,6 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="supported-color-schemes" content="light dark" />
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <meta name="x-apple-disable-message-reformatting" />
   <meta name="format-detection" content="telephone=no,address=no,email=no,date=no,url=no" />
@@ -33,16 +35,35 @@
       .meta-col { display: block !important; width: 100% !important; padding-bottom: 12px !important; }
       .cta-btn { width: 100% !important; }
     }
+    @@media (prefers-color-scheme: dark) {
+      body, .email-bg { background-color: #151210 !important; color: #F3EEE7 !important; }
+      .email-preheader { color: #151210 !important; }
+      .email-brand { color: #C4B8AF !important; }
+      .email-card { border-color: #3A302C !important; }
+      .email-card-body { background-color: #221C19 !important; color: #F3EEE7 !important; }
+      .email-footer { color: #A99D93 !important; }
+      .email-footer-brand { color: #D4C6BB !important; }
+      .email-heading { color: #F6F1EA !important; }
+      .email-body { color: #D7CCC2 !important; }
+      .email-strong { color: #F6F1EA !important; }
+      .email-muted { color: #A99D93 !important; }
+      .email-link { color: #E58B64 !important; }
+      .email-surface { background-color: #2A2320 !important; border-color: #433934 !important; }
+      .email-border { border-color: #433934 !important; }
+      .email-label { color: #A99D93 !important; }
+      .email-value { color: #F3EEE7 !important; }
+      .email-button { background: #C4663A !important; color: #FFFFFF !important; }
+    }
   </style>
 </head>
-<body style="margin:0;padding:0;background-color:#EDE8DE;font-family:Helvetica,Arial,sans-serif;color:#1a1614;-webkit-font-smoothing:antialiased;">
+<body class="email-bg" style="margin:0;padding:0;background-color:#EDE8DE;font-family:Helvetica,Arial,sans-serif;color:#1a1614;-webkit-font-smoothing:antialiased;">
   <!-- Preheader -->
-  <div style="display:none;font-size:1px;color:#EDE8DE;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">
+  <div class="email-preheader" style="display:none;font-size:1px;color:#EDE8DE;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">
     @ViewData["EmailPreheader"]
     &#847; &#847; &#847; &#847; &#847; &#847; &#847; &#847; &#847; &#847; &#847; &#847; &#847; &#847; &#847;
   </div>
 
-  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#EDE8DE;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="email-bg" style="background-color:#EDE8DE;">
     <tr>
       <td align="center" class="ew" style="padding:28px 16px;">
         <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="580" class="eb" style="max-width:580px;width:100%;">
@@ -52,7 +73,7 @@
             <td style="padding:0 0 24px 0;">
               <table role="presentation" cellpadding="0" cellspacing="0" border="0">
                 <tr>
-                  <td style="font-size:15px;line-height:1;color:#7a7068;font-family:Georgia,'Times New Roman',serif;letter-spacing:0.12em;text-transform:uppercase;">
+                  <td class="email-brand" style="font-size:15px;line-height:1;color:#7a7068;font-family:Georgia,'Times New Roman',serif;letter-spacing:0.12em;text-transform:uppercase;">
                     @(ViewData["EmailBrand"] ?? "AGORA")
                   </td>
                 </tr>
@@ -63,14 +84,14 @@
           <!-- Card with terra accent top -->
           <tr>
             <td>
-              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-radius:12px;overflow:hidden;border:1px solid #D9D2C5;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="email-card" style="border-radius:12px;overflow:hidden;border:1px solid #D9D2C5;">
                 <!-- Terra accent bar -->
                 <tr>
                   <td style="background-color:#C4663A;height:4px;font-size:1px;line-height:1px;">&nbsp;</td>
                 </tr>
                 <!-- Card body -->
                 <tr>
-                  <td class="ec" style="background-color:#FFFDF9;padding:48px 46px 52px;">
+                  <td class="ec email-card-body" style="background-color:#FFFDF9;padding:48px 46px 52px;">
                     @RenderBody()
                   </td>
                 </tr>
@@ -83,8 +104,8 @@
             <td style="padding:28px 0 0;">
               <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                 <tr>
-                  <td align="center" style="font-size:12px;line-height:1.5;color:#9B9189;">
-                    <span style="color:#7a7068;font-family:Georgia,'Times New Roman',serif;letter-spacing:0.08em;">AGORA</span>
+                  <td align="center" class="email-footer" style="font-size:12px;line-height:1.5;color:#9B9189;">
+                    <span class="email-footer-brand" style="color:#7a7068;font-family:Georgia,'Times New Roman',serif;letter-spacing:0.08em;">AGORA</span>
                     &nbsp;&middot;&nbsp; Self-hosted secure file transfer
                   </td>
                 </tr>
