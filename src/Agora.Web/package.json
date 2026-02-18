@@ -4,9 +4,16 @@
   "version": "1.0.0",
   "scripts": {
     "tailwind:build": "npx @tailwindcss/cli -i ./Styles/tailwind.css -o ./wwwroot/css/site.css",
-    "tailwind:watch": "npx @tailwindcss/cli -i ./Styles/tailwind.css -o ./wwwroot/css/site.css --watch"
+    "tailwind:watch": "npx @tailwindcss/cli -i ./Styles/tailwind.css -o ./wwwroot/css/site.css --watch",
+    "ts:build": "node ./scripts/build-ts.mjs",
+    "ts:check": "tsc --project ./tsconfig.json"
   },
   "devDependencies": {
-    "@tailwindcss/cli": "^4.1.13"
+    "@tailwindcss/cli": "^4.1.13",
+    "esbuild": "^0.25.10",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "alpinejs": "^3.14.9"
   }
 }

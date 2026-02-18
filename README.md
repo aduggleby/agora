@@ -11,6 +11,7 @@ Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, gene
 ## Features
 
 - Multi-file upload with ZIP archive generation
+- Upload limits default to 5 GB per file and 10 GB total per share
 - Optional per-share download password with encrypted-at-rest ZIP storage
 - Share URL with download page before download
 - Share-created success screen with one-click link copy
@@ -31,6 +32,7 @@ Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, gene
 - Download notifications (`none`, `once`, `every_time`)
 - Download notifications are sent only for explicit download submissions, not share-page visits
 - Download event metadata: IP, user-agent, timestamp
+- Notification emails attempt IP geolocation (`City, Country`) via free `ipwho.is`; if lookup fails, the raw IP is shown
 - Resend-compatible email integration with configurable API base URL
 - Auth emails are queued and sent asynchronously via Hangfire
 - Daily rolling Serilog file logs with 30-day retention
@@ -75,6 +77,20 @@ dotnet run --project src/Agora.Web/Agora.Web.csproj --urls http://127.0.0.1:1808
 ```
 
 Then open `http://127.0.0.1:18080`.
+
+## Frontend Assets
+
+Frontend scripts are authored in TypeScript under `src/Agora.Web/Scripts` and bundled to `src/Agora.Web/wwwroot/js`.
+
+```bash
+cd src/Agora.Web
+npm install
+npm run ts:check
+npm run ts:build
+npm run tailwind:build
+```
+
+`shares-created.ts` imports Alpine (`alpinejs`) from npm and starts it in the bundled output.
 
 ## Development Scripts
 

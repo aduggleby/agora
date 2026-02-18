@@ -33,6 +33,15 @@ using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var initialUploadLimits = builder.Configuration.GetSection(AgoraOptions.Section);
+var configuredMaxFileSizeBytes = initialUploadLimits.GetValue<long?>("MaxFileSizeBytes") ?? (5L * 1024 * 1024 * 1024);
+var configuredMaxTotalUploadBytes = initialUploadLimits.GetValue<long?>("MaxTotalUploadBytes") ?? (10L * 1024 * 1024 * 1024);
+var maxRequestBodySize = Math.Max(configuredMaxFileSizeBytes, configuredMaxTotalUploadBytes);
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = maxRequestBodySize;
+});
+
 builder.Services.Configure<AgoraOptions>(builder.Configuration.GetSection(AgoraOptions.Section));
 builder.Services.Configure<EmailSenderOptions>(builder.Configuration.GetSection(EmailSenderOptions.Section));
 builder.Services.Configure<FileSystemEmailOptions>(builder.Configuration.GetSection(FileSystemEmailOptions.Section));
@@ -178,6 +187,11 @@ builder.Services.AddScoped<ShareManager>();
 builder.Services.AddScoped<IShareContentStore, ShareContentStore>();
 builder.Services.AddScoped<AuthEmailJob>();
 builder.Services.AddScoped<EmailNotificationJob>();
+builder.Services.AddHttpClient<IDownloaderGeoLookup, IpWhoIsDownloaderGeoLookup>(client =>
+{
+    client.BaseAddress = new Uri("https://ipwho.is/");
+    client.Timeout = TimeSpan.FromSeconds(2);
+});
 builder.Services.AddScoped<IShareExperienceRenderer, ArchiveShareExperienceRenderer>();
 builder.Services.AddScoped<IShareExperienceRenderer, GalleryShareExperienceRenderer>();
 builder.Services.AddScoped<ShareExperienceRendererResolver>();
@@ -197,7 +211,7 @@ else
 
 builder.Services.Configure<FormOptions>(options =>
 {
-    options.MultipartBodyLengthLimit = 1024L * 1024 * 1024;
+    options.MultipartBodyLengthLimit = configuredMaxTotalUploadBytes;
 });
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
@@ -578,7 +592,7 @@ if (isE2E)
             UploaderEmail = email,
             Title = $"by {email}",
             H1 = "A file was shared with you",
-            Description = "Use the button below to download your file.",
+            Description = string.Empty,
             UpdatedAtUtc = DateTime.UtcNow
         });
         await db.SaveChangesAsync(ct);
@@ -766,7 +780,7 @@ app.MapGet("/_legacy", async (HttpContext httpContext, ShareManager manager, Can
     return Results.Content(RenderLayout("Agora", email, body, msg, isAdmin), "text/html");
 }).RequireAuthorization();
 
-app.MapGet("/_legacy/shares/new", async (HttpContext httpContext, AuthService authService, ShareManager manager, CancellationToken ct) =>
+app.MapGet("/_legacy/shares/new", async (HttpContext httpContext, AuthService authService, ShareManager manager, IOptions<AgoraOptions> options, CancellationToken ct) =>
 {
     if (httpContext.User.Identity?.IsAuthenticated != true)
     {
@@ -817,7 +831,9 @@ app.MapGet("/_legacy/shares/new", async (HttpContext httpContext, AuthService au
         templateModeForDraft,
         accountDefaultNotifyModeLabel,
         accountDefaultExpiryModeLabel,
-        accountDefaultExpiryMode);
+        accountDefaultExpiryMode,
+        options.Value.MaxFileSizeBytes,
+        options.Value.MaxTotalUploadBytes);
 
     return Results.Content(RenderLayout("Share files", email, body, msg, isAdmin), "text/html");
 }).RequireAuthorization();
@@ -933,7 +949,7 @@ app.MapGet("/_legacy/admin", async (HttpContext httpContext, AuthService authSer
 <span class="text-xs text-ink-muted">(you)</span>
 """
             : $"""
-<form method="post" action="/admin/users/{id}/delete" onsubmit="return confirm('Delete this user?');" class="inline">
+<form method="post" action="/admin/users/{id}/delete" class="inline" data-confirm-submit="Delete this user?">
   <button type="submit" class="text-xs text-danger hover:underline">Delete</button>
 </form>
 """;
@@ -964,7 +980,7 @@ app.MapGet("/_legacy/admin", async (HttpContext httpContext, AuthService authSer
     <form method="post" action="/admin/settings/registration">
       <label class="inline-flex items-center gap-3 cursor-pointer select-none">
         <input type="hidden" name="enabled" value="false" />
-        <input type="checkbox" name="enabled" value="true" {(allowRegistration ? "checked" : string.Empty)} class="peer sr-only" onchange="this.form.submit()" />
+        <input type="checkbox" name="enabled" value="true" {(allowRegistration ? "checked" : string.Empty)} class="peer sr-only" data-registration-toggle />
         <span class="relative w-11 h-6 rounded-full bg-ink-muted/40 transition-colors peer-checked:bg-sage">
           <span class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform peer-checked:translate-x-5"></span>
         </span>
@@ -2023,7 +2039,9 @@ static string RenderCreateSharePageBody(
     string templateModeForDraft,
     string accountDefaultNotifyModeLabel,
     string accountDefaultExpiryModeLabel,
-    string accountDefaultExpiryMode) => $"""
+    string accountDefaultExpiryMode,
+    long maxFileSizeBytes,
+    long maxTotalUploadBytes) => $"""
 <section class="mb-10">
   <h2 class="font-display text-4xl tracking-tight mb-1">Share files</h2>
   <p class="text-ink-muted text-sm mt-3 max-w-md">Upload files, tune options, and generate a share link.</p>
@@ -2031,7 +2049,7 @@ static string RenderCreateSharePageBody(
 
 <section class="mb-10">
   <div class="bg-white rounded-2xl border border-border p-6">
-    <form action="/api/shares" method="post" enctype="multipart/form-data" class="space-y-5" data-share-form>
+    <form action="/api/shares" method="post" enctype="multipart/form-data" class="space-y-5" data-share-form data-max-file-size-bytes="{maxFileSizeBytes}" data-max-total-upload-bytes="{maxTotalUploadBytes}">
       <div>
         <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Files</label>
         <input type="file" name="files" multiple accept="*/*" class="sr-only" data-file-input />
@@ -2039,17 +2057,17 @@ static string RenderCreateSharePageBody(
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p class="text-sm text-ink-light">Select files and they upload immediately in the background.</p>
-              <p class="text-xs text-ink-muted mt-1">You can keep filling in form details while upload progresses.</p>
+              <p class="text-xs text-ink-muted mt-1">You can keep filling in form details while upload progresses. Max 5 GB per file, 10 GB total.</p>
             </div>
-            <button type="button" class="px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors" data-pick-files>Select files</button>
+            <button type="button" class="{(stagedUploads.Count > 0 ? "px-4 py-2 bg-cream text-ink text-sm font-medium rounded-lg border border-border hover:bg-cream-dark/70 transition-colors" : "px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors")}" data-pick-files>{(stagedUploads.Count > 0 ? "Add more files" : "Select files")}</button>
           </div>
           <p class="text-xs text-ink-muted mt-3" data-upload-status>{(stagedUploads.Count > 0 ? $"{stagedUploads.Count} file(s) uploaded and ready." : "No files uploaded yet.")}</p>
           <div class="mt-4 hidden" data-upload-hidden>{string.Join("", stagedUploads.Select(upload => $"""<input type="hidden" name="uploadedFileIds" value="{Html(upload.UploadId)}" data-uploaded-file-id />"""))}</div>
           <ul class="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-2" data-upload-list>
             {string.Join("", stagedUploads.Select(upload => $"""
-<li class="relative rounded-lg border border-sage/35 bg-sage-wash px-2.5 py-1.5 min-w-0" data-upload-id="{Html(upload.UploadId)}">
+<li class="relative rounded-lg border border-sage/35 bg-sage-wash px-2.5 py-1.5 min-w-0" data-upload-id="{Html(upload.UploadId)}" data-upload-size-bytes="{upload.OriginalSizeBytes}">
   <button type="button" class="absolute right-1 top-1 text-ink-muted hover:text-danger leading-none text-xs" title="Remove file" data-upload-remove aria-label="Remove file">x</button>
-  <p class="text-xs text-ink-light truncate">{Html(upload.OriginalFileName)}</p>
+  <p class="text-xs text-ink-light truncate pr-6">{Html(upload.OriginalFileName)}</p>
   <p class="text-[11px] text-sage mt-0.5">Uploaded</p>
 </li>
 """))}
@@ -2074,8 +2092,7 @@ static string RenderCreateSharePageBody(
           <label style="display:flex;align-items:flex-start;gap:0.7rem;padding:0.75rem;border:1px solid #E5DFD7;border-radius:0.75rem;background:#FAF7F2;">
             <input type="checkbox" name="showPreviews" value="1" style="margin-top:0.12rem;width:1rem;height:1rem;accent-color:#C4663A;" />
             <span style="display:block;">
-              <span style="display:block;font-size:0.88rem;font-weight:600;color:#1A1614;">Show previews</span>
-              <span style="display:block;font-size:0.75rem;color:#5C534A;margin-top:0.18rem;">If enabled, recipients can preview files and still download the ZIP.</span>
+              <span style="display:block;font-size:0.88rem;color:#1A1614;">Show previews</span>
             </span>
           </label>
         </div>
@@ -2364,922 +2381,29 @@ static string RenderShareLandingPageDesignerBody(string draftShareId, ShareManag
 {RenderShareTemplateDesignerScript()}
 """;
 
-static string RenderTemplateDesignerPreviewScript(string formId) => $$"""
-<script>
-(() => {
-  const form = document.getElementById('{{formId}}');
-  if (!form) return;
+static string RenderTemplateDesignerPreviewScript(string formId) =>
+    $"""<script src="/js/template-designer-preview.js" data-form-id="{formId}"></script>""";
 
-  const titleInput = form.querySelector('[data-preview-title]');
-  const h1Input = form.querySelector('[data-preview-h1]');
-  const descriptionInput = form.querySelector('[data-preview-description]');
-  const backgroundFileInput = form.querySelector('[data-preview-background-file]');
-  const backgroundColorModeInput = form.querySelector('[data-preview-background-color-mode]');
-  const backgroundColorInput = form.querySelector('[data-preview-background-color]');
-  const backgroundColorWrap = form.querySelector('[data-preview-background-color-picker-wrap]');
-  const uploadPick = form.querySelector('[data-preview-upload-pick]');
-  const uploadDropzone = form.querySelector('[data-preview-upload-dropzone]');
-  const uploadStatus = form.querySelector('[data-preview-upload-status]');
+static string RenderShareTemplateDesignerScript() =>
+    """<script src="/js/share-template-designer-legacy.js"></script>""";
 
-  const titleTarget = document.getElementById('template-preview-title');
-  const h1Target = document.getElementById('template-preview-h1');
-  const descriptionTarget = document.getElementById('template-preview-description');
-  const card = document.getElementById('template-preview-card');
-  const allowedExtensions = new Set(['.jpg', '.jpeg', '.png', '.svg', '.webp']);
-  let uploadedPreviewUrl = '';
+static string RenderShareUploaderScript() =>
+    """<script src="/js/shares-new.js"></script>""";
 
-  const updatePreview = () => {
-    titleTarget.textContent = titleInput.value || 'Shared file';
-    h1Target.textContent = h1Input.value || 'A file was shared with you';
-    descriptionTarget.textContent = descriptionInput.value || 'Use the button below to download your file.';
-    const customBackgroundColor = backgroundColorModeInput && backgroundColorModeInput.value === 'custom' && backgroundColorInput
-      ? backgroundColorInput.value
-      : '';
-    card.style.backgroundColor = customBackgroundColor || '';
-    card.style.backgroundImage = uploadedPreviewUrl ? ('url(' + uploadedPreviewUrl + ')') : '';
-  };
+static string RenderShareTemplateScript() =>
+    """<script src="/js/share-template.js"></script>""";
 
-  [titleInput, h1Input, descriptionInput].forEach((el) => el.addEventListener('input', updatePreview));
-  if (backgroundColorModeInput && backgroundColorInput) {
-    const refreshColorMode = () => {
-      const isCustom = backgroundColorModeInput.value === 'custom';
-      if (backgroundColorWrap) {
-        backgroundColorWrap.classList.toggle('hidden', !isCustom);
-      }
-      backgroundColorInput.name = isCustom ? 'backgroundColorHex' : '';
-      if (!isCustom) {
-        backgroundColorInput.value = '#faf7f2';
-      }
-      updatePreview();
-    };
-    backgroundColorModeInput.addEventListener('change', refreshColorMode);
-    backgroundColorInput.addEventListener('input', updatePreview);
-    refreshColorMode();
-  }
+static string RenderLocalDateTimeScript() =>
+    """<script src="/js/local-datetime.js"></script>""";
 
-  const setStatus = (text, isError) => {
-    if (!uploadStatus) return;
-    uploadStatus.textContent = text;
-    uploadStatus.classList.remove('text-ink-muted', 'text-danger', 'text-sage');
-    uploadStatus.classList.add(isError ? 'text-danger' : 'text-ink-muted');
-  };
+static string RenderShareDeleteScript() =>
+    """<script src="/js/share-delete.js"></script>""";
 
-  const setSelectedFile = (file) => {
-    if (!backgroundFileInput || !file) return;
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    backgroundFileInput.files = dt.files;
-  };
+static string RenderQuickShareDropzoneScript() =>
+    """<script src="/js/quick-share-dropzone.js"></script>""";
 
-  const handleSelectedFiles = (files) => {
-    const list = Array.from(files || []);
-    if (list.length === 0) return;
-    if (list.length > 1) {
-      setStatus('Only one image can be selected.', true);
-      return;
-    }
-
-    const file = list[0];
-    const ext = file.name.toLowerCase().includes('.')
-      ? file.name.toLowerCase().slice(file.name.lastIndexOf('.'))
-      : '';
-    if (!allowedExtensions.has(ext)) {
-      setStatus('Only JPG, PNG, SVG, or WEBP files are allowed.', true);
-      return;
-    }
-
-    setSelectedFile(file);
-    if (uploadedPreviewUrl) {
-      URL.revokeObjectURL(uploadedPreviewUrl);
-    }
-    uploadedPreviewUrl = URL.createObjectURL(file);
-    setStatus('Selected: ' + file.name, false);
-    updatePreview();
-  };
-
-  if (uploadPick && backgroundFileInput) {
-    uploadPick.addEventListener('click', () => backgroundFileInput.click());
-  }
-
-  if (backgroundFileInput) {
-    backgroundFileInput.addEventListener('change', () => {
-      handleSelectedFiles(backgroundFileInput.files);
-    });
-  }
-
-  if (uploadDropzone) {
-    uploadDropzone.addEventListener('dragover', (event) => {
-      event.preventDefault();
-      uploadDropzone.classList.add('ring-2', 'ring-terra/40');
-    });
-    uploadDropzone.addEventListener('dragleave', () => {
-      uploadDropzone.classList.remove('ring-2', 'ring-terra/40');
-    });
-    uploadDropzone.addEventListener('drop', (event) => {
-      event.preventDefault();
-      uploadDropzone.classList.remove('ring-2', 'ring-terra/40');
-      handleSelectedFiles(event.dataTransfer ? event.dataTransfer.files : []);
-    });
-  }
-
-  updatePreview();
-})();
-</script>
-""";
-
-static string RenderShareTemplateDesignerScript() => """
-<script>
-(() => {
-  const form = document.getElementById('share-template-form');
-  if (!form) return;
-
-  const titleInput = form.querySelector('[data-template-title]');
-  const h1Input = form.querySelector('[data-template-h1]');
-  const descriptionInput = form.querySelector('[data-template-description]');
-  const backgroundFileInput = form.querySelector('[data-template-background-file]');
-  const backgroundUploadIdInput = form.querySelector('[data-template-background-upload-id]');
-  const backgroundColorHexInput = form.querySelector('[data-template-background-color-hex]');
-  const backgroundColorModeInput = form.querySelector('[data-template-background-color-mode]');
-  const backgroundColorInput = form.querySelector('[data-template-background-color]');
-  const backgroundColorWrap = form.querySelector('[data-template-background-color-picker-wrap]');
-  const draftShareIdInput = form.querySelector('[data-draft-share-id]');
-  const uploadDropzone = form.querySelector('[data-template-upload-dropzone]');
-  const uploadPick = form.querySelector('[data-template-upload-pick]');
-  const uploadStatus = form.querySelector('[data-template-upload-status]');
-  const previewTitle = document.querySelector('[data-preview-title]');
-  const previewH1 = document.querySelector('[data-preview-h1]');
-  const previewDescription = document.querySelector('[data-preview-description]');
-  const previewCard = document.querySelector('[data-preview-card]');
-  const allowedExtensions = new Set(['.jpg', '.jpeg', '.png', '.svg', '.webp']);
-
-  let backgroundUploadId = '';
-  let uploadedPreviewUrl = '';
-
-  const updatePreview = () => {
-    previewTitle.textContent = titleInput.value || 'Shared file';
-    previewH1.textContent = h1Input.value || 'A file was shared with you';
-    previewDescription.textContent = descriptionInput.value || 'Use the button below to download your file.';
-    const customBackgroundColor = backgroundColorModeInput && backgroundColorModeInput.value === 'custom' && backgroundColorInput
-      ? backgroundColorInput.value
-      : '';
-    previewCard.style.backgroundColor = customBackgroundColor || '';
-    previewCard.style.backgroundImage = uploadedPreviewUrl ? ('url(' + uploadedPreviewUrl + ')') : '';
-  };
-
-  const setStatus = (text, isError) => {
-    uploadStatus.textContent = text;
-    uploadStatus.classList.remove('text-ink-muted', 'text-danger');
-    uploadStatus.classList.add(isError ? 'text-danger' : 'text-ink-muted');
-  };
-
-  const stageBackground = (file) => {
-    setStatus('Uploading background image...', false);
-    const formData = new FormData();
-    formData.append('file', file, file.name);
-    if (draftShareIdInput && draftShareIdInput.value) {
-      formData.append('draftShareId', draftShareIdInput.value);
-    }
-    fetch('/api/uploads/stage-template-background', { method: 'POST', body: formData })
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error('Upload failed')))
-      .then((json) => {
-        backgroundUploadId = json.uploadId || '';
-        if (backgroundUploadIdInput) {
-          backgroundUploadIdInput.value = backgroundUploadId;
-        }
-        if (uploadedPreviewUrl) {
-          URL.revokeObjectURL(uploadedPreviewUrl);
-        }
-        uploadedPreviewUrl = URL.createObjectURL(file);
-        setStatus(backgroundUploadId ? ('Uploaded: ' + (json.fileName || file.name)) : 'Upload failed.', !backgroundUploadId);
-        updatePreview();
-      })
-      .catch(() => {
-        backgroundUploadId = '';
-        setStatus('Upload failed.', true);
-      });
-  };
-
-  const setSelectedFile = (file) => {
-    if (!backgroundFileInput || !file) return;
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    backgroundFileInput.files = dt.files;
-  };
-
-  const handleSelectedFiles = (files) => {
-    const list = Array.from(files || []);
-    if (list.length === 0) return;
-    if (list.length > 1) {
-      setStatus('Only one image can be selected.', true);
-      return;
-    }
-
-    const file = list[0];
-    const ext = file.name.toLowerCase().includes('.')
-      ? file.name.toLowerCase().slice(file.name.lastIndexOf('.'))
-      : '';
-    if (!allowedExtensions.has(ext)) {
-      setStatus('Only JPG, PNG, SVG, or WEBP files are allowed.', true);
-      return;
-    }
-
-    setSelectedFile(file);
-    stageBackground(file);
-  };
-  [titleInput, h1Input, descriptionInput].forEach((el) => el.addEventListener('input', updatePreview));
-  if (backgroundColorModeInput && backgroundColorInput && backgroundColorHexInput) {
-    const refreshColorMode = () => {
-      const isCustom = backgroundColorModeInput.value === 'custom';
-      if (backgroundColorWrap) {
-        backgroundColorWrap.classList.toggle('hidden', !isCustom);
-      }
-      backgroundColorHexInput.value = isCustom ? backgroundColorInput.value : '';
-      updatePreview();
-    };
-    backgroundColorModeInput.addEventListener('change', refreshColorMode);
-    backgroundColorInput.addEventListener('input', () => {
-      if (backgroundColorModeInput.value === 'custom') {
-        backgroundColorHexInput.value = backgroundColorInput.value;
-      }
-      updatePreview();
-    });
-    refreshColorMode();
-  }
-  if (uploadPick && backgroundFileInput) {
-    uploadPick.addEventListener('click', () => backgroundFileInput.click());
-  }
-  backgroundFileInput.addEventListener('change', () => {
-    handleSelectedFiles(backgroundFileInput.files);
-  });
-  if (uploadDropzone) {
-    uploadDropzone.addEventListener('dragover', (event) => {
-      event.preventDefault();
-      uploadDropzone.classList.add('ring-2', 'ring-terra/40');
-    });
-    uploadDropzone.addEventListener('dragleave', () => {
-      uploadDropzone.classList.remove('ring-2', 'ring-terra/40');
-    });
-    uploadDropzone.addEventListener('drop', (event) => {
-      event.preventDefault();
-      uploadDropzone.classList.remove('ring-2', 'ring-terra/40');
-      handleSelectedFiles(event.dataTransfer ? event.dataTransfer.files : []);
-    });
-  }
-
-  if (backgroundUploadIdInput && backgroundUploadIdInput.value) {
-    setStatus('Uploaded background image selected.', false);
-  }
-  updatePreview();
-})();
-</script>
-""";
-
-static string RenderShareUploaderScript() => """
-<script>
-(() => {
-  const form = document.querySelector('[data-share-form]');
-  if (!form) return;
-
-  const fileInput = form.querySelector('[data-file-input]');
-  const pickButton = form.querySelector('[data-pick-files]');
-  const list = form.querySelector('[data-upload-list]');
-  const hidden = form.querySelector('[data-upload-hidden]');
-  const status = form.querySelector('[data-upload-status]');
-  const submit = form.querySelector('[data-submit]');
-  const dropzone = form.querySelector('[data-dropzone]');
-  const expiryModeInput = form.querySelector('[name="expiryMode"]');
-  const expiresAtInput = form.querySelector('[name="expiresAtUtc"]');
-  const accountDefaultExpiryInput = form.querySelector('[data-account-default-expiry-mode]');
-  const draftShareIdInput = form.querySelector('[data-draft-share-id]');
-  const removeDialog = form.querySelector('[data-upload-remove-dialog]');
-  const removeName = form.querySelector('[data-upload-remove-file-name]');
-  const removeCancel = form.querySelector('[data-upload-remove-cancel]');
-  const removeConfirm = form.querySelector('[data-upload-remove-confirm]');
-
-  const uploadedIds = new Set();
-  hidden.querySelectorAll('input[name="uploadedFileIds"]').forEach((input) => {
-    if (input && input.value) {
-      uploadedIds.add(input.value);
-    }
-  });
-  let activeUploads = 0;
-  let pendingRemoval = null;
-
-  const formatBytes = (bytes) => {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-    return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
-  };
-
-  const formatLocalDateTimeForInput = (date) => {
-    const pad = (value) => String(value).padStart(2, '0');
-    return date.getFullYear() + '-' +
-      pad(date.getMonth() + 1) + '-' +
-      pad(date.getDate()) + 'T' +
-      pad(date.getHours()) + ':' +
-      pad(date.getMinutes());
-  };
-
-  const getPresetExpiryDate = (mode) => {
-    const now = new Date();
-    const date = new Date(now.getTime());
-    if (mode === '1_hour') date.setHours(date.getHours() + 1);
-    else if (mode === '24_hours') date.setHours(date.getHours() + 24);
-    else if (mode === '7_days') date.setDate(date.getDate() + 7);
-    else if (mode === '30_days') date.setDate(date.getDate() + 30);
-    else if (mode === '1_year') date.setFullYear(date.getFullYear() + 1);
-    else return null;
-    return date;
-  };
-
-  const resolveEffectiveExpiryMode = () => {
-    if (!expiryModeInput) return 'date';
-    if (expiryModeInput.value !== 'account_default') return expiryModeInput.value;
-    return accountDefaultExpiryInput && accountDefaultExpiryInput.value
-      ? accountDefaultExpiryInput.value
-      : '7_days';
-  };
-
-  const updateExpiryUi = () => {
-    if (!expiryModeInput || !expiresAtInput) return;
-    const mode = resolveEffectiveExpiryMode();
-
-    if (mode === 'date') {
-      expiresAtInput.disabled = false;
-      return;
-    }
-
-    expiresAtInput.disabled = true;
-    if (mode === 'indefinite') {
-      expiresAtInput.value = '';
-      return;
-    }
-
-    const presetDate = getPresetExpiryDate(mode);
-    if (presetDate) {
-      expiresAtInput.value = formatLocalDateTimeForInput(presetDate);
-    }
-  };
-
-  const getDisabledReason = () => {
-    if (activeUploads > 0) {
-      return 'Please wait for uploads to finish.';
-    }
-
-    if (uploadedIds.size === 0) {
-      return 'Upload at least one file first.';
-    }
-
-    if (expiryModeInput && resolveEffectiveExpiryMode() === 'date') {
-      if (!expiresAtInput || !expiresAtInput.value) {
-        return 'Pick an expiry date and time.';
-      }
-
-      const expiresAt = new Date(expiresAtInput.value).getTime();
-      if (Number.isNaN(expiresAt) || expiresAt <= Date.now()) {
-        return 'Expiry date must be in the future.';
-      }
-    }
-
-    return '';
-  };
-
-  const refreshState = () => {
-    const reason = getDisabledReason();
-    submit.disabled = reason.length > 0;
-    submit.title = reason;
-    submit.setAttribute('aria-label', reason.length > 0 ? reason : 'Create share link');
-
-    if (activeUploads > 0) {
-      status.textContent = 'Uploading ' + activeUploads + ' file(s)...';
-      return;
-    }
-
-    status.textContent = uploadedIds.size > 0
-      ? uploadedIds.size + ' file(s) uploaded and ready.'
-      : 'No files uploaded yet.';
-  };
-
-  const addHiddenField = (uploadId) => {
-    const input = document.createElement('input');
-    input.type = 'hidden';
-    input.name = 'uploadedFileIds';
-    input.value = uploadId;
-    input.setAttribute('data-uploaded-file-id', uploadId);
-    hidden.appendChild(input);
-  };
-
-  const removeHiddenField = (uploadId) => {
-    hidden.querySelectorAll('input[name="uploadedFileIds"]').forEach((input) => {
-      if (input.value === uploadId) {
-        input.remove();
-      }
-    });
-  };
-
-  const requestRemoveUpload = (uploadId, fileName, row) => {
-    pendingRemoval = { uploadId, row };
-    if (removeName) {
-      removeName.textContent = fileName || '';
-    }
-
-    if (removeDialog && typeof removeDialog.showModal === 'function') {
-      removeDialog.showModal();
-      return;
-    }
-
-    if (window.confirm('Remove "' + (fileName || 'this file') + '" from this share?')) {
-      confirmRemoveUpload();
-    } else {
-      pendingRemoval = null;
-    }
-  };
-
-  const confirmRemoveUpload = () => {
-    if (!pendingRemoval) {
-      return;
-    }
-
-    const uploadId = pendingRemoval.uploadId;
-    const row = pendingRemoval.row;
-    pendingRemoval = null;
-
-    const formData = new FormData();
-    formData.append('uploadId', uploadId);
-    if (draftShareIdInput && draftShareIdInput.value) {
-      formData.append('draftShareId', draftShareIdInput.value);
-    }
-
-    fetch('/api/uploads/remove', { method: 'POST', body: formData })
-      .then((response) => {
-        if (!response.ok) {
-          return Promise.reject(new Error('Unable to remove file.'));
-        }
-        uploadedIds.delete(uploadId);
-        removeHiddenField(uploadId);
-        if (row && row.parentElement) {
-          row.remove();
-        }
-        refreshState();
-      })
-      .catch(() => {
-        status.textContent = 'Unable to remove file right now.';
-      });
-  };
-
-  const createRow = (file) => {
-    const row = document.createElement('li');
-    row.className = 'relative rounded-lg border border-border bg-cream px-2.5 py-2 min-w-0';
-
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'absolute right-1 top-1 text-ink-muted hover:text-danger leading-none text-xs hidden';
-    remove.title = 'Remove file';
-    remove.setAttribute('aria-label', 'Remove file');
-    remove.setAttribute('data-upload-remove', '');
-    remove.textContent = 'x';
-
-    const name = document.createElement('p');
-    name.className = 'text-xs text-ink-light truncate';
-    name.textContent = file.name;
-
-    const size = document.createElement('p');
-    size.className = 'text-[11px] text-ink-muted mt-0.5';
-    size.textContent = formatBytes(file.size);
-
-    const progressWrap = document.createElement('div');
-    progressWrap.className = 'mt-1.5 h-1 bg-white rounded-full overflow-hidden';
-    const bar = document.createElement('div');
-    bar.className = 'h-full bg-terra transition-all';
-    bar.style.width = '0%';
-    progressWrap.appendChild(bar);
-
-    const state = document.createElement('p');
-    state.className = 'text-[11px] text-ink-muted mt-1';
-    state.textContent = 'Queued...';
-
-    row.appendChild(remove);
-    row.appendChild(name);
-    row.appendChild(size);
-    row.appendChild(progressWrap);
-    row.appendChild(state);
-    list.appendChild(row);
-    return { row, bar, state, progressWrap, size, remove, fileName: file.name };
-  };
-
-  const uploadFile = (file) => {
-    const ui = createRow(file);
-    activeUploads += 1;
-    refreshState();
-
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/uploads/stage');
-    xhr.responseType = 'json';
-
-    xhr.upload.addEventListener('progress', (event) => {
-      if (!event.lengthComputable) return;
-      const percent = Math.min(100, Math.round((event.loaded / event.total) * 100));
-      ui.bar.style.width = percent + '%';
-      ui.state.textContent = 'Uploading... ' + percent + '%';
-    });
-
-    xhr.addEventListener('load', () => {
-      activeUploads -= 1;
-      if (xhr.status >= 200 && xhr.status < 300 && xhr.response && xhr.response.uploadId) {
-        const uploadId = xhr.response.uploadId;
-        ui.row.setAttribute('data-upload-id', uploadId);
-        uploadedIds.add(xhr.response.uploadId);
-        addHiddenField(xhr.response.uploadId);
-        ui.row.className = 'relative rounded-lg border border-sage/35 bg-sage-wash px-2.5 py-1.5 min-w-0';
-        ui.progressWrap.style.display = 'none';
-        ui.size.style.display = 'none';
-        ui.state.textContent = 'Uploaded';
-        ui.state.className = 'text-[11px] text-sage mt-0.5';
-        ui.remove.classList.remove('hidden');
-        ui.remove.addEventListener('click', () => requestRemoveUpload(uploadId, ui.fileName, ui.row));
-      } else {
-        ui.row.className = 'relative rounded-lg border border-danger/35 bg-danger-wash px-2.5 py-2 min-w-0';
-        ui.bar.className = 'h-full bg-danger';
-        ui.state.textContent = 'Upload failed';
-        ui.state.className = 'text-[11px] text-danger mt-1';
-      }
-      refreshState();
-    });
-
-    xhr.addEventListener('error', () => {
-      activeUploads -= 1;
-      ui.row.className = 'relative rounded-lg border border-danger/35 bg-danger-wash px-2.5 py-2 min-w-0';
-      ui.bar.className = 'h-full bg-danger';
-      ui.state.textContent = 'Upload failed';
-      ui.state.className = 'text-[11px] text-danger mt-1';
-      refreshState();
-    });
-
-    const data = new FormData();
-    data.append('file', file, file.name);
-    if (draftShareIdInput && draftShareIdInput.value) {
-      data.append('draftShareId', draftShareIdInput.value);
-    }
-    xhr.send(data);
-  };
-
-  const queueFiles = (files) => {
-    Array.from(files || []).forEach((file) => uploadFile(file));
-    if (fileInput) fileInput.value = '';
-  };
-
-  if (pickButton && fileInput) {
-    pickButton.addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', () => queueFiles(fileInput.files));
-  }
-
-  if (dropzone) {
-    dropzone.addEventListener('dragover', (event) => {
-      event.preventDefault();
-      dropzone.classList.add('ring-2', 'ring-terra/40');
-    });
-    dropzone.addEventListener('dragleave', () => {
-      dropzone.classList.remove('ring-2', 'ring-terra/40');
-    });
-    dropzone.addEventListener('drop', (event) => {
-      event.preventDefault();
-      dropzone.classList.remove('ring-2', 'ring-terra/40');
-      queueFiles(event.dataTransfer ? event.dataTransfer.files : []);
-    });
-  }
-
-  list.querySelectorAll('[data-upload-remove]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const row = button.closest('[data-upload-id]');
-      if (!row) return;
-      const uploadId = row.getAttribute('data-upload-id') || '';
-      const fileNameNode = row.querySelector('p');
-      const fileName = fileNameNode ? fileNameNode.textContent || '' : '';
-      if (!uploadId) return;
-      requestRemoveUpload(uploadId, fileName, row);
-    });
-  });
-
-  if (removeCancel) {
-    removeCancel.addEventListener('click', () => {
-      pendingRemoval = null;
-      if (removeDialog) {
-        removeDialog.close();
-      }
-    });
-  }
-
-  if (removeConfirm) {
-    removeConfirm.addEventListener('click', () => {
-      if (removeDialog) {
-        removeDialog.close();
-      }
-      confirmRemoveUpload();
-    });
-  }
-
-  if (expiryModeInput) {
-    expiryModeInput.addEventListener('change', () => {
-      updateExpiryUi();
-      refreshState();
-    });
-  }
-
-  if (expiresAtInput) {
-    expiresAtInput.addEventListener('input', refreshState);
-    expiresAtInput.addEventListener('change', refreshState);
-  }
-
-  form.addEventListener('submit', (event) => {
-    const reason = getDisabledReason();
-    if (reason.length > 0) {
-      event.preventDefault();
-      status.textContent = reason;
-    }
-  });
-
-  updateExpiryUi();
-  refreshState();
-})();
-</script>
-""";
-
-static string RenderShareTemplateScript() => """
-<script>
-(() => {
-  const form = document.querySelector('[data-share-form]');
-  if (!form) return;
-
-  const summary = form.querySelector('[data-template-summary]');
-  const modeInput = form.querySelector('[data-template-mode]');
-  const titleInput = form.querySelector('[data-template-title]');
-  const h1Input = form.querySelector('[data-template-h1]');
-  const customActions = form.querySelector('[data-template-custom-actions]');
-  const designerLink = form.querySelector('[data-template-designer-link]');
-
-  const refreshSummary = () => {
-    if (modeInput.value !== 'per_upload') {
-      if (summary) {
-        summary.textContent = 'Using account default template.';
-      }
-      if (customActions) customActions.classList.add('hidden');
-      return;
-    }
-
-    const heading = h1Input.value || titleInput.value || 'Untitled';
-    if (summary) {
-      summary.textContent = 'Custom design selected: ' + heading + '.';
-    }
-    if (customActions) customActions.classList.remove('hidden');
-  };
-
-  if (designerLink) {
-    designerLink.addEventListener('click', (event) => {
-      if (modeInput.value !== 'per_upload') {
-        event.preventDefault();
-      }
-    });
-  }
-
-  modeInput.addEventListener('change', refreshSummary);
-  refreshSummary();
-})();
-</script>
-""";
-
-static string RenderLocalDateTimeScript() => """
-<script>
-(() => {
-  const nodes = document.querySelectorAll('[data-local-datetime]');
-  if (!nodes.length) return;
-
-  const formatter = new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short'
-  });
-
-  nodes.forEach((node) => {
-    const value = node.getAttribute('data-local-datetime');
-    if (!value) return;
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return;
-    node.textContent = formatter.format(date);
-  });
-})();
-</script>
-""";
-
-static string RenderShareDeleteScript() => """
-<script>
-(() => {
-  const dialog = document.querySelector('[data-share-delete-dialog]');
-  if (!dialog) return;
-
-  const nameNode = dialog.querySelector('[data-share-delete-name]');
-  const cancelButton = dialog.querySelector('[data-share-delete-cancel]');
-  const confirmButton = dialog.querySelector('[data-share-delete-confirm]');
-  let pendingForm = null;
-
-  document.querySelectorAll('[data-share-delete-trigger]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const form = button.closest('[data-share-delete-form]');
-      if (!form) return;
-      pendingForm = form;
-      if (nameNode) {
-        nameNode.textContent = form.getAttribute('data-share-name') || '';
-      }
-      dialog.showModal();
-    });
-  });
-
-  if (cancelButton) {
-    cancelButton.addEventListener('click', () => dialog.close());
-  }
-
-  if (confirmButton) {
-    confirmButton.addEventListener('click', () => {
-      if (pendingForm) {
-        pendingForm.submit();
-      }
-      dialog.close();
-    });
-  }
-})();
-</script>
-""";
-
-static string RenderQuickShareDropzoneScript() => """
-<script>
-(() => {
-  const dropzone = document.querySelector('[data-quick-share-dropzone]');
-  const fileInput = document.querySelector('[data-quick-share-input]');
-  const pickButton = document.querySelector('[data-quick-share-pick]');
-  const status = document.querySelector('[data-quick-share-status]');
-  const draftIdInput = document.querySelector('[data-quick-share-draft-id]');
-  if (!dropzone || !fileInput || !pickButton || !status || !draftIdInput || !draftIdInput.value) return;
-
-  const draftShareId = draftIdInput.value;
-
-  const setStatus = (text, isError) => {
-    status.textContent = text;
-    status.classList.remove('text-ink-muted', 'text-danger');
-    status.classList.add(isError ? 'text-danger' : 'text-ink-muted');
-  };
-
-  const uploadSingleFile = async (file) => {
-    const formData = new FormData();
-    formData.append('draftShareId', draftShareId);
-    formData.append('file', file, file.name);
-
-    const response = await fetch('/api/uploads/stage', {
-      method: 'POST',
-      body: formData
-    });
-    if (!response.ok) {
-      let error = 'Upload failed.';
-      try {
-        const json = await response.json();
-        if (json && json.error) {
-          error = json.error;
-        }
-      } catch {
-        // ignore non-json responses
-      }
-      throw new Error(error);
-    }
-  };
-
-  const queueAndUpload = async (files) => {
-    const list = Array.from(files || []);
-    if (list.length === 0) return;
-
-    setStatus('Uploading ' + list.length + ' file(s)...', false);
-    try {
-      for (const file of list) {
-        await uploadSingleFile(file);
-      }
-      setStatus('Upload complete. Redirecting to share setup...', false);
-      window.location.href = '/shares/new?draftShareId=' + encodeURIComponent(draftShareId);
-    } catch (error) {
-      setStatus((error && error.message) ? error.message : 'Upload failed.', true);
-    }
-  };
-
-  pickButton.addEventListener('click', (event) => {
-    event.stopPropagation();
-    fileInput.click();
-  });
-
-  dropzone.addEventListener('click', () => fileInput.click());
-  dropzone.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      fileInput.click();
-    }
-  });
-
-  fileInput.addEventListener('change', () => {
-    queueAndUpload(fileInput.files);
-    fileInput.value = '';
-  });
-
-  dropzone.addEventListener('dragover', (event) => {
-    event.preventDefault();
-    dropzone.classList.add('ring-2', 'ring-terra/40');
-  });
-  dropzone.addEventListener('dragleave', () => {
-    dropzone.classList.remove('ring-2', 'ring-terra/40');
-  });
-  dropzone.addEventListener('drop', (event) => {
-    event.preventDefault();
-    dropzone.classList.remove('ring-2', 'ring-terra/40');
-    queueAndUpload(event.dataTransfer ? event.dataTransfer.files : []);
-  });
-})();
-</script>
-""";
-
-static string RenderCsrfClientScript() => """
-<script>
-(() => {
-  const cookieName = 'agora.csrf.request';
-  const formFieldName = '__RequestVerificationToken';
-  const headerName = 'X-CSRF-TOKEN';
-
-  const getCookie = (name) => {
-    const prefix = name + '=';
-    const parts = document.cookie ? document.cookie.split(';') : [];
-    for (const part of parts) {
-      const value = part.trim();
-      if (value.startsWith(prefix)) {
-        return decodeURIComponent(value.slice(prefix.length));
-      }
-    }
-    return '';
-  };
-
-  const csrfToken = getCookie(cookieName);
-  if (!csrfToken) return;
-
-  const isUnsafeMethod = (method) => {
-    const upper = (method || 'GET').toUpperCase();
-    return upper !== 'GET' && upper !== 'HEAD' && upper !== 'OPTIONS' && upper !== 'TRACE';
-  };
-
-  const isSameOriginUrl = (input) => {
-    try {
-      const url = new URL(input || window.location.href, window.location.href);
-      return url.origin === window.location.origin;
-    } catch {
-      return false;
-    }
-  };
-
-  document.querySelectorAll('form').forEach((form) => {
-    const method = form.getAttribute('method') || 'GET';
-    if (!isUnsafeMethod(method)) return;
-    if (form.querySelector('input[name="' + formFieldName + '"]')) return;
-    const input = document.createElement('input');
-    input.type = 'hidden';
-    input.name = formFieldName;
-    input.value = csrfToken;
-    form.appendChild(input);
-  });
-
-  const originalFetch = window.fetch.bind(window);
-  window.fetch = (input, init) => {
-    const method = (init && init.method) || 'GET';
-    const url = typeof input === 'string' ? input : (input && input.url) || window.location.href;
-    if (!isUnsafeMethod(method) || !isSameOriginUrl(url)) {
-      return originalFetch(input, init);
-    }
-
-    const requestInit = init ? { ...init } : {};
-    const headers = new Headers(requestInit.headers || (typeof input !== 'string' ? input.headers : undefined));
-    if (!headers.has(headerName)) {
-      headers.set(headerName, csrfToken);
-    }
-    requestInit.headers = headers;
-    return originalFetch(input, requestInit);
-  };
-
-  const originalOpen = XMLHttpRequest.prototype.open;
-  const originalSend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open = function(method, url) {
-    this._csrfMethod = method || 'GET';
-    this._csrfUrl = url || window.location.href;
-    return originalOpen.apply(this, arguments);
-  };
-  XMLHttpRequest.prototype.send = function(body) {
-    if (isUnsafeMethod(this._csrfMethod) && isSameOriginUrl(this._csrfUrl)) {
-      this.setRequestHeader(headerName, csrfToken);
-    }
-    return originalSend.call(this, body);
-  };
-})();
-</script>
-""";
+static string RenderCsrfClientScript() =>
+    """<script src="/js/csrf-client.js"></script>""";
 
 static string RenderLayout(string title, string? email, string body, string? message = null, bool isAdmin = false)
 {

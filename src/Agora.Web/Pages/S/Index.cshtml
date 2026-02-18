@@ -2,8 +2,9 @@
 @model Agora.Web.Pages.S.IndexModel
 @{
     Layout = null;
+    var previewDownloadLabel = (Model.Share?.Files.Count ?? 0) > 1 ? "Download all files" : "Download file";
     var cardModel = new Agora.Web.Pages.Shared.ShareLandingCardViewModel(
-        Title: Model.Share?.PageH1 ?? string.Empty,
+        Title: Model.DisplayH1,
         Subtitle: Model.Share?.PageTitle,
         Description: Model.Share?.PageDescription ?? string.Empty,
         ZipDisplayName: Model.Share?.ZipDisplayName ?? string.Empty,
@@ -21,11 +22,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>@(Model.Share?.PageH1 ?? "File Download") - Agora</title>
+  <title>@Model.DisplayH1 - Agora</title>
   <meta name="description" content="@(Model.Share?.PageDescription ?? "Download shared files")" />
 
   <meta property="og:type" content="website" />
-  <meta property="og:title" content="@(Model.Share?.PageH1 ?? "File Download")" />
+  <meta property="og:title" content="@Model.DisplayH1" />
   <meta property="og:description" content="@(Model.Share?.PageDescription ?? "Download shared files")" />
   <meta property="og:image" content="@Model.OgImageUrl" />
   <meta property="og:image:width" content="1200" />
@@ -33,7 +34,7 @@
   <meta property="og:url" content="@Model.PageUrl" />
 
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="@(Model.Share?.PageH1 ?? "File Download")" />
+  <meta name="twitter:title" content="@Model.DisplayH1" />
   <meta name="twitter:description" content="@(Model.Share?.PageDescription ?? "Download shared files")" />
   <meta name="twitter:image" content="@Model.OgImageUrl" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -54,29 +55,26 @@
     .mosaic-item { border:1px solid var(--border); border-radius:0.75rem; overflow:hidden; background:#f8f4ef; position:relative; }
     .mosaic-open { display:block; text-decoration:none; }
     .mosaic-item img { width:100%; height:150px; object-fit:cover; display:block; }
-    .mosaic-label { font-size:0.7rem; padding:0.45rem 0.55rem; color:var(--ink-light); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .mosaic-download { position:absolute; right:0.4rem; top:0.4rem; background:rgba(26,22,20,0.76); color:#fff; text-decoration:none; border-radius:999px; padding:0.2rem 0.48rem; font-size:0.66rem; }
+    .mosaic-meta { display:flex; align-items:center; gap:0.4rem; padding:0.45rem 0.55rem; min-width:0; }
+    .mosaic-label { font-size:0.7rem; line-height:1.2; color:var(--ink-light); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:1; }
+    .file-icon-download { display:inline-flex; align-items:center; justify-content:center; width:1.2rem; height:1.2rem; border-radius:999px; text-decoration:none; color:#fff; background:var(--terra); flex:0 0 auto; }
+    .file-icon-download svg { width:0.7rem; height:0.7rem; display:block; }
     .single-wrap { padding:1rem; }
     .single-preview { border:1px solid var(--border); border-radius:0.8rem; background:#fff; overflow:hidden; min-height:260px; }
+    .preview-frame { width:100%; aspect-ratio:4/3; background:#f5f1eb; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+    .preview-frame img { width:100%; height:100%; object-fit:contain; display:block; }
     .single-actions { display:flex; justify-content:flex-end; margin-top:0.65rem; }
     .file-download { display:inline-block; text-decoration:none; font-size:0.76rem; font-weight:600; color:#fff; background:var(--terra); border-radius:0.5rem; padding:0.45rem 0.62rem; }
     .file-browser { display:grid; grid-template-columns:minmax(220px,280px) 1fr; min-height:100%; }
     .file-list { border-right:1px solid var(--border); overflow:auto; padding:0.7rem; background:#fcfaf7; }
-    .file-list-item { width:100%; text-align:left; background:white; border:1px solid var(--border); border-radius:0.62rem; padding:0.62rem; margin-bottom:0.5rem; cursor:pointer; }
+    .file-list-item { width:100%; text-align:left; background:white; border:1px solid var(--border); border-radius:0.62rem; padding:0.62rem; margin-bottom:0.5rem; }
     .file-list-item.active { border-color:var(--terra); box-shadow:0 0 0 1px rgba(196,102,58,0.22); }
-    .file-list-name { display:block; color:var(--ink); font-size:0.79rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .file-list-row { display:flex; align-items:center; gap:0.4rem; min-width:0; }
+    .file-list-select { flex:1; min-width:0; background:transparent; border:0; padding:0; text-align:left; cursor:pointer; }
+    .file-list-name { display:block; color:var(--ink); font-size:0.79rem; line-height:1.25; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:1; }
     .file-list-meta { display:flex; justify-content:space-between; gap:0.5rem; color:var(--ink-muted); font-size:0.7rem; margin-top:0.25rem; }
-    .file-list-download { margin-top:0.45rem; display:inline-block; font-size:0.68rem; text-decoration:none; color:var(--terra); }
     .viewer { min-width:0; display:flex; flex-direction:column; }
-    .viewer-head { padding:0.8rem 0.9rem; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; gap:0.5rem; }
-    .viewer-title { font-size:0.8rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .viewer-size { font-size:0.72rem; color:var(--ink-muted); }
     .viewer-body { padding:0.85rem; min-height:300px; display:flex; align-items:center; justify-content:center; }
-    .viewer-body img, .viewer-body video, .viewer-body iframe { width:100%; max-height:49vh; border:1px solid var(--border); border-radius:0.62rem; background:#f5f1eb; }
-    .viewer-body audio { width:100%; }
-    .generic-preview { width:100%; max-width:560px; min-height:220px; border:1px solid var(--border); border-radius:0.75rem; background:linear-gradient(140deg,#f8f4ef,#f1e9dd); display:flex; align-items:center; justify-content:center; flex-direction:column; }
-    .generic-preview-code { font-size:1.3rem; letter-spacing:0.1em; color:var(--ink-light); }
-    .generic-preview-name { margin-top:0.38rem; font-size:0.76rem; color:var(--ink-muted); }
     .download-bar { border-top:1px solid var(--border); padding:0.95rem 1.05rem; background:#fff; }
     .download-password-label { display:block;font-size:0.75rem;font-weight:600;color:#5C534A;text-transform:uppercase;letter-spacing:.08em;margin-bottom:0.4rem; }
     .download-password-input { width:100%;padding:0.7rem 0.8rem;border:1px solid #E5DFD7;border-radius:0.5rem;margin-bottom:0.6rem;font-size:0.875rem; }
@@ -88,7 +86,7 @@
       .preview-shell { width:100%; max-height:none; }
       .file-browser { grid-template-columns:1fr; }
       .file-list { border-right:none; border-bottom:1px solid var(--border); max-height:220px; }
-      .viewer-body img, .viewer-body video, .viewer-body iframe { max-height:44vh; }
+      .preview-frame { max-height:56vh; }
     }
   </style>
 </head>
@@ -99,7 +97,7 @@
     {
       <section class="preview-shell">
         <header class="preview-header">
-          <h1 class="preview-title">@(Model.Share.PageH1)</h1>
+          <h1 class="preview-title">@Model.DisplayH1</h1>
           @if (!string.IsNullOrWhiteSpace(Model.Share.PageTitle))
           {
             <p class="preview-subtitle">@Model.Share.PageTitle</p>
@@ -118,11 +116,17 @@
               @foreach (var item in Model.PreviewItems)
               {
                 <div class="mosaic-item" title="@item.OriginalFilename">
-                  <a class="mosaic-open" href="@item.FileUrl" target="_blank" rel="noreferrer">
+                  <a class="mosaic-open" href="@item.PreviewImageUrl" target="_blank" rel="noreferrer">
                     <img src="@item.ThumbnailUrl" alt="@item.OriginalFilename" loading="lazy" />
-                    <span class="mosaic-label">@item.OriginalFilename</span>
                   </a>
-                  <a class="mosaic-download" href="@item.DownloadUrl" title="Download @item.OriginalFilename">Download</a>
+                  <span class="mosaic-meta">
+                    <a class="file-icon-download" href="@item.DownloadUrl" title="Download @item.OriginalFilename" aria-label="Download @item.OriginalFilename">
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M12 4v10m0 0l4-4m-4 4l-4-4M5 18h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </a>
+                    <span class="mosaic-label">@item.OriginalFilename</span>
+                  </span>
                 </div>
               }
             </div>
@@ -132,32 +136,9 @@
             var item = Model.InitialPreviewItem;
             <div class="single-wrap">
               <div class="single-preview">
-                @if (item.PreviewKind == "image")
-                {
-                  <img src="@item.FileUrl" alt="@item.OriginalFilename" style="display:block;width:100%;max-height:52vh;object-fit:contain;background:#f8f4ef;" />
-                }
-                else if (item.PreviewKind == "video")
-                {
-                  <video controls preload="metadata" src="@item.FileUrl" style="display:block;width:100%;max-height:52vh;"></video>
-                }
-                else if (item.PreviewKind == "audio")
-                {
-                  <div style="padding:1rem 1.1rem;">
-                    <p style="font-size:0.78rem;color:var(--ink-light);margin-bottom:0.55rem;">Audio preview</p>
-                    <audio controls preload="metadata" src="@item.FileUrl"></audio>
-                  </div>
-                }
-                else if (item.PreviewKind == "pdf")
-                {
-                  <iframe src="@item.FileUrl" title="@item.OriginalFilename" style="display:block;width:100%;min-height:52vh;border:0;"></iframe>
-                }
-                else
-                {
-                  <div class="generic-preview" style="border:0;max-width:none;min-height:52vh;border-radius:0;">
-                    <p class="generic-preview-code">@item.ExtensionLabel</p>
-                    <p class="generic-preview-name">Preview unavailable</p>
-                  </div>
-                }
+                <div class="preview-frame">
+                  <img src="@item.PreviewImageUrl" alt="@item.OriginalFilename preview" loading="lazy" />
+                </div>
               </div>
               <div class="single-actions">
                 <a class="file-download" href="@item.DownloadUrl">Download file</a>
@@ -170,62 +151,40 @@
               <aside class="file-list">
                 @foreach (var item in Model.PreviewItems)
                 {
-                  <button
-                    type="button"
+                  <div
                     class="file-list-item @(item.Id == Model.InitialPreviewItem?.Id ? "active" : string.Empty)"
                     data-preview-select
+                    data-preview-image-url="@item.PreviewImageUrl"
                     data-file-url="@item.FileUrl"
                     data-download-url="@item.DownloadUrl"
                     data-kind="@item.PreviewKind"
                     data-name="@item.OriginalFilename"
                     data-size="@item.SizeDisplay"
                     data-ext="@item.ExtensionLabel">
-                    <span class="file-list-name">@item.OriginalFilename</span>
+                    <span class="file-list-row">
+                      <a class="file-icon-download" href="@item.DownloadUrl" title="Download @item.OriginalFilename" aria-label="Download @item.OriginalFilename">
+                        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                          <path d="M12 4v10m0 0l4-4m-4 4l-4-4M5 18h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
+                      </a>
+                      <button type="button" class="file-list-select" data-preview-open title="Preview @item.OriginalFilename">
+                        <span class="file-list-name">@item.OriginalFilename</span>
+                      </button>
+                    </span>
                     <span class="file-list-meta">
                       <span>@item.ExtensionLabel</span>
                       <span>@item.SizeDisplay</span>
                     </span>
-                    <span class="file-list-download">Preview file</span>
-                  </button>
+                  </div>
                 }
               </aside>
               <section class="viewer" data-preview-viewer>
-                <header class="viewer-head">
-                  <div style="min-width:0;">
-                    <p class="viewer-title" data-preview-name>@Model.InitialPreviewItem?.OriginalFilename</p>
-                    <p class="viewer-size" data-preview-size>@Model.InitialPreviewItem?.SizeDisplay</p>
-                  </div>
-                  @if (Model.InitialPreviewItem is not null)
-                  {
-                    <a class="file-download" data-preview-download href="@Model.InitialPreviewItem.DownloadUrl">Download file</a>
-                  }
-                </header>
                 <div class="viewer-body" data-preview-body>
                   @if (Model.InitialPreviewItem is not null)
                   {
-                    if (Model.InitialPreviewItem.PreviewKind == "image")
-                    {
-                      <img src="@Model.InitialPreviewItem.FileUrl" alt="@Model.InitialPreviewItem.OriginalFilename" />
-                    }
-                    else if (Model.InitialPreviewItem.PreviewKind == "video")
-                    {
-                      <video controls preload="metadata" src="@Model.InitialPreviewItem.FileUrl"></video>
-                    }
-                    else if (Model.InitialPreviewItem.PreviewKind == "audio")
-                    {
-                      <audio controls preload="metadata" src="@Model.InitialPreviewItem.FileUrl"></audio>
-                    }
-                    else if (Model.InitialPreviewItem.PreviewKind == "pdf")
-                    {
-                      <iframe src="@Model.InitialPreviewItem.FileUrl" title="@Model.InitialPreviewItem.OriginalFilename"></iframe>
-                    }
-                    else
-                    {
-                      <div class="generic-preview">
-                        <p class="generic-preview-code">@Model.InitialPreviewItem.ExtensionLabel</p>
-                        <p class="generic-preview-name">Preview unavailable</p>
-                      </div>
-                    }
+                    <div class="preview-frame">
+                      <img src="@Model.InitialPreviewItem.PreviewImageUrl" alt="@Model.InitialPreviewItem.OriginalFilename preview" loading="lazy" />
+                    </div>
                   }
                 </div>
               </section>
@@ -236,7 +195,7 @@
         <footer class="download-bar">
           @if (Model.IsExpired || !Model.AllowsZipDownload)
           {
-            <button type="button" class="download-button" disabled style="opacity:.6;cursor:not-allowed;" title="@(Model.IsExpired ? "This link has expired." : "ZIP download is disabled for this share mode.")">Download ZIP</button>
+            <button type="button" class="download-button" disabled style="opacity:.6;cursor:not-allowed;" title="@(Model.IsExpired ? "This link has expired." : "ZIP download is disabled for this share mode.")">@previewDownloadLabel</button>
           }
           else
           {
@@ -251,77 +210,28 @@
               {
                 <p class="download-error">@Model.DownloadError</p>
               }
-              <button type="submit" class="download-button">Download ZIP</button>
+              <button type="submit" class="download-button">@previewDownloadLabel</button>
             </form>
           }
+          <p style="color:var(--ink-muted);font-size:0.6875rem;margin-top:0.7rem;text-align:center;">
+            <a href="https://github.com/aduggleby/agora" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:none;">
+              Powered by Agora - Self hosted file transfer
+            </a>
+          </p>
         </footer>
       </section>
     }
     else
     {
       @await Html.PartialAsync("/Pages/Shared/_ShareLandingCard.cshtml", cardModel)
+      <p style="color:var(--ink-muted);font-size:0.6875rem;margin-top:1.25rem;padding-bottom:0.5rem;text-align:center;">
+        <a href="https://github.com/aduggleby/agora" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:none;">
+          Powered by Agora - Self hosted file transfer
+        </a>
+      </p>
     }
-
-    <p style="color:var(--ink-muted);font-size:0.6875rem;margin-top:1.25rem;padding-bottom:0.5rem;text-align:center;">
-      <a href="https://github.com/aduggleby/agora" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:none;">
-        Powered by Agora - Self hosted file transfer
-      </a>
-    </p>
   }
 
-  <script>
-    (() => {
-      const browser = document.querySelector('[data-file-browser]');
-      if (!browser) return;
-
-      const items = Array.from(browser.querySelectorAll('[data-preview-select]'));
-      const body = browser.querySelector('[data-preview-body]');
-      const name = browser.querySelector('[data-preview-name]');
-      const size = browser.querySelector('[data-preview-size]');
-      const download = browser.querySelector('[data-preview-download]');
-      if (!body || !name || !size || !download) return;
-
-      const escapeHtml = (value) => value
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;');
-
-      const renderBody = (kind, fileUrl, fileName, extLabel) => {
-        if (kind === 'image') {
-          return '<img src="' + fileUrl + '" alt="' + escapeHtml(fileName) + '" />';
-        }
-        if (kind === 'video') {
-          return '<video controls preload="metadata" src="' + fileUrl + '"></video>';
-        }
-        if (kind === 'audio') {
-          return '<audio controls preload="metadata" src="' + fileUrl + '"></audio>';
-        }
-        if (kind === 'pdf') {
-          return '<iframe src="' + fileUrl + '" title="' + escapeHtml(fileName) + '"></iframe>';
-        }
-        return '<div class="generic-preview"><p class="generic-preview-code">' + escapeHtml(extLabel) + '</p><p class="generic-preview-name">Preview unavailable</p></div>';
-      };
-
-      items.forEach((item) => {
-        item.addEventListener('click', () => {
-          items.forEach((x) => x.classList.remove('active'));
-          item.classList.add('active');
-
-          const fileUrl = item.dataset.fileUrl || '';
-          const downloadUrl = item.dataset.downloadUrl || '#';
-          const kind = item.dataset.kind || 'generic';
-          const fileName = item.dataset.name || 'File';
-          const fileSize = item.dataset.size || '';
-          const extLabel = item.dataset.ext || 'FILE';
-
-          name.textContent = fileName;
-          size.textContent = fileSize;
-          download.setAttribute('href', downloadUrl);
-          body.innerHTML = renderBody(kind, fileUrl, fileName, extLabel);
-        });
-      });
-    })();
-  </script>
+  <script src="/js/share-download.js"></script>
 </body>
 </html>

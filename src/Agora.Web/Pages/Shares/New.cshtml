@@ -1,5 +1,14 @@
 @page "/shares/new"
 @model Agora.Web.Pages.Shares.NewModel
+@{
+  string FormatFileSize(long bytes)
+  {
+    if (bytes >= 1024L * 1024L * 1024L) return $"{bytes / (1024.0 * 1024.0 * 1024.0):F2} GB";
+    if (bytes >= 1024L * 1024L) return $"{bytes / (1024.0 * 1024.0):F2} MB";
+    if (bytes >= 1024L) return $"{bytes / 1024.0:F2} KB";
+    return $"{bytes} B";
+  }
+}
 
 <section class="mb-10">
   <h2 class="font-display text-4xl tracking-tight mb-1">Share files</h2>
@@ -8,7 +17,7 @@
 
 <section class="mb-10">
   <div class="bg-white rounded-2xl border border-border p-6">
-    <form action="/api/shares" method="post" enctype="multipart/form-data" class="space-y-5" data-share-form>
+    <form action="/api/shares" method="post" enctype="multipart/form-data" class="space-y-5" data-share-form data-max-file-size-bytes="@Model.MaxFileSizeBytes" data-max-total-upload-bytes="@Model.MaxTotalUploadBytes">
       <div>
         <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Files</label>
         <input type="file" name="files" multiple accept="*/*" class="sr-only" data-file-input />
@@ -16,9 +25,9 @@
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p class="text-sm text-ink-light">Select files and they upload immediately in the background.</p>
-              <p class="text-xs text-ink-muted mt-1">You can keep filling in form details while upload progresses.</p>
+              <p class="text-xs text-ink-muted mt-1">You can keep filling in form details while upload progresses. Max 5 GB per file, 10 GB total.</p>
             </div>
-            <button type="button" class="px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors" data-pick-files>Select files</button>
+            <button type="button" class="@(Model.StagedUploads.Count > 0 ? "px-4 py-2 bg-cream text-ink text-sm font-medium rounded-lg border border-border hover:bg-cream-dark/70 transition-colors" : "px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors")" data-pick-files>@(Model.StagedUploads.Count > 0 ? "Add more files" : "Select files")</button>
           </div>
           <p class="text-xs text-ink-muted mt-3" data-upload-status>@(Model.StagedUploads.Count > 0 ? $"{Model.StagedUploads.Count} file(s) uploaded and ready." : "No files uploaded yet.")</p>
           <div class="mt-4 hidden" data-upload-hidden>
@@ -30,10 +39,10 @@
           <ul class="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-2" data-upload-list>
             @foreach (var upload in Model.StagedUploads)
             {
-              <li class="relative rounded-lg border border-sage/35 bg-sage-wash px-2.5 py-1.5 min-w-0" data-upload-id="@upload.UploadId">
+              <li class="relative rounded-lg border border-sage/35 bg-sage-wash px-2.5 py-1.5 min-w-0" data-upload-id="@upload.UploadId" data-upload-size-bytes="@upload.OriginalSizeBytes">
                 <button type="button" class="absolute right-1 top-1 p-0.5 text-ink-muted hover:text-danger leading-none text-sm font-semibold" title="Remove file" data-upload-remove aria-label="Remove file">x</button>
-                <p class="text-xs text-ink-light truncate">@upload.OriginalFileName</p>
-                <p class="text-[11px] text-sage mt-0.5">Uploaded</p>
+                <p class="text-xs text-ink-light truncate pr-6">@upload.OriginalFileName</p>
+                <p class="text-[11px] text-sage mt-0.5">Uploaded · @FormatFileSize(upload.OriginalSizeBytes)</p>
               </li>
             }
           </ul>
@@ -83,8 +92,7 @@
               <label class="flex items-start gap-3 p-3 border border-border rounded-xl bg-cream">
                 <input type="checkbox" name="showPreviews" value="1" class="mt-0.5 h-4 w-4 accent-terra" />
                 <span class="block">
-                  <span class="block text-sm font-semibold text-ink">Show previews</span>
-                  <span class="block text-xs text-ink-light mt-0.5">If enabled, recipients can preview files and still download the ZIP.</span>
+                  <span class="block text-sm text-ink">Show previews</span>
                 </span>
               </label>
             </div>
@@ -157,280 +165,4 @@
   </div>
 </section>
 
-<script>
-(() => {
-  const form = document.querySelector('[data-share-form]');
-  if (!form) return;
-  const fileInput = form.querySelector('[data-file-input]');
-  const pickButton = form.querySelector('[data-pick-files]');
-  const list = form.querySelector('[data-upload-list]');
-  const hidden = form.querySelector('[data-upload-hidden]');
-  const status = form.querySelector('[data-upload-status]');
-  const submit = form.querySelector('[data-submit]');
-  const dropzone = form.querySelector('[data-dropzone]');
-  const expiryModeInput = form.querySelector('[name="expiryMode"]');
-  const expiresAtInput = form.querySelector('[name="expiresAtUtc"]');
-  const accountDefaultExpiryInput = form.querySelector('[data-account-default-expiry-mode]');
-  const optionsToggle = form.querySelector('[data-options-toggle]');
-  const optionsHeader = form.querySelector('[data-options-header]');
-  const optionsToggleLabel = form.querySelector('[data-options-toggle-label]');
-  const optionsToggleIcon = form.querySelector('[data-options-icon]');
-  const optionsPanel = form.querySelector('[data-options-panel]');
-  const shareTokenInput = form.querySelector('[data-share-token]');
-  const downloadPasswordInput = form.querySelector('[name="downloadPassword"]');
-  const suggestedShareTokenButton = form.querySelector('[data-suggested-share-token]');
-  const draftShareIdInput = form.querySelector('[data-draft-share-id]');
-  const uploadedIds = new Set();
-  hidden.querySelectorAll('input[name="uploadedFileIds"]').forEach((input) => { if (input && input.value) uploadedIds.add(input.value); });
-  let activeUploads = 0;
-  let manualExpiryValue = '';
-  const optionsStorageKey = 'agora:new-share:options-collapsed';
-
-  const setOptionsCollapsed = (isCollapsed) => {
-    if (!optionsPanel || !optionsToggle) return;
-    optionsPanel.classList.toggle('hidden', isCollapsed);
-    if (optionsToggleLabel) optionsToggleLabel.textContent = isCollapsed ? 'Show options' : 'Hide options';
-    if (optionsToggleIcon) optionsToggleIcon.classList.toggle('rotate-180', !isCollapsed);
-    optionsToggle.setAttribute('aria-expanded', (!isCollapsed).toString());
-    optionsHeader?.setAttribute('aria-expanded', (!isCollapsed).toString());
-  };
-
-  const toggleOptions = () => {
-    if (!optionsPanel) return;
-    const nextCollapsed = !optionsPanel.classList.contains('hidden');
-    setOptionsCollapsed(nextCollapsed);
-    try {
-      localStorage.setItem(optionsStorageKey, nextCollapsed ? 'collapsed' : 'expanded');
-    } catch {
-      // Ignore localStorage access errors.
-    }
-  };
-
-  const toLocalDateTimeValue = (date) => {
-    const pad = (n) => String(n).padStart(2, '0');
-    return [
-      date.getFullYear(),
-      '-',
-      pad(date.getMonth() + 1),
-      '-',
-      pad(date.getDate()),
-      'T',
-      pad(date.getHours()),
-      ':',
-      pad(date.getMinutes())
-    ].join('');
-  };
-
-  const resolveEffectiveExpiryMode = () => {
-    const selected = (expiryModeInput?.value || 'account_default').trim().toLowerCase();
-    if (selected !== 'account_default') return selected;
-    return (accountDefaultExpiryInput?.value || '7_days').trim().toLowerCase();
-  };
-
-  const computeExpiryDate = (mode, now) => {
-    switch (mode) {
-      case '1_hour':
-        return new Date(now.getTime() + (1 * 60 * 60 * 1000));
-      case '24_hours':
-        return new Date(now.getTime() + (24 * 60 * 60 * 1000));
-      case '7_days':
-        return new Date(now.getTime() + (7 * 24 * 60 * 60 * 1000));
-      case '30_days':
-        return new Date(now.getTime() + (30 * 24 * 60 * 60 * 1000));
-      case '1_year': {
-        const d = new Date(now.getTime());
-        d.setFullYear(d.getFullYear() + 1);
-        return d;
-      }
-      default:
-        return null;
-    }
-  };
-
-  const syncExpiryInput = () => {
-    if (!expiresAtInput) return;
-    const effectiveMode = resolveEffectiveExpiryMode();
-    const now = new Date();
-    const isManualDate = effectiveMode === 'date';
-
-    if (isManualDate) {
-      expiresAtInput.disabled = false;
-      const parsed = expiresAtInput.value ? new Date(expiresAtInput.value) : null;
-      if (parsed && !Number.isNaN(parsed.getTime()) && parsed.getTime() > now.getTime()) {
-        manualExpiryValue = expiresAtInput.value;
-      }
-      if (!manualExpiryValue) {
-        manualExpiryValue = toLocalDateTimeValue(new Date(now.getTime() + (24 * 60 * 60 * 1000)));
-      }
-      expiresAtInput.value = manualExpiryValue;
-      expiresAtInput.title = '';
-      return;
-    }
-
-    if (!expiresAtInput.disabled && expiresAtInput.value) {
-      manualExpiryValue = expiresAtInput.value;
-    }
-
-    expiresAtInput.disabled = true;
-    const calculated = computeExpiryDate(effectiveMode, now);
-    if (!calculated) {
-      expiresAtInput.value = '';
-      expiresAtInput.title = effectiveMode === 'indefinite'
-        ? 'No expiry date for indefinite mode.'
-        : 'Calculated from expiry mode.';
-      return;
-    }
-
-    expiresAtInput.value = toLocalDateTimeValue(calculated);
-    expiresAtInput.title = 'Calculated from expiry mode.';
-  };
-
-  const refreshState = () => {
-    syncExpiryInput();
-    const effectiveExpiryMode = resolveEffectiveExpiryMode();
-    let reason = '';
-    if (activeUploads > 0) reason = 'Please wait for uploads to finish.';
-    else if (uploadedIds.size === 0) reason = 'Upload at least one file first.';
-    else if (shareTokenInput) {
-      const token = (shareTokenInput.value || '').trim();
-      if (token.length < 3 || token.length > 64 || !/^[A-Za-z0-9_-]+$/.test(token)) reason = 'Share link must be 3-64 letters, numbers, hyphens, or underscores.';
-    }
-    if (!reason && downloadPasswordInput) {
-      const value = (downloadPasswordInput.value || '').trim();
-      if (value.length > 0 && value.length < 8) reason = 'Download password must be at least 8 characters.';
-    }
-    if (!reason && effectiveExpiryMode === 'date') {
-      if (!expiresAtInput.value) reason = 'Pick an expiry date and time.';
-      else if (Number.isNaN(new Date(expiresAtInput.value).getTime()) || new Date(expiresAtInput.value).getTime() <= Date.now()) reason = 'Expiry date must be in the future.';
-    }
-    submit.disabled = reason.length > 0;
-    submit.title = reason;
-    status.textContent = activeUploads > 0 ? 'Uploading ' + activeUploads + ' file(s)...' : (uploadedIds.size > 0 ? uploadedIds.size + ' file(s) uploaded and ready.' : 'No files uploaded yet.');
-  };
-
-  const addHidden = (id) => {
-    const i = document.createElement('input');
-    i.type = 'hidden'; i.name = 'uploadedFileIds'; i.value = id; i.setAttribute('data-uploaded-file-id', id); hidden.appendChild(i);
-  };
-  const removeHidden = (id) => hidden.querySelectorAll('input[name="uploadedFileIds"]').forEach((i) => { if (i.value === id) i.remove(); });
-
-  const requestRemove = (id, row) => {
-    if (!id) return;
-    const data = new FormData();
-    data.append('uploadId', id);
-    data.append('draftShareId', draftShareIdInput.value);
-    fetch('/api/uploads/remove', { method: 'POST', body: data }).then((r) => {
-      if (!r.ok) throw new Error();
-      uploadedIds.delete(id); removeHidden(id); row?.remove(); refreshState();
-    }).catch(() => { status.textContent = 'Unable to remove file right now.'; });
-  };
-
-  const createRow = (file) => {
-    const row = document.createElement('li');
-    row.className = 'relative rounded-lg border border-border bg-cream px-2.5 py-2 min-w-0';
-    const remove = document.createElement('button');
-    remove.type = 'button'; remove.className = 'absolute right-1 top-1 p-0.5 text-ink-muted hover:text-danger leading-none text-sm font-semibold hidden'; remove.textContent = 'x'; remove.title = 'Remove file';
-    const name = document.createElement('p'); name.className = 'text-xs text-ink-light truncate'; name.textContent = file.name;
-    const size = document.createElement('p'); size.className = 'text-[11px] text-ink-muted mt-0.5'; size.textContent = file.size + ' B';
-    const barWrap = document.createElement('div'); barWrap.className = 'mt-1.5 h-1 bg-white rounded-full overflow-hidden';
-    const bar = document.createElement('div'); bar.className = 'h-full bg-terra transition-all'; bar.style.width = '0%'; barWrap.appendChild(bar);
-    const state = document.createElement('p'); state.className = 'text-[11px] text-ink-muted mt-1'; state.textContent = 'Queued...';
-    row.append(remove, name, size, barWrap, state); list.appendChild(row);
-    return { row, remove, name, size, barWrap, bar, state };
-  };
-
-  const uploadFile = (file) => {
-    const ui = createRow(file); activeUploads += 1; refreshState();
-    const xhr = new XMLHttpRequest(); xhr.open('POST', '/api/uploads/stage'); xhr.responseType = 'json';
-    xhr.upload.addEventListener('progress', (e) => { if (!e.lengthComputable) return; const p = Math.min(100, Math.round((e.loaded / e.total) * 100)); ui.bar.style.width = p + '%'; ui.state.textContent = 'Uploading... ' + p + '%'; });
-    xhr.addEventListener('load', () => {
-      activeUploads -= 1;
-      if (xhr.status >= 200 && xhr.status < 300 && xhr.response && xhr.response.uploadId) {
-        const id = xhr.response.uploadId;
-        uploadedIds.add(id); addHidden(id); ui.row.setAttribute('data-upload-id', id);
-        ui.row.className = 'relative rounded-lg border border-sage/35 bg-sage-wash px-2.5 py-1.5 min-w-0';
-        ui.barWrap.style.display = 'none'; ui.size.style.display = 'none'; ui.state.textContent = 'Uploaded'; ui.state.className = 'text-[11px] text-sage mt-0.5';
-        ui.remove.classList.remove('hidden');
-        ui.remove.addEventListener('click', () => requestRemove(id, ui.row));
-      }
-      refreshState();
-    });
-    xhr.addEventListener('error', () => { activeUploads -= 1; ui.state.textContent = 'Upload failed'; ui.state.className = 'text-[11px] text-danger mt-1'; refreshState(); });
-    const data = new FormData(); data.append('draftShareId', draftShareIdInput.value); data.append('file', file, file.name); xhr.send(data);
-  };
-
-  list.querySelectorAll('[data-upload-remove]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const row = button.closest('[data-upload-id]'); if (!row) return;
-      const id = row.getAttribute('data-upload-id') || '';
-      if (!id) return;
-      requestRemove(id, row);
-    });
-  });
-
-  pickButton?.addEventListener('click', () => fileInput.click());
-  fileInput?.addEventListener('change', () => { Array.from(fileInput.files || []).forEach((f) => uploadFile(f)); fileInput.value = ''; });
-  dropzone?.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('ring-2', 'ring-terra/40'); });
-  dropzone?.addEventListener('dragleave', () => dropzone.classList.remove('ring-2', 'ring-terra/40'));
-  dropzone?.addEventListener('drop', (e) => { e.preventDefault(); dropzone.classList.remove('ring-2', 'ring-terra/40'); Array.from(e.dataTransfer?.files || []).forEach((f) => uploadFile(f)); });
-
-  expiryModeInput?.addEventListener('change', refreshState);
-  expiresAtInput?.addEventListener('input', refreshState);
-  shareTokenInput?.addEventListener('input', refreshState);
-  downloadPasswordInput?.addEventListener('input', refreshState);
-  suggestedShareTokenButton?.addEventListener('click', () => {
-    if (!shareTokenInput) return;
-    shareTokenInput.value = suggestedShareTokenButton.getAttribute('data-suggested-share-token') || shareTokenInput.value;
-    shareTokenInput.focus();
-    shareTokenInput.select();
-    refreshState();
-  });
-
-  if (optionsPanel && optionsToggle) {
-    let isCollapsed = true;
-    try {
-      const saved = localStorage.getItem(optionsStorageKey);
-      if (saved === 'expanded') isCollapsed = false;
-      else if (saved === 'collapsed') isCollapsed = true;
-    } catch {
-      // Ignore localStorage access errors.
-    }
-
-    setOptionsCollapsed(isCollapsed);
-    optionsToggle.addEventListener('click', (event) => {
-      event.stopPropagation();
-      toggleOptions();
-    });
-    optionsHeader?.addEventListener('click', (event) => {
-      if (event.target && event.target.closest('[data-options-toggle]')) return;
-      toggleOptions();
-    });
-    optionsHeader?.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-      event.preventDefault();
-      toggleOptions();
-    });
-  }
-  form.addEventListener('submit', (e) => { if (submit.disabled) e.preventDefault(); });
-  refreshState();
-})();
-</script>
-<script>
-(() => {
-  const form = document.querySelector('[data-share-form]'); if (!form) return;
-  const summary = form.querySelector('[data-template-summary]');
-  const modeInput = form.querySelector('[data-template-mode]');
-  const titleInput = form.querySelector('[data-template-title]');
-  const h1Input = form.querySelector('[data-template-h1]');
-  const customActions = form.querySelector('[data-template-custom-actions]');
-  const designerLink = form.querySelector('[data-template-designer-link]');
-  const refresh = () => {
-    if (modeInput.value !== 'per_upload') { if (summary) summary.textContent = 'Using account default template.'; customActions?.classList.add('hidden'); return; }
-    if (summary) summary.textContent = 'Custom design selected: ' + (h1Input.value || titleInput.value || 'Untitled') + '.';
-    customActions?.classList.remove('hidden');
-  };
-  designerLink?.addEventListener('click', (e) => { if (modeInput.value !== 'per_upload') e.preventDefault(); });
-  modeInput?.addEventListener('change', refresh);
-  refresh();
-})();
-</script>
+<script src="/js/shares-new.js"></script>
