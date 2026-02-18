@@ -179,7 +179,6 @@ builder.Services.AddScoped<IShareContentStore, ShareContentStore>();
 builder.Services.AddScoped<AuthEmailJob>();
 builder.Services.AddScoped<EmailNotificationJob>();
 builder.Services.AddScoped<IShareExperienceRenderer, ArchiveShareExperienceRenderer>();
-builder.Services.AddScoped<IShareExperienceRenderer, SiteShareExperienceRenderer>();
 builder.Services.AddScoped<IShareExperienceRenderer, GalleryShareExperienceRenderer>();
 builder.Services.AddScoped<ShareExperienceRendererResolver>();
 builder.Services.AddSingleton<IEmailTemplateRenderer, RazorEmailTemplateRenderer>();
@@ -1696,11 +1695,6 @@ app.MapPost("/api/shares", async (HttpContext context, ShareManager manager, Aut
                 ContentType: string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType));
         }
 
-        if (shareExperienceType == "site" && !uploadFiles.Any(file => IsIndexHtmlFile(file.OriginalFileName)))
-        {
-            return Results.BadRequest("site experience requires an index.html (or index.htm) file.");
-        }
-
         if (shareExperienceType == "gallery" && !uploadFiles.Any(file => IsLikelyImageFile(file.OriginalFileName, file.ContentType)))
         {
             return Results.BadRequest("gallery experience requires at least one image file.");
@@ -1981,13 +1975,6 @@ static bool TryNormalizeOptionalSharePassword(string? raw, out string? password)
     return password.Length >= 8 && password.Length <= 256;
 }
 
-static bool IsIndexHtmlFile(string? fileName)
-{
-    var normalized = ArchiveNameResolver.Sanitize(fileName ?? string.Empty);
-    return string.Equals(normalized, "index.html", StringComparison.OrdinalIgnoreCase) ||
-           string.Equals(normalized, "index.htm", StringComparison.OrdinalIgnoreCase);
-}
-
 static bool IsLikelyImageFile(string? fileName, string? contentType)
 {
     var normalizedContentType = (contentType ?? string.Empty).Trim().ToLowerInvariant();
@@ -2083,7 +2070,6 @@ static string RenderCreateSharePageBody(
           <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Share experience</label>
           <select name="shareExperienceType" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all appearance-none">
             <option value="archive" selected>Archive download</option>
-            <option value="site">Hosted single-page site</option>
             <option value="gallery">Image gallery</option>
           </select>
         </div>

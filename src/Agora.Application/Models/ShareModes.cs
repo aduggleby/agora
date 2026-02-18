@@ -3,8 +3,7 @@ namespace Agora.Application.Models;
 public enum ShareExperienceType
 {
     Archive = 0,
-    Site = 1,
-    Gallery = 2
+    Gallery = 1
 }
 
 public enum ShareAccessMode
@@ -21,7 +20,6 @@ public static class ShareModes
         var value = raw?.Trim().ToLowerInvariant();
         return value switch
         {
-            "site" => ShareExperienceType.Site,
             "gallery" => ShareExperienceType.Gallery,
             _ => ShareExperienceType.Archive
         };
@@ -31,7 +29,6 @@ public static class ShareModes
     {
         return value switch
         {
-            ShareExperienceType.Site => "site",
             ShareExperienceType.Gallery => "gallery",
             _ => "archive"
         };

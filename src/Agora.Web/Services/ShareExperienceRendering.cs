@@ -8,8 +8,7 @@ public sealed record ShareExperiencePresentation(
     bool AllowsPreview,
     bool AllowsZipDownload,
     IReadOnlyList<ShareFile> PreviewFiles,
-    IReadOnlyList<ShareFile> GalleryFiles,
-    bool HasSiteEntryPoint);
+    IReadOnlyList<ShareFile> GalleryFiles);
 
 public interface IShareExperienceRenderer
 {
@@ -29,28 +28,7 @@ public sealed class ArchiveShareExperienceRenderer : IShareExperienceRenderer
             allowsPreview,
             ShareManager.AllowsZipDownload(share),
             allowsPreview ? share.Files.ToList() : [],
-            [],
-            false);
-    }
-}
-
-public sealed class SiteShareExperienceRenderer : IShareExperienceRenderer
-{
-    public string ExperienceType => "site";
-
-    public ShareExperiencePresentation Build(Share share)
-    {
-        var allowsPreview = ShareManager.AllowsPreview(share);
-        var hasSiteEntryPoint = share.Files.Any(file =>
-            string.Equals(file.OriginalFilename, "index.html", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(file.OriginalFilename, "index.htm", StringComparison.OrdinalIgnoreCase));
-        return new ShareExperiencePresentation(
-            ExperienceType,
-            allowsPreview,
-            ShareManager.AllowsZipDownload(share),
-            [],
-            [],
-            hasSiteEntryPoint);
+            []);
     }
 }
 
@@ -68,8 +46,7 @@ public sealed class GalleryShareExperienceRenderer : IShareExperienceRenderer
             allowsPreview ? share.Files.ToList() : [],
             allowsPreview
                 ? share.Files.Where(file => string.Equals(file.RenderType, "image", StringComparison.OrdinalIgnoreCase)).ToList()
-                : [],
-            false);
+                : []);
     }
 }
 

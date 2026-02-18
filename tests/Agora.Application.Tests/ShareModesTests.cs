@@ -6,7 +6,6 @@ public sealed class ShareModesTests
 {
     [Theory]
     [InlineData("archive", ShareExperienceType.Archive)]
-    [InlineData("site", ShareExperienceType.Site)]
     [InlineData("gallery", ShareExperienceType.Gallery)]
     [InlineData("unknown", ShareExperienceType.Archive)]
     public void ParseExperienceType_MapsExpectedValues(string input, ShareExperienceType expected)

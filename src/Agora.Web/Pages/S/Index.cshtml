@@ -54,14 +54,7 @@
 
   @if (!Model.IsExpired && Model.AllowsPreview)
   {
-    @if (Model.ShareExperienceType == "site")
-    {
-      <div style="margin-top:1rem;background:white;border:1px solid var(--border);border-radius:0.75rem;padding:1rem;max-width:480px;width:100%;">
-        <p style="font-size:0.78rem;color:var(--ink-light);margin-bottom:0.65rem;">This share is a hosted single-page site.</p>
-        <a href="/s/@Model.Token/site" style="display:inline-block;background:var(--ink);color:white;padding:0.6rem 0.9rem;border-radius:0.45rem;text-decoration:none;font-size:0.82rem;">Open site</a>
-      </div>
-    }
-    else if (Model.ShareExperienceType == "gallery")
+    @if (Model.ShareExperienceType == "gallery")
     {
       <div style="margin-top:1rem;background:white;border:1px solid var(--border);border-radius:0.75rem;padding:1rem;max-width:720px;width:100%;">
         <p style="font-size:0.78rem;color:var(--ink-light);margin-bottom:0.65rem;">Image gallery</p>

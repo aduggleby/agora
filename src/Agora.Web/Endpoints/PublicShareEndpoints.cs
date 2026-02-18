@@ -177,88 +177,6 @@ public static class PublicShareEndpoints
                 : Results.File(absolutePath, contentType, enableRangeProcessing: true);
         }).RequireRateLimiting("DownloadEndpoints");
 
-        app.MapGet("/s/{token}/site", async (ShareManager manager, IShareContentStore contentStore, string token, HttpRequest request, CancellationToken ct) =>
-        {
-            var share = await manager.FindByTokenAsync(token, ct);
-            if (share is null)
-            {
-                return Results.NotFound();
-            }
-
-            if (ShareManager.IsExpired(share, DateTime.UtcNow))
-            {
-                return Results.StatusCode(StatusCodes.Status410Gone);
-            }
-
-            if (!ShareManager.AllowsPreview(share) || ShareManager.NormalizeShareExperienceType(share.ShareExperienceType) != "site")
-            {
-                return Results.StatusCode(StatusCodes.Status403Forbidden);
-            }
-
-            var indexFile = share.Files.FirstOrDefault(file =>
-                string.Equals(file.OriginalFilename, "index.html", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(file.OriginalFilename, "index.htm", StringComparison.OrdinalIgnoreCase));
-            if (indexFile is null)
-            {
-                return Results.NotFound();
-            }
-
-            var absolutePath = contentStore.ResolveAbsolutePath(indexFile.StoredRelativePath);
-            if (absolutePath is null || !File.Exists(absolutePath))
-            {
-                return Results.StatusCode(StatusCodes.Status410Gone);
-            }
-
-            ApplyHostedSiteSecurityHeaders(request.HttpContext.Response.Headers);
-            return Results.File(absolutePath, "text/html; charset=utf-8");
-        });
-
-        app.MapGet("/s/{token}/site/{*assetPath}", async (ShareManager manager, IShareContentStore contentStore, string token, string assetPath, HttpRequest request, CancellationToken ct) =>
-        {
-            var share = await manager.FindByTokenAsync(token, ct);
-            if (share is null)
-            {
-                return Results.NotFound();
-            }
-
-            if (ShareManager.IsExpired(share, DateTime.UtcNow))
-            {
-                return Results.StatusCode(StatusCodes.Status410Gone);
-            }
-
-            if (!ShareManager.AllowsPreview(share) || ShareManager.NormalizeShareExperienceType(share.ShareExperienceType) != "site")
-            {
-                return Results.StatusCode(StatusCodes.Status403Forbidden);
-            }
-
-            var normalizedAssetPath = (assetPath ?? string.Empty).Trim().TrimStart('/').TrimStart('\\');
-            if (normalizedAssetPath.Length == 0 || normalizedAssetPath.Contains("..", StringComparison.Ordinal) || normalizedAssetPath.Contains('\\'))
-            {
-                return Results.NotFound();
-            }
-
-            var file = share.Files.FirstOrDefault(x => string.Equals(x.OriginalFilename, normalizedAssetPath, StringComparison.OrdinalIgnoreCase));
-            if (file is null)
-            {
-                return Results.NotFound();
-            }
-
-            var absolutePath = contentStore.ResolveAbsolutePath(file.StoredRelativePath);
-            if (absolutePath is null || !File.Exists(absolutePath))
-            {
-                return Results.StatusCode(StatusCodes.Status410Gone);
-            }
-
-            request.HttpContext.Response.Headers["X-Content-Type-Options"] = "nosniff";
-            if (string.Equals(file.RenderType, "html", StringComparison.OrdinalIgnoreCase))
-            {
-                ApplyHostedSiteSecurityHeaders(request.HttpContext.Response.Headers);
-            }
-
-            var contentType = string.IsNullOrWhiteSpace(file.DetectedContentType) ? "application/octet-stream" : file.DetectedContentType;
-            return Results.File(absolutePath, contentType);
-        });
-
         app.MapGet("/s/{token}/gallery", (string token) => Results.Redirect($"/s/{token}"));
 
         app.MapGet("/s/{token}/download", (string token) =>
@@ -369,14 +287,6 @@ public static class PublicShareEndpoints
         }).RequireRateLimiting("DownloadEndpoints");
 
         return app;
-    }
-
-    private static void ApplyHostedSiteSecurityHeaders(IHeaderDictionary headers)
-    {
-        headers["Content-Security-Policy"] = "default-src 'self'; script-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
-        headers["X-Content-Type-Options"] = "nosniff";
-        headers["X-Frame-Options"] = "DENY";
-        headers["Referrer-Policy"] = "no-referrer";
     }
 
     private static string GuessImageContentType(string extension)
