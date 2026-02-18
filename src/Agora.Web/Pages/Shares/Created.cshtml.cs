@@ -1,6 +1,7 @@
 using Agora.Application.Models;
 using Agora.Infrastructure.Services;
 using Agora.Web.Pages.Shared;
+using Agora.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -9,18 +10,21 @@ using Microsoft.Extensions.Options;
 namespace Agora.Web.Pages.Shares;
 
 [Authorize]
-public class CreatedModel(IOptions<AgoraOptions> options, ShareManager manager) : PageModel
+public class CreatedModel(IOptions<AgoraOptions> options, ShareManager manager, ShareCreationStatusStore statusStore) : PageModel
 {
     public string Token { get; private set; } = string.Empty;
     public string ShareUrl { get; private set; } = string.Empty;
     public ShareLandingCardViewModel? PreviewCard { get; private set; }
+    public bool IsReady { get; private set; }
+    public bool IsFailed { get; private set; }
+    public string? StatusError { get; private set; }
 
     public async Task<IActionResult> OnGet()
     {
         var token = Request.Query["token"].ToString().Trim();
         if (string.IsNullOrWhiteSpace(token))
         {
-            return Redirect("/shares/new?msg=Missing%20share%20token");
+            return Redirect("/");
         }
 
         Token = token;
@@ -30,6 +34,13 @@ public class CreatedModel(IOptions<AgoraOptions> options, ShareManager manager) 
         var share = await manager.FindByTokenAsync(token, HttpContext.RequestAborted);
         if (share is not null)
         {
+            var email = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value ?? string.Empty;
+            if (!string.Equals(share.UploaderEmail, email, StringComparison.OrdinalIgnoreCase))
+            {
+                return Redirect("/");
+            }
+
+            IsReady = true;
             var sizeDisplay = share.ZipSizeBytes >= 1024 * 1024
                 ? $"{share.ZipSizeBytes / (1024.0 * 1024.0):F1} MB"
                 : $"{share.ZipSizeBytes / 1024.0:F0} KB";
@@ -46,6 +57,21 @@ public class CreatedModel(IOptions<AgoraOptions> options, ShareManager manager) 
                 IsDownloadAllowed: ShareManager.AllowsZipDownload(share),
                 DownloadDisabledReason: "ZIP download is disabled for this share mode.",
                 RequiresPassword: !string.IsNullOrWhiteSpace(share.DownloadPasswordHash));
+        }
+        else
+        {
+            var email = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value ?? string.Empty;
+            var status = statusStore.Read(token);
+            if (status is null || !string.Equals(status.UploaderEmail, email, StringComparison.OrdinalIgnoreCase))
+            {
+                return Redirect("/");
+            }
+
+            if (string.Equals(status.State, "failed", StringComparison.OrdinalIgnoreCase))
+            {
+                IsFailed = true;
+                StatusError = status.Error;
+            }
         }
 
         ViewData["Title"] = "Share created";

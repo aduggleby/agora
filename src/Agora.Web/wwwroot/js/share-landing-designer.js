@@ -1,6 +1,6 @@
 "use strict";
 (() => {
-  // Scripts/share-landing-designer.ts
+  // scripts/ts/share-landing-designer.ts
   (() => {
     const form = document.getElementById("share-template-form");
     if (!form) return;

@@ -1,6 +1,6 @@
 "use strict";
 (() => {
-  // Scripts/template-designer-preview.ts
+  // scripts/ts/template-designer-preview.ts
   (() => {
     const script = document.currentScript;
     const formId = script?.dataset.formId || "account-template-form";

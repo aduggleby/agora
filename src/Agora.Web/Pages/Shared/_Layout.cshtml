@@ -30,8 +30,8 @@
       @if (isAuthenticated)
       {
           <nav class="flex items-center gap-4">
-            <details class="relative" style="z-index: 2000;">
-              <summary class="list-none cursor-pointer">
+            <details class="relative" style="z-index: 2000;" data-account-menu>
+              <summary class="list-none cursor-pointer" data-account-menu-toggle>
                 <span class="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-3 py-1.5 text-sm text-ink-light hover:border-terra/40">
                   <span class="w-6 h-6 rounded-full bg-cream-dark text-ink-muted flex items-center justify-center" aria-hidden="true">
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -80,5 +80,34 @@
     </div>
   </footer>
   <script src="/js/csrf-client.js"></script>
+  <script>
+    (() => {
+      const menus = document.querySelectorAll('details[data-account-menu]');
+      if (menus.length === 0) return;
+
+      document.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof Node)) return;
+        menus.forEach((menu) => {
+          if (!menu.open) return;
+          if (!menu.contains(target)) {
+            menu.open = false;
+          }
+        });
+      });
+
+      document.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        menus.forEach((menu) => {
+          if (!menu.open) return;
+          menu.open = false;
+          const toggle = menu.querySelector('summary[data-account-menu-toggle]');
+          if (toggle instanceof HTMLElement) {
+            toggle.focus();
+          }
+        });
+      });
+    })();
+  </script>
 </body>
 </html>

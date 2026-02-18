@@ -1,6 +1,6 @@
 # Agora
 
-Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, generate a ZIP archive on disk, and share a URL for recipients to access a branded download page and download the archive. Shares can optionally require a download password and keep the ZIP encrypted at rest.
+Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, generate a ZIP archive on disk, and share a URL for recipients to access a branded download page, preview files (optional), and download the archive. Shares can optionally require a download password and keep the ZIP encrypted at rest.
 
 ## Screenshots
 
@@ -8,18 +8,53 @@ Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, gene
 | --- | --- | --- |
 | [![New share page](docs/screenshots/new-share-page.png)](docs/screenshots/new-share-page.png) | [![Download page](docs/screenshots/download-page.png)](docs/screenshots/download-page.png) | [![Download page editor](docs/screenshots/landing-page-editor.png)](docs/screenshots/landing-page-editor.png) |
 
+## Quick Start (60s)
+
+```bash
+dotnet restore Agora.slnx
+dotnet build Agora.slnx
+cd src/Agora.Web && npm install && npm run ts:build && npm run tailwind:build
+dotnet run --project src/Agora.Web/Agora.Web.csproj --urls http://127.0.0.1:18080
+```
+
+Open `http://127.0.0.1:18080`.
+
 ## Features
+
+### Share Flow
 
 - Multi-file upload with ZIP archive generation
 - Upload limits default to 5 GB per file and 10 GB total per share
-- Optional per-share download password with encrypted-at-rest ZIP storage
-- Share URL with download page before download
+- Upload progress UI with transferred bytes and percentage
+- Uploaded file list with per-file sizes and remove confirmation
+- Share creation is queued in Hangfire so submit returns immediately while processing continues in the background
+- Share creation progress is streamed to the browser via SignalR with live task-step updates
+- Preview generation runs as one Hangfire job per file on a dedicated `previews` queue
+- Uploader receives an email when queued share creation is complete
 - Share-created success screen with one-click link copy
 - Previous shares support reopening the Share Ready link screen
 - Previous shares Details modal lists archived filenames and sizes
 - Share links default to unique 8-character alphanumeric tokens and can be customized (letters, numbers, `-`, `_`)
+- Expiry options: date-based or indefinite
+- Download notifications (`none`, `once`, `every_time`)
+
+### Previews and Recipient Experience
+
+- Share URL with download page before download
 - Optional `Show previews` mode auto-adapts recipient view: image mosaic for image-only uploads, and file-by-file preview for mixed uploads
 - Download page designer supports configurable download card position (corners, edges, centered)
+- Pending previews return a temporary placeholder image and retry-friendly UI behavior
+
+### Security and Compliance
+
+- Optional per-share download password with encrypted-at-rest ZIP storage
+- CSRF protection on unsafe HTTP methods (forms, fetch, and XHR)
+- Built-in rate limiting for auth, authenticated user traffic, and share downloads
+- Login brute-force protection with temporary account lockout after repeated failures
+- Signed-in downloads are excluded from download totals
+
+### Account and Admin
+
 - Account settings include email and password update forms
 - Registration requires email confirmation before first login
 - Unconfirmed login attempts redirect to a dedicated email confirmation page
@@ -27,9 +62,9 @@ Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, gene
 - Forgot password and password reset flows are supported
 - Share defaults have a dedicated settings page
 - New accounts default download page subtitle is set to `by <account email>`
-- Signed-in downloads are excluded from download totals
-- Expiry options: date-based or indefinite
-- Download notifications (`none`, `once`, `every_time`)
+
+### Operations and Reliability
+
 - Download notifications are sent only for explicit download submissions, not share-page visits
 - Download event metadata: IP, user-agent, timestamp
 - Notification emails attempt IP geolocation (`City, Country`) via free `ipwho.is`; if lookup fails, the raw IP is shown
@@ -37,13 +72,11 @@ Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, gene
 - Resend-compatible email integration with configurable API base URL
 - Auth emails are queued and sent asynchronously via Hangfire
 - Daily rolling Serilog file logs with 30-day retention
-- Built-in rate limiting for auth, authenticated user traffic, and share downloads
-- CSRF protection on unsafe HTTP methods (forms, fetch, and XHR)
-- Login brute-force protection with temporary account lockout after repeated failures
+- Applies pending EF Core migrations automatically on app startup
 
 ## Project Layout
 
-- `src/Agora.Web` - HTTP API and hosted service
+- `src/Agora.Web` - endpoints, Razor Pages, startup wiring, hosted services
 - `src/Agora.Application` - contracts, models, utilities
 - `src/Agora.Infrastructure` - EF Core persistence and service implementations
 - `src/Agora.Domain` - domain entities
@@ -55,6 +88,7 @@ Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, gene
 Recent refactors introduced explicit extension points for safer feature growth:
 
 - Public share HTTP surface is grouped under `src/Agora.Web/Endpoints/PublicShareEndpoints.cs`
+- Authenticated UI pages are served from Razor Pages under `src/Agora.Web/Pages` (legacy `/_legacy/*` HTML endpoints were removed)
 - Runtime schema compatibility upgrades are isolated in `src/Agora.Web/Startup/SchemaUpgradeRunner.cs`
 - Share content storage/path safety is centralized behind `IShareContentStore` (`src/Agora.Application/Abstractions/IShareContentStore.cs`, `src/Agora.Infrastructure/Services/ShareContentStore.cs`)
 - Share recipient rendering behavior is strategy-based (`archive`/`gallery`) via `IShareExperienceRenderer` in `src/Agora.Web/Services/ShareExperienceRendering.cs`
@@ -67,21 +101,51 @@ For future additions, prefer extending these components instead of growing `Prog
 Requirements:
 
 - .NET SDK 10.0+
+- Node.js 20+ (for Tailwind/TypeScript asset builds)
+- Docker (only if using `run-dev.sh` / SQL Server dev container)
 
-Commands:
+### Manual Run
 
 ```bash
 dotnet restore Agora.slnx
 dotnet build Agora.slnx
 dotnet test tests/Agora.Application.Tests/Agora.Application.Tests.csproj
+cd src/Agora.Web
+npm install
+npm run ts:check
+npm run ts:build
+npm run tailwind:build
+cd ../..
 dotnet run --project src/Agora.Web/Agora.Web.csproj --urls http://127.0.0.1:18080
 ```
 
-Then open `http://127.0.0.1:18080`.
+### Scripted Run (tmux + SQL Server)
+
+```bash
+./run-dev.sh
+```
+
+This starts:
+
+- tmux session `agora-dev`
+- SQL Server container `agora-dev-sql` on `localhost:18033`
+- Agora app on `http://127.0.0.1:18080`
+
+Stop everything:
+
+```bash
+./stop-dev.sh
+```
+
+Stop and delete the dev SQL container:
+
+```bash
+./stop-dev.sh --delete
+```
 
 ## Frontend Assets
 
-Frontend scripts are authored in TypeScript under `src/Agora.Web/Scripts` and bundled to `src/Agora.Web/wwwroot/js`.
+Frontend scripts are authored in TypeScript under `src/Agora.Web/scripts/ts` and bundled by `src/Agora.Web/scripts/build-ts.mjs` to `src/Agora.Web/wwwroot/js`.
 
 ```bash
 cd src/Agora.Web
@@ -92,39 +156,6 @@ npm run tailwind:build
 ```
 
 `shares-created.ts` imports Alpine (`alpinejs`) from npm and starts it in the bundled output.
-
-## Development Scripts
-
-Use the provided scripts to run local development with a dedicated SQL Server container and tmux orchestration:
-
-```bash
-./run-dev.sh
-```
-
-This starts:
-- tmux session `agora-dev`
-- SQL Server container `agora-dev-sql` on `localhost:18033`
-- Agora app on `http://127.0.0.1:18080`
-
-During development, emails are written to the filesystem instead of being sent:
-- `emails/`
-
-Logs are written to:
-- `logs/` (Serilog rolling files)
-- `.dev/agora-web.log` (app runtime output)
-- `.dev/tailwind.log` (Tailwind watch output)
-
-Stop everything:
-
-```bash
-./stop-dev.sh
-```
-
-Stop and delete dev SQL container:
-
-```bash
-./stop-dev.sh --delete
-```
 
 ## End-to-End Tests
 
@@ -146,8 +177,10 @@ This repository includes `build.csando`.
 Run validation pipeline (restore -> build -> test):
 
 ```bash
-ando run
+ando run --dind
 ```
+
+`ando` runs a pre-hook at `scripts/ando-pre.csando` that removes `*.sync-conflict-*` files before command execution.
 
 Authenticate to GHCR first:
 
@@ -161,120 +194,35 @@ Run publish profile (build/test, publish artifacts, build and push multi-arch im
 ando run -p publish --dind
 ```
 
-## Container
+## Runtime Configuration
 
-Build image:
+### Core Settings
 
-```bash
-docker build -t agora:latest .
-```
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `ConnectionStrings__Default` | `Data Source=/app/data/uploads/agora.db` | SQLite path inside container volume |
+| `Agora__PublicBaseUrl` | request host | Set explicitly behind proxies/CDNs |
+| `Serilog__WriteTo__0__Args__path` | `/app/data/logs/agora-.log` | Keep logs under `/app/data` in container |
 
-Run container (only env vars + 1 volume required):
+### Upload and Retention
 
-```bash
-docker run -d \
-  --name agora \
-  -p 18080:18080 \
-  -e Email__Resend__ApiToken="<your_token>" \
-  -e Email__Resend__FromDisplayName="<display_name>" \
-  -e Email__Resend__FromAddress="no-reply@yourdomain.com" \
-  -e Email__Resend__ApiUrl="https://api.resend.com" \
-  -e Agora__PublicBaseUrl="https://files.yourdomain.com" \
-  -e ConnectionStrings__Default="Data Source=/app/data/uploads/agora.db" \
-  -e Serilog__WriteTo__0__Args__path="/app/data/logs/agora-.log" \
-  -v agora_data:/app/data \
-  agora:latest
-```
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `Agora__MaxFilesPerShare` | `20` | Max files accepted per share |
+| `Agora__MaxFileSizeBytes` | `5368709120` (5 GB) | Per-file size limit |
+| `Agora__MaxTotalUploadBytes` | `10737418240` (10 GB) | Total share size limit |
+| `Agora__DownloadEventRetentionDays` | `90` | Download event retention window |
+| `Agora__ZombieUploadRetentionHours` | `24` | Cleanup window for stale uploads |
 
-## Installing on TrueNAS SCALE (YAML)
+### Email
 
-### 1. Create Dataset/Directories
-
-Create one dataset for all persistent app data, for example:
-
-- `/mnt/YOUR_POOL/apps/agora/data`
-
-Agora will create and use subfolders inside this mount (for example uploads, logs, and other runtime data).
-The default uploads path is `/app/data/uploads`.
-
-### 2. Create SQL Server Database + User
-
-Generate a secure password first:
-
-```bash
-openssl rand -base64 32
-```
-
-Connect to your SQL Server (for example from `sqlcmd`) and run:
-
-```sql
--- Create database
-CREATE DATABASE Agora;
-GO
-
--- Create SQL login
-CREATE LOGIN agora WITH PASSWORD = 'REPLACE_WITH_STRONG_PASSWORD';
-GO
-
--- Create DB user + grant permissions
-USE Agora;
-GO
-
-CREATE USER agora FOR LOGIN agora;
-GO
-
-ALTER ROLE db_owner ADD MEMBER agora;
-GO
-```
-
-Example sqlcmd connection:
-
-```bash
-sqlcmd -S YOUR_TRUENAS_IP,1433 -U sa -P 'YOUR_SA_PASSWORD' -C
-```
-
-### 3. Install via YAML
-
-In TrueNAS:
-
-1. Open `Apps -> Discover Apps`.
-2. Click the three-dot menu (`...`) and select `Install via YAML`.
-3. Set application name to `agora`.
-4. Paste and adjust this YAML:
-
-```yaml
-services:
-  agora:
-    image: ghcr.io/aduggleby/agora:latest
-    pull_policy: always
-    ports:
-      - "18080:18080"
-    environment:
-      - ConnectionStrings__Default=Server=YOUR_TRUENAS_IP,1433;Database=Agora;User Id=agora;Password=YOUR_AGORA_PASSWORD;TrustServerCertificate=true
-      - Email__Provider=Resend
-      - Email__Resend__ApiToken=YOUR_RESEND_API_TOKEN
-      - Email__Resend__FromDisplayName=YOUR_FROM_DISPLAY_NAME
-      - Email__Resend__FromAddress=YOUR_VERIFIED_FROM_EMAIL
-      - Email__Resend__ApiUrl=https://api.resend.com
-      - Agora__PublicBaseUrl=https://files.YOUR_DOMAIN
-    volumes:
-      - /mnt/YOUR_POOL/apps/agora/data:/app/data
-    restart: unless-stopped
-```
-
-### 4. Optional Runtime Configuration
-
-These settings are optional and only needed if you want to override defaults:
-
-- `Serilog__WriteTo__0__Args__path` (default: `logs/agora-.log`)
-- `Email__Resend__FromDisplayName` (default: empty; uses just address if unset)
-- `Agora__PublicBaseUrl` (default: request host, for example `https://files.example.com`)
-- If running behind a reverse proxy (Caddy/Nginx), forward `X-Forwarded-For`, `X-Forwarded-Proto`, and `X-Forwarded-Host` headers to avoid CSRF/origin validation issues.
-- `Agora__MaxFilesPerShare` (default: `20`)
-- `Agora__MaxFileSizeBytes` (default: `262144000` / 250 MB)
-- `Agora__MaxTotalUploadBytes` (default: `1073741824` / 1 GB)
-- `Agora__DownloadEventRetentionDays` (default: `90`)
-- `Agora__ZombieUploadRetentionHours` (default: `24`)
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `Email__Provider` | `Resend` | Provider mode |
+| `Email__Resend__ApiToken` | none | Required for real email delivery |
+| `Email__Resend__FromAddress` | none | Must be verified by provider |
+| `Email__Resend__FromDisplayName` | empty | Optional sender display name |
+| `Email__Resend__ApiUrl` | `https://api.resend.com` | Override for compatible providers |
 
 Rate limiting defaults (built in):
 
@@ -282,22 +230,16 @@ Rate limiting defaults (built in):
 - Authenticated requests (global): `120 requests/minute` per authenticated account
 - Download endpoint (`POST /s/{token}/download`): `20 requests/minute` per `(token, source IP)` pair
 
-### 5. Replace Placeholder Values
+## Troubleshooting
 
-- `YOUR_TRUENAS_IP`: IP of your TrueNAS host.
-- `YOUR_AGORA_PASSWORD`: password used in `CREATE LOGIN`.
-- `YOUR_POOL`: your TrueNAS pool name.
-- `YOUR_RESEND_API_TOKEN`: Resend (or compatible provider) token.
-- `YOUR_FROM_DISPLAY_NAME`: friendly sender name shown in recipient inboxes.
-- `YOUR_VERIFIED_FROM_EMAIL`: sender address verified in your provider.
+- `ando run` prompts for DIND or fails non-interactively: use `ando run --dind`.
+- UI changes not visible: rebuild assets with `npm run ts:build` and `npm run tailwind:build` in `src/Agora.Web`.
+- No background jobs visible: open `/hangfire` and verify Hangfire storage/connection settings.
+- Emails not delivered in local dev: check filesystem sink under `emails/`.
 
-### 6. Verify
+## Deployment
 
-After install, open:
-
-- `http://YOUR_TRUENAS_IP:18080/`
-
-To update, edit the app and bump image tag (or keep `latest`).
+Docker, container runtime, and TrueNAS deployment documentation are in `docs/DEPLOYMENT.md`.
 
 ## Port Assignment
 

@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <PackageReference Include="Hangfire.AspNetCore" Version="1.8.23" />
+    <PackageReference Include="Hangfire.Console" Version="1.4.3" />
     <PackageReference Include="Hangfire.InMemory" Version="1.0.0" />
     <PackageReference Include="Hangfire.SqlServer" Version="1.8.23" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.3">
@@ -30,10 +31,22 @@
     <Version>0.9.2</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <RepositoryRoot>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/../../'))</RepositoryRoot>
   </PropertyGroup>
 
   <ItemGroup>
     <Content Include="Fonts\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <Target Name="DeleteSyncthingConflictFiles" BeforeTargets="Build">
+    <ItemGroup>
+      <SyncthingConflictFiles Include="$(RepositoryRoot)**/*.sync-conflict-*" />
+    </ItemGroup>
+
+    <Message Text="Deleting Syncthing conflict files before build: @(SyncthingConflictFiles, ', ')"
+             Importance="high"
+             Condition="'@(SyncthingConflictFiles)' != ''" />
+    <Delete Files="@(SyncthingConflictFiles)" TreatErrorsAsWarnings="true" />
+  </Target>
 
 </Project>

@@ -15,11 +15,14 @@ public sealed class SharePreviewImageGenerator
     private const int CanvasWidth = 960;
     private const int CanvasHeight = 720;
 
-    private static readonly Color Cream = Color.ParseHex("#FAF7F2");
+    private static readonly Color White = Color.ParseHex("#FFFFFF");
     private static readonly Color Ink = Color.ParseHex("#1A1614");
     private static readonly Color InkLight = Color.ParseHex("#5C534A");
     private static readonly Color Border = Color.ParseHex("#E5DFD7");
     private static readonly Color Terra = Color.ParseHex("#C4663A");
+    private static readonly object GenericPreviewSync = new();
+    private static byte[]? _pendingPreviewBytes;
+    private static byte[]? _unavailablePreviewBytes;
 
     public async Task<byte[]> GenerateForFileAsync(ShareFile file, string absolutePath, CancellationToken ct)
     {
@@ -28,7 +31,7 @@ public sealed class SharePreviewImageGenerator
         if (renderType == "image")
         {
             using var source = await Image.LoadAsync<Rgba32>(absolutePath, ct);
-            return await RenderContainedImageAsync(source, file.OriginalFilename, ct);
+            return await RenderContainedImageAsync(source, ct);
         }
 
         if (renderType == "pdf" || Path.GetExtension(file.OriginalFilename).Equals(".pdf", StringComparison.OrdinalIgnoreCase))
@@ -43,20 +46,22 @@ public sealed class SharePreviewImageGenerator
         if (renderType == "text" || LooksLikeTextFile(file.OriginalFilename))
         {
             var snippet = await ReadTextSnippetAsync(absolutePath, ct);
-            return await RenderTextPreviewAsync(file.OriginalFilename, snippet, ct);
+            return await RenderTextPreviewAsync(snippet, ct);
         }
 
-        return await RenderGenericPreviewAsync(file.OriginalFilename, "Preview", ct);
+        return await GenerateUnavailablePreviewAsync(ct);
     }
 
-    public Task<byte[]> GeneratePendingPreviewAsync(string fileName, CancellationToken ct)
+    public Task<byte[]> GeneratePendingPreviewAsync(CancellationToken ct)
     {
-        return RenderGenericPreviewAsync(fileName, "Preview is being generated...", ct);
+        ct.ThrowIfCancellationRequested();
+        return Task.FromResult(GetOrCreatePendingPreviewBytes());
     }
 
-    public Task<byte[]> GenerateUnavailablePreviewAsync(string fileName, CancellationToken ct)
+    public Task<byte[]> GenerateUnavailablePreviewAsync(CancellationToken ct)
     {
-        return RenderGenericPreviewAsync(fileName, "Preview unavailable", ct);
+        ct.ThrowIfCancellationRequested();
+        return Task.FromResult(GetOrCreateUnavailablePreviewBytes());
     }
 
     private async Task<byte[]?> TryRenderPdfFirstPageAsync(string absolutePath, CancellationToken ct)
@@ -68,7 +73,7 @@ public sealed class SharePreviewImageGenerator
             Conversion.SaveJpeg(pdfImageStream, pdfBytes, 0);
             pdfImageStream.Position = 0;
             using var source = await Image.LoadAsync<Rgba32>(pdfImageStream, ct);
-            return await RenderContainedImageAsync(source, Path.GetFileName(absolutePath), ct);
+            return await RenderContainedImageAsync(source, ct);
         }
         catch
         {
@@ -76,9 +81,9 @@ public sealed class SharePreviewImageGenerator
         }
     }
 
-    private async Task<byte[]> RenderContainedImageAsync(Image<Rgba32> source, string fileName, CancellationToken ct)
+    private async Task<byte[]> RenderContainedImageAsync(Image<Rgba32> source, CancellationToken ct)
     {
-        using var canvas = new Image<Rgba32>(CanvasWidth, CanvasHeight, Cream);
+        using var canvas = new Image<Rgba32>(CanvasWidth, CanvasHeight, White);
         var maxWidth = CanvasWidth - 56;
         var maxHeight = CanvasHeight - 90;
 
@@ -93,22 +98,7 @@ public sealed class SharePreviewImageGenerator
         var y = 20 + (maxHeight - source.Height) / 2;
         canvas.Mutate(ctx =>
         {
-            ctx.Fill(new LinearGradientBrush(
-                new PointF(0, 0),
-                new PointF(CanvasWidth, CanvasHeight),
-                GradientRepetitionMode.None,
-                new ColorStop(0, new Color(new Rgba32(196, 102, 58, 10))),
-                new ColorStop(1, Color.Transparent)),
-                new RectangleF(0, 0, CanvasWidth, CanvasHeight));
             ctx.DrawImage(source, new Point(x, y), 1f);
-            ctx.Draw(Border, 1f, new RectangleF(10, 10, CanvasWidth - 20, CanvasHeight - 20));
-            ctx.Fill(Terra, new RectangleF(0, CanvasHeight - 42, CanvasWidth, 42));
-            ctx.DrawText(new RichTextOptions(PickFont(16, FontStyle.Bold))
-            {
-                Origin = new PointF(16, CanvasHeight - 28),
-                WrappingLength = CanvasWidth - 32
-            },
-            Truncate(fileName, 80), Color.White);
         });
 
         await using var output = new MemoryStream();
@@ -116,26 +106,18 @@ public sealed class SharePreviewImageGenerator
         return output.ToArray();
     }
 
-    private async Task<byte[]> RenderTextPreviewAsync(string fileName, string text, CancellationToken ct)
+    private async Task<byte[]> RenderTextPreviewAsync(string text, CancellationToken ct)
     {
-        using var canvas = new Image<Rgba32>(CanvasWidth, CanvasHeight, Cream);
-        var titleFont = PickFont(20, FontStyle.Bold);
+        using var canvas = new Image<Rgba32>(CanvasWidth, CanvasHeight, White);
         var bodyFont = PickFont(18, FontStyle.Regular);
 
         canvas.Mutate(ctx =>
         {
-            ctx.Fill(new Color(new Rgba32(196, 102, 58, 20)), new RectangleF(0, 0, CanvasWidth, 64));
-            ctx.DrawText(new RichTextOptions(titleFont)
-            {
-                Origin = new PointF(20, 22),
-                WrappingLength = CanvasWidth - 40
-            }, Truncate(fileName, 90), Ink);
-
-            ctx.Fill(Color.White, new RectangleF(20, 82, CanvasWidth - 40, CanvasHeight - 112));
-            ctx.Draw(Border, 1f, new RectangleF(20, 82, CanvasWidth - 40, CanvasHeight - 112));
+            ctx.Fill(Color.White, new RectangleF(20, 20, CanvasWidth - 40, CanvasHeight - 40));
+            ctx.Draw(Border, 1f, new RectangleF(20, 20, CanvasWidth - 40, CanvasHeight - 40));
             ctx.DrawText(new RichTextOptions(bodyFont)
             {
-                Origin = new PointF(34, 104),
+                Origin = new PointF(34, 36),
                 WrappingLength = CanvasWidth - 68,
                 VerticalAlignment = VerticalAlignment.Top,
                 HorizontalAlignment = HorizontalAlignment.Left
@@ -147,14 +129,37 @@ public sealed class SharePreviewImageGenerator
         return output.ToArray();
     }
 
-    private async Task<byte[]> RenderGenericPreviewAsync(string fileName, string message, CancellationToken ct)
+    private static byte[] GetOrCreatePendingPreviewBytes()
     {
-        using var canvas = new Image<Rgba32>(CanvasWidth, CanvasHeight, Cream);
-        var ext = Path.GetExtension(fileName).Trim().TrimStart('.').ToUpperInvariant();
-        if (string.IsNullOrWhiteSpace(ext))
+        if (_pendingPreviewBytes is not null)
         {
-            ext = "FILE";
+            return _pendingPreviewBytes;
         }
+
+        lock (GenericPreviewSync)
+        {
+            _pendingPreviewBytes ??= RenderGenericStatusPreview("Preparing preview...");
+            return _pendingPreviewBytes;
+        }
+    }
+
+    private static byte[] GetOrCreateUnavailablePreviewBytes()
+    {
+        if (_unavailablePreviewBytes is not null)
+        {
+            return _unavailablePreviewBytes;
+        }
+
+        lock (GenericPreviewSync)
+        {
+            _unavailablePreviewBytes ??= RenderGenericStatusPreview("Preview cannot be shown for this file type.");
+            return _unavailablePreviewBytes;
+        }
+    }
+
+    private static byte[] RenderGenericStatusPreview(string message)
+    {
+        using var canvas = new Image<Rgba32>(CanvasWidth, CanvasHeight, White);
 
         canvas.Mutate(ctx =>
         {
@@ -171,23 +176,17 @@ public sealed class SharePreviewImageGenerator
             {
                 Origin = new PointF(CanvasWidth / 2f, 290),
                 HorizontalAlignment = HorizontalAlignment.Center
-            }, ext, Terra);
-            ctx.DrawText(new RichTextOptions(PickFont(22, FontStyle.Bold))
-            {
-                Origin = new PointF(CanvasWidth / 2f, 360),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                WrappingLength = CanvasWidth - 220
-            }, Truncate(fileName, 70), Ink);
+            }, "PREVIEW", Terra);
             ctx.DrawText(new RichTextOptions(PickFont(18, FontStyle.Regular))
             {
-                Origin = new PointF(CanvasWidth / 2f, 410),
+                Origin = new PointF(CanvasWidth / 2f, 380),
                 HorizontalAlignment = HorizontalAlignment.Center,
                 WrappingLength = CanvasWidth - 220
             }, message, InkLight);
         });
 
-        await using var output = new MemoryStream();
-        await canvas.SaveAsJpegAsync(output, new JpegEncoder { Quality = 85 }, ct);
+        using var output = new MemoryStream();
+        canvas.SaveAsJpeg(output, new JpegEncoder { Quality = 85 });
         return output.ToArray();
     }
 
@@ -258,4 +257,5 @@ public sealed class SharePreviewImageGenerator
 
         return normalized;
     }
+
 }

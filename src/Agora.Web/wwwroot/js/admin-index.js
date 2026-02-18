@@ -1,6 +1,6 @@
 "use strict";
 (() => {
-  // Scripts/admin-index.ts
+  // scripts/ts/admin-index.ts
   (() => {
     const registrationToggle = document.querySelector("[data-registration-toggle]");
     registrationToggle?.addEventListener("change", () => {

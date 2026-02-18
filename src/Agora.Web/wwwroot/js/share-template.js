@@ -1,6 +1,6 @@
 "use strict";
 (() => {
-  // Scripts/share-template.ts
+  // scripts/ts/share-template.ts
   (() => {
     const form = document.querySelector("[data-share-form]");
     if (!form) return;

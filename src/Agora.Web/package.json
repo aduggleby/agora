@@ -14,6 +14,7 @@
     "typescript": "^5.9.2"
   },
   "dependencies": {
+    "@microsoft/signalr": "^10.0.0",
     "alpinejs": "^3.14.9"
   }
 }

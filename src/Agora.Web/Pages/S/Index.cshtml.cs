@@ -16,6 +16,8 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
         string PreviewKind,
         string RenderType,
         string PreviewImageUrl,
+        string PreviewStatusUrl,
+        string RetryPreviewUrl,
         string FileUrl,
         string DownloadUrl,
         string ThumbnailUrl,
@@ -53,8 +55,9 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
 
         IsExpired = ShareManager.IsExpired(Share, DateTime.UtcNow);
         DisplayH1 = ResolveDisplayH1(Share.PageH1, Share.Files.Count);
+        RequiresPassword = !string.IsNullOrWhiteSpace(Share.DownloadPasswordHash);
         var presentation = shareExperienceRendererResolver.Resolve(Share);
-        AllowsPreview = presentation.AllowsPreview;
+        AllowsPreview = presentation.AllowsPreview && !RequiresPassword;
         AllowsZipDownload = presentation.AllowsZipDownload;
         PreviewItems = presentation.PreviewFiles
             .OrderBy(file => file.OriginalFilename, StringComparer.OrdinalIgnoreCase)
@@ -65,13 +68,14 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
                 ResolvePreviewKind(file.RenderType),
                 file.RenderType,
                 $"/s/{token}/files/{file.Id}/preview?width=960&height=720",
+                $"/s/{token}/files/{file.Id}/preview-status",
+                $"/s/{token}/files/{file.Id}/preview/retry",
                 $"/s/{token}/files/{file.Id}",
                 $"/s/{token}/files/{file.Id}?download=1",
                 $"/s/{token}/files/{file.Id}/thumbnail?width=420&height=300",
                 ResolveExtensionLabel(file.OriginalFilename)))
             .ToList();
         InitialPreviewItem = PreviewItems.FirstOrDefault();
-        RequiresPassword = !string.IsNullOrWhiteSpace(Share.DownloadPasswordHash);
         DownloadError = (Request.Query["downloadError"].ToString().Trim().ToLowerInvariant()) switch
         {
             "password_required" => "Enter the password to download this file.",
@@ -89,9 +93,7 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
             token,
             string.IsNullOrWhiteSpace(Share.BackgroundImageUrl) ? "<empty>" : Share.BackgroundImageUrl,
             string.IsNullOrWhiteSpace(BackgroundImageUrl) ? "<none>" : BackgroundImageUrl);
-        SizeDisplay = Share.ZipSizeBytes >= 1024 * 1024
-            ? $"{Share.ZipSizeBytes / (1024.0 * 1024.0):F1} MB"
-            : $"{Share.ZipSizeBytes / 1024.0:F0} KB";
+        SizeDisplay = FormatSize(Share.ZipSizeBytes);
         var containerPosition = ShareManager.NormalizeContainerPosition(Share.PageContainerPosition);
         (ContainerAlignItems, ContainerJustifyContent) = containerPosition switch
         {
@@ -153,6 +155,15 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
 
     private static string FormatSize(long sizeBytes)
     {
+        const long OneMb = 1024L * 1024L;
+        const long OneGb = 1024L * 1024L * 1024L;
+        const long GbSwitchThreshold = 1000L * OneMb;
+
+        if (sizeBytes >= GbSwitchThreshold)
+        {
+            return $"{sizeBytes / (double)OneGb:F1} GB";
+        }
+
         if (sizeBytes >= 1024L * 1024L)
         {
             return $"{sizeBytes / (1024.0 * 1024.0):F1} MB";

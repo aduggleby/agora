@@ -1,0 +1,39 @@
+// =============================================================================
+// ando-pre.csando
+//
+// Pre-hook that runs before every ando command.
+// Cleans up Syncthing conflict files to prevent build issues.
+// =============================================================================
+
+Log.Info("Checking for Syncthing conflict files...");
+
+// Remove Syncthing conflict files that can cause build errors.
+var conflictFiles = System.IO.Directory
+    .EnumerateFiles(Root, "*.sync-conflict-*", System.IO.SearchOption.AllDirectories)
+    .ToList();
+
+if (conflictFiles.Count > 0)
+{
+    Log.Info($"Found {conflictFiles.Count} Syncthing conflict file(s):");
+    foreach (var file in conflictFiles)
+    {
+        Log.Info($"  {file}");
+    }
+    Log.Info("Removing conflict files...");
+    foreach (var file in conflictFiles)
+    {
+        try
+        {
+            System.IO.File.Delete(file);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"  Failed to delete {file}: {ex.Message}");
+        }
+    }
+    Log.Info("Done.");
+}
+else
+{
+    Log.Info("No conflict files found.");
+}

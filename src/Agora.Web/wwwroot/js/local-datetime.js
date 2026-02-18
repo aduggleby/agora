@@ -1,6 +1,6 @@
 "use strict";
 (() => {
-  // Scripts/local-datetime.ts
+  // scripts/ts/local-datetime.ts
   (() => {
     const nodes = document.querySelectorAll("[data-local-datetime]");
     if (!nodes.length) return;

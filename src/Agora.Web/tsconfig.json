@@ -9,5 +9,5 @@
     "lib": ["DOM", "ES2021"],
     "types": []
   },
-  "include": ["Scripts/**/*.ts", "Scripts/**/*.d.ts"]
+  "include": ["scripts/ts/**/*.ts", "scripts/ts/**/*.d.ts"]
 }

@@ -1,6 +1,6 @@
 "use strict";
 (() => {
-  // Scripts/share-delete.ts
+  // scripts/ts/share-delete.ts
   (() => {
     const dialog = document.querySelector("[data-share-delete-dialog]");
     if (!dialog) return;

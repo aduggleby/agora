@@ -1,6 +1,6 @@
 "use strict";
 (() => {
-  // Scripts/share-template-designer-legacy.ts
+  // scripts/ts/share-template-designer-legacy.ts
   (() => {
     const form = document.getElementById("share-template-form");
     if (!form) return;

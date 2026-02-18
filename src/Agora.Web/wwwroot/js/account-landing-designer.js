@@ -1,6 +1,6 @@
 "use strict";
 (() => {
-  // Scripts/account-landing-designer.ts
+  // scripts/ts/account-landing-designer.ts
   (() => {
     const form = document.getElementById("account-template-form");
     if (!form) return;

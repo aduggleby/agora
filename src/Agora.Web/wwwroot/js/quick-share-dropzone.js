@@ -1,6 +1,6 @@
 "use strict";
 (() => {
-  // Scripts/quick-share-dropzone.ts
+  // scripts/ts/quick-share-dropzone.ts
   (() => {
     const dropzone = document.querySelector("[data-quick-share-dropzone]");
     const fileInput = document.querySelector("[data-quick-share-input]");

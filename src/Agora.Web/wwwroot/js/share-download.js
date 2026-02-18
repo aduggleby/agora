@@ -1,25 +1,177 @@
 "use strict";
 (() => {
-  // Scripts/share-download.ts
+  // scripts/ts/share-download.ts
   (() => {
+    const maxAutoRetryMs = 5 * 60 * 1e3;
+    const autoRetryIntervalMs = 15 * 1e3;
+    const toSafeHtml = (value) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+    const attachPreviewLifecycle = (img) => {
+      const statusUrl = img.dataset.previewStatusUrl || "";
+      const initialPreviewUrl = img.dataset.previewUrl || img.getAttribute("src") || "";
+      let retryUrl = img.dataset.previewRetryUrl || "";
+      if (!statusUrl || !initialPreviewUrl) return;
+      const frame = img.closest(".preview-frame");
+      if (!frame) return;
+      if (frame.dataset.previewLifecycleAttached === "1") return;
+      frame.dataset.previewLifecycleAttached = "1";
+      frame.style.position = "relative";
+      const panel = document.createElement("div");
+      panel.className = "hidden";
+      panel.style.position = "absolute";
+      panel.style.right = "0.6rem";
+      panel.style.bottom = "0.6rem";
+      panel.style.display = "none";
+      panel.style.gap = "0.5rem";
+      panel.style.alignItems = "center";
+      panel.style.background = "rgba(255,255,255,0.92)";
+      panel.style.border = "1px solid #E5DFD7";
+      panel.style.borderRadius = "999px";
+      panel.style.padding = "0.3rem 0.45rem 0.3rem 0.6rem";
+      panel.style.boxShadow = "0 2px 10px rgba(26,22,20,0.09)";
+      const label = document.createElement("span");
+      label.style.fontSize = "0.7rem";
+      label.style.color = "#5C534A";
+      label.textContent = "Preparing preview...";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Retry";
+      button.style.border = "1px solid #E5DFD7";
+      button.style.borderRadius = "999px";
+      button.style.padding = "0.2rem 0.5rem";
+      button.style.background = "#FAF7F2";
+      button.style.color = "#1A1614";
+      button.style.fontSize = "0.68rem";
+      button.style.cursor = "pointer";
+      panel.append(label, button);
+      frame.appendChild(panel);
+      let startedAt = Date.now();
+      let timer = null;
+      let active = true;
+      const setPanel = (message, showRetry) => {
+        label.textContent = message;
+        button.style.display = showRetry ? "" : "none";
+        panel.style.display = "";
+      };
+      const clearPanel = () => {
+        panel.style.display = "none";
+      };
+      const setImageSource = (url) => {
+        const separator = url.includes("?") ? "&" : "?";
+        img.src = `${url}${separator}v=${Date.now()}`;
+      };
+      const scheduleNext = () => {
+        if (!active) return;
+        timer = window.setTimeout(() => void refresh(), autoRetryIntervalMs);
+      };
+      const refresh = async () => {
+        if (!active) return;
+        try {
+          const response = await fetch(`${statusUrl}${statusUrl.includes("?") ? "&" : "?"}_=${Date.now()}`, {
+            method: "GET",
+            cache: "no-store",
+            credentials: "same-origin"
+          });
+          if (!response.ok) {
+            setPanel("Unable to check preview status.", true);
+            return;
+          }
+          const status = await response.json();
+          const state = (status.state || "").trim().toLowerCase();
+          const reason = (status.reason || "").trim().toLowerCase();
+          retryUrl = status.retryUrl || retryUrl;
+          if (img.dataset.previewMode === "thumbnail" && status.thumbnailUrl) {
+            setImageSource(status.thumbnailUrl);
+          } else if (status.previewUrl) {
+            setImageSource(status.previewUrl);
+          } else {
+            setImageSource(initialPreviewUrl);
+          }
+          if (state === "ready") {
+            clearPanel();
+            return;
+          }
+          if (state === "pending") {
+            const elapsed = Date.now() - startedAt;
+            if (elapsed <= maxAutoRetryMs) {
+              setPanel("Preparing preview...", false);
+              scheduleNext();
+            } else {
+              setPanel("Still preparing. You can retry now.", true);
+            }
+            return;
+          }
+          if (reason === "unsupported_type") {
+            setPanel("Preview cannot be shown for this file type.", false);
+          } else {
+            setPanel("Preview unavailable. Retry generation.", true);
+          }
+        } catch {
+          setPanel("Unable to check preview status.", true);
+        }
+      };
+      button.addEventListener("click", async () => {
+        if (!retryUrl) {
+          setPanel("Retry URL unavailable.", false);
+          return;
+        }
+        button.disabled = true;
+        label.textContent = "Retry requested...";
+        try {
+          await fetch(`${retryUrl}${retryUrl.includes("?") ? "&" : "?"}_=${Date.now()}`, {
+            method: "GET",
+            cache: "no-store",
+            credentials: "same-origin"
+          });
+          startedAt = Date.now();
+          button.disabled = false;
+          setPanel("Preparing preview...", false);
+          if (timer) window.clearTimeout(timer);
+          scheduleNext();
+        } catch {
+          button.disabled = false;
+          setPanel("Retry failed. Try again.", true);
+        }
+      });
+      void refresh();
+    };
+    document.querySelectorAll("img[data-preview-image]").forEach((img) => {
+      attachPreviewLifecycle(img);
+    });
     const browser = document.querySelector("[data-file-browser]");
     if (!browser) return;
     const items = Array.from(browser.querySelectorAll("[data-preview-select]"));
     const body = browser.querySelector("[data-preview-body]");
     if (!body) return;
-    const renderPreviewImage = (previewImageUrl, fileName) => {
-      const alt = fileName.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
-      return `<div class="preview-frame"><img src="${previewImageUrl}" alt="${alt} preview" loading="lazy" /></div>`;
+    const renderPreviewImage = (previewImageUrl, fileName, statusUrl, retryUrl) => {
+      const alt = toSafeHtml(fileName);
+      const imageUrl = toSafeHtml(previewImageUrl);
+      const safeStatusUrl = toSafeHtml(statusUrl);
+      const safeRetryUrl = toSafeHtml(retryUrl);
+      return `<div class="preview-frame"><img src="${imageUrl}" alt="${alt} preview" loading="lazy" data-preview-image data-preview-url="${imageUrl}" data-preview-status-url="${safeStatusUrl}" data-preview-retry-url="${safeRetryUrl}" data-preview-mode="full" /></div>`;
+    };
+    const activateItem = (item) => {
+      items.forEach((node) => node.classList.remove("active"));
+      item.classList.add("active");
+      const previewImageUrl = item.dataset.previewImageUrl || "";
+      const previewStatusUrl = item.dataset.previewStatusUrl || "";
+      const previewRetryUrl = item.dataset.previewRetryUrl || "";
+      const fileName = item.dataset.name || "File";
+      body.innerHTML = renderPreviewImage(previewImageUrl, fileName, previewStatusUrl, previewRetryUrl);
+      const nextImage = body.querySelector("img[data-preview-image]");
+      if (nextImage) {
+        attachPreviewLifecycle(nextImage);
+      }
     };
     items.forEach((item) => {
-      const openButton = item.querySelector("[data-preview-open]");
-      if (!openButton) return;
-      openButton.addEventListener("click", () => {
-        items.forEach((node) => node.classList.remove("active"));
-        item.classList.add("active");
-        const previewImageUrl = item.dataset.previewImageUrl || "";
-        const fileName = item.dataset.name || "File";
-        body.innerHTML = renderPreviewImage(previewImageUrl, fileName);
+      item.addEventListener("click", (event) => {
+        const target = event.target;
+        if (target?.closest(".file-icon-download")) return;
+        activateItem(item);
+      });
+      item.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        activateItem(item);
       });
     });
   })();

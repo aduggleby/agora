@@ -1,32 +1,69 @@
 @page "/shares/created"
 @model Agora.Web.Pages.Shares.CreatedModel
 
-<canvas class="fixed inset-0 pointer-events-none z-0" data-confetti-canvas></canvas>
+@if (Model.IsReady)
+{
+  <canvas class="fixed inset-0 pointer-events-none z-0" data-confetti-canvas></canvas>
+}
 
-<section class="relative z-10">
+<section class="relative z-10" data-share-created-page data-token="@Model.Token" data-ready="@(Model.IsReady ? "true" : "false")" data-progress-hub-url="/hubs/share-progress">
   <div class="max-w-3xl mx-auto">
-    <div class="rounded-2xl border border-border bg-white/95 backdrop-blur-sm shadow-sm p-8 sm:p-10">
-      <p class="text-xs font-medium text-terra uppercase tracking-[0.18em]">File uploaded and downloadable</p>
-      <h1 class="font-display text-5xl tracking-tight mt-3">Your link is ready to send</h1>
-      <p class="text-sm text-ink-muted mt-3">Send this link to your recipient. They can open the download page and download the files immediately.</p>
+    @if (Model.IsReady)
+    {
+      <div class="rounded-2xl border border-border bg-white/95 backdrop-blur-sm shadow-sm p-8 sm:p-10" data-created-ready>
+        <p class="text-xs font-medium text-terra uppercase tracking-[0.18em]">File uploaded and downloadable</p>
+        <h1 class="font-display text-5xl tracking-tight mt-3">Your link is ready to send</h1>
+        <p class="text-sm text-ink-muted mt-3">Send this link to your recipient. They can open the download page and download the files immediately.</p>
 
-      <div class="mt-8 rounded-xl border border-terra-light/40 bg-terra-wash/70 p-4 sm:p-5">
-        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div class="min-w-0">
-            <p class="text-xs uppercase tracking-wider text-ink-muted mb-2">Share URL</p>
-            <a href="@Model.ShareUrl" target="_blank" rel="noreferrer" class="block font-display text-3xl sm:text-4xl leading-tight text-terra break-all hover:underline">@Model.ShareUrl</a>
-          </div>
-          <div x-data="shareReadyCopy('@Model.ShareUrl')" class="shrink-0">
-            <button type="button" class="px-5 py-2.5 text-white text-sm font-medium rounded-lg transition-colors" :class="buttonClass" x-text="label" @@click="copy"></button>
+        <div class="mt-8 rounded-xl border border-terra-light/40 bg-terra-wash/70 p-4 sm:p-5">
+          <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div class="min-w-0">
+              <p class="text-xs uppercase tracking-wider text-ink-muted mb-2">Share URL</p>
+              <a href="@Model.ShareUrl" target="_blank" rel="noreferrer" class="block font-display text-3xl sm:text-4xl leading-tight text-terra break-all hover:underline">@Model.ShareUrl</a>
+            </div>
+            <div x-data="shareReadyCopy('@Model.ShareUrl')" class="shrink-0">
+              <button type="button" class="px-5 py-2.5 text-white text-sm font-medium rounded-lg transition-colors" :class="buttonClass" x-text="label" @@click="copy"></button>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div class="mt-10 flex flex-wrap justify-end gap-3">
-        <a href="/" class="px-4 py-2 border border-border bg-cream text-ink-light text-xs font-medium rounded-lg hover:bg-cream-dark/70 transition-colors">Return to dashboard</a>
-        <a href="/shares/new" class="px-4 py-2 bg-ink text-white text-xs font-medium rounded-lg hover:bg-ink/90 transition-colors">Create new share</a>
+        <div class="mt-10 flex flex-wrap justify-end gap-3">
+          <a href="/" class="px-4 py-2 border border-border bg-cream text-ink-light text-xs font-medium rounded-lg hover:bg-cream-dark/70 transition-colors">Return to dashboard</a>
+          <a href="/shares/new" class="px-4 py-2 bg-ink text-white text-xs font-medium rounded-lg hover:bg-ink/90 transition-colors">Create new share</a>
+        </div>
       </div>
-    </div>
+    }
+    else
+    {
+      <div class="rounded-2xl border border-border bg-white/95 backdrop-blur-sm shadow-sm p-8 sm:p-10" data-created-pending>
+        <p class="text-xs font-medium text-terra uppercase tracking-[0.18em]">Preparing share</p>
+        <h1 class="font-display text-5xl tracking-tight mt-3">Creating your link</h1>
+        <p class="text-sm text-ink-muted mt-3" data-created-status-text>
+          @if (Model.IsFailed)
+          {
+            @:(@Model.StatusError ?? "Share creation failed.")
+          }
+          else
+          {
+            @:Preparing your link. We will email you as soon as it is ready, so you can leave this page now or wait here for automatic updates.
+          }
+        </p>
+
+        <div class="mt-8 rounded-xl border border-border bg-cream/70 p-5">
+          <div class="flex items-center gap-3" data-created-spinner style="@(Model.IsFailed ? "display:none;" : string.Empty)">
+            <span class="inline-block h-5 w-5 animate-spin rounded-full border-2 border-terra/30 border-t-terra" aria-hidden="true"></span>
+            <span class="text-sm text-ink-light">Processing files in the background and preparing your link...</span>
+          </div>
+          <ul class="mt-4 space-y-2" data-created-task-list></ul>
+          <div class="text-sm text-danger @(Model.IsFailed ? string.Empty : "hidden")" data-created-error>@(Model.StatusError ?? "Share creation failed.")</div>
+        </div>
+
+        <div class="mt-10 flex flex-wrap justify-end gap-3">
+          <a href="/" class="px-4 py-2 border border-border bg-cream text-ink-light text-xs font-medium rounded-lg hover:bg-cream-dark/70 transition-colors">Return to dashboard</a>
+          <a href="/shares/new" class="px-4 py-2 bg-ink text-white text-xs font-medium rounded-lg hover:bg-ink/90 transition-colors">Create new share</a>
+        </div>
+      </div>
+    }
   </div>
 </section>
 

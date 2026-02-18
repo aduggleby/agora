@@ -5,6 +5,7 @@ type UploadStageResponse = {
 type UploadUi = {
   row: HTMLLIElement;
   remove: HTMLButtonElement;
+  size: HTMLParagraphElement;
   barWrap: HTMLDivElement;
   bar: HTMLDivElement;
   state: HTMLParagraphElement;
@@ -20,6 +21,7 @@ type UploadUi = {
   const hidden = form.querySelector<HTMLElement>('[data-upload-hidden]');
   const status = form.querySelector<HTMLElement>('[data-upload-status]');
   const submit = form.querySelector<HTMLButtonElement>('[data-submit]');
+  const submitPending = form.querySelector<HTMLElement>('[data-submit-pending]');
   const dropzone = form.querySelector<HTMLElement>('[data-dropzone]');
   const expiryModeInput = form.querySelector<HTMLSelectElement>('[name="expiryMode"]');
   const expiresAtInput = form.querySelector<HTMLInputElement>('[name="expiresAtUtc"]');
@@ -33,6 +35,10 @@ type UploadUi = {
   const downloadPasswordInput = form.querySelector<HTMLInputElement>('[name="downloadPassword"]');
   const suggestedShareTokenButton = form.querySelector<HTMLButtonElement>('[data-suggested-share-token]');
   const draftShareIdInput = form.querySelector<HTMLInputElement>('[data-draft-share-id]');
+  const removeDialog = form.querySelector<HTMLDialogElement>('[data-upload-remove-dialog]');
+  const removeNameNode = form.querySelector<HTMLElement>('[data-upload-remove-file-name]');
+  const removeCancelButton = form.querySelector<HTMLButtonElement>('[data-upload-remove-cancel]');
+  const removeConfirmButton = form.querySelector<HTMLButtonElement>('[data-upload-remove-confirm]');
 
   if (!fileInput || !pickButton || !list || !hidden || !status || !submit || !draftShareIdInput) return;
 
@@ -46,6 +52,8 @@ type UploadUi = {
 
   let activeUploads = 0;
   let manualExpiryValue = '';
+  let pendingRemoval: { id: string; row: Element | null } | null = null;
+  let isSubmitting = false;
 
   const optionsStorageKey = 'agora:new-share:options-collapsed';
   const pickPrimaryClass = 'px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors';
@@ -165,6 +173,12 @@ type UploadUi = {
   };
 
   const refreshState = (): void => {
+    if (isSubmitting) {
+      submit.disabled = true;
+      submit.title = 'Preparing your link...';
+      return;
+    }
+
     const hasUploadedFiles = uploadedIds.size > 0;
     pickButton.className = hasUploadedFiles ? pickSecondaryClass : pickPrimaryClass;
     pickButton.textContent = hasUploadedFiles ? 'Add more files' : 'Select files';
@@ -224,12 +238,8 @@ type UploadUi = {
     });
   };
 
-  const requestRemove = (id: string, row: Element | null): void => {
+  const executeRemove = (id: string, row: Element | null): void => {
     if (!id) return;
-    const fileNameNode = row?.querySelector('p');
-    const fileName = (fileNameNode?.textContent || '').trim() || 'this file';
-    if (!window.confirm(`Remove "${fileName}" from this share?`)) return;
-
     const data = new FormData();
     data.append('uploadId', id);
     data.append('draftShareId', draftShareIdInput.value);
@@ -245,6 +255,23 @@ type UploadUi = {
       .catch(() => {
         status.textContent = 'Unable to remove file right now.';
       });
+  };
+
+  const requestRemove = (id: string, row: Element | null): void => {
+    if (!id) return;
+
+    pendingRemoval = { id, row };
+    if (removeNameNode) {
+      const fileNameNode = row?.querySelector('p');
+      removeNameNode.textContent = (fileNameNode?.textContent || '').trim() || 'this file';
+    }
+
+    if (removeDialog && typeof removeDialog.showModal === 'function') {
+      removeDialog.showModal();
+      return;
+    }
+
+    executeRemove(id, row);
   };
 
   const createRow = (file: File): UploadUi => {
@@ -280,7 +307,7 @@ type UploadUi = {
     row.append(remove, name, size, barWrap, state);
     list.appendChild(row);
 
-    return { row, remove, barWrap, bar, state };
+    return { row, remove, size, barWrap, bar, state };
   };
 
   const resolveUploadErrorMessage = (xhr: XMLHttpRequest): string => {
@@ -334,8 +361,9 @@ type UploadUi = {
         ui.row.setAttribute('data-upload-id', id);
         ui.row.setAttribute('data-upload-size-bytes', String(file.size || 0));
         ui.row.className = 'relative rounded-lg border border-sage/35 bg-sage-wash px-2.5 py-1.5 min-w-0';
+        ui.size.style.display = 'none';
         ui.barWrap.style.display = 'none';
-        ui.state.textContent = `Uploaded · ${formatBytes(file.size)}`;
+        ui.state.textContent = formatBytes(file.size);
         ui.state.className = 'text-[11px] text-sage mt-0.5';
         ui.remove.classList.remove('hidden');
         ui.remove.addEventListener('click', () => requestRemove(id, ui.row));
@@ -374,6 +402,19 @@ type UploadUi = {
       if (!id) return;
       requestRemove(id, row);
     });
+  });
+
+  removeCancelButton?.addEventListener('click', () => {
+    pendingRemoval = null;
+    removeDialog?.close();
+  });
+
+  removeConfirmButton?.addEventListener('click', () => {
+    if (pendingRemoval) {
+      executeRemove(pendingRemoval.id, pendingRemoval.row);
+    }
+    pendingRemoval = null;
+    removeDialog?.close();
   });
 
   const queueSelectedFiles = (files: FileList | File[] | null | undefined): void => {
@@ -459,7 +500,23 @@ type UploadUi = {
   }
 
   form.addEventListener('submit', (event) => {
-    if (submit.disabled) event.preventDefault();
+    if (submit.disabled || isSubmitting) {
+      event.preventDefault();
+      return;
+    }
+
+    isSubmitting = true;
+    submit.disabled = true;
+    submit.title = 'Preparing your link...';
+    submit.textContent = 'Preparing your link...';
+    submitPending?.classList.remove('hidden');
+    form.setAttribute('aria-busy', 'true');
+    fileInput.disabled = true;
+    pickButton.disabled = true;
+    optionsToggle?.setAttribute('disabled', 'disabled');
+    shareTokenInput?.setAttribute('readonly', 'readonly');
+    downloadPasswordInput?.setAttribute('readonly', 'readonly');
+    refreshState();
   });
 
   const modeInput = form.querySelector<HTMLSelectElement>('[data-template-mode]');

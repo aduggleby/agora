@@ -1,4 +1,5 @@
 import Alpine from 'alpinejs';
+import * as signalR from '@microsoft/signalr';
 
 type CopyState = 'idle' | 'success' | 'error';
 
@@ -11,6 +12,22 @@ type ShareReadyCopyModel = {
   fallbackCopy(value: string): boolean;
   flash(state: Exclude<CopyState, 'idle'>): void;
   copy(event: Event): Promise<void>;
+};
+
+type ShareProgressStep = {
+  key?: string;
+  label?: string;
+  state?: string;
+  detail?: string | null;
+  updatedAtUtc?: string | null;
+};
+
+type ShareStatusResponse = {
+  token?: string;
+  state?: string;
+  ready?: boolean;
+  error?: string | null;
+  steps?: ShareProgressStep[] | null;
 };
 
 function shareReadyCopy(shareUrl: string): ShareReadyCopyModel {
@@ -88,6 +105,147 @@ Object.assign(window as Window & { shareReadyCopy?: (url: string) => ShareReadyC
 Alpine.start();
 
 (() => {
+  const page = document.querySelector<HTMLElement>('[data-share-created-page]');
+  if (!page) return;
+
+  const isReady = page.dataset.ready === 'true';
+  if (isReady) {
+    runConfetti();
+    return;
+  }
+
+  const token = (page.dataset.token || '').trim();
+  const hubUrl = (page.dataset.progressHubUrl || '/hubs/share-progress').trim();
+  if (!token) return;
+
+  const statusText = page.querySelector<HTMLElement>('[data-created-status-text]');
+  const spinner = page.querySelector<HTMLElement>('[data-created-spinner]');
+  const errorNode = page.querySelector<HTMLElement>('[data-created-error]');
+  const taskList = page.querySelector<HTMLElement>('[data-created-task-list]');
+
+  const startedAt = Date.now();
+  const maxMs = 5 * 60 * 1000;
+  const intervalMs = 15 * 1000;
+  let timer: number | null = null;
+  let stopped = false;
+
+  const normalizeState = (value: string | undefined | null): string => (value || '').trim().toLowerCase();
+
+  const renderTasks = (steps: ShareProgressStep[] | null | undefined): void => {
+    if (!taskList) return;
+    const list = Array.isArray(steps) ? steps : [];
+    taskList.innerHTML = '';
+    list.forEach((step) => {
+      const label = (step.label || '').trim();
+      if (!label) return;
+      const state = normalizeState(step.state);
+      const dotClass =
+        state === 'completed'
+          ? 'bg-sage'
+          : state === 'active'
+            ? 'bg-terra animate-pulse'
+            : state === 'failed'
+              ? 'bg-danger'
+              : 'bg-ink-muted/40';
+      const detail = (step.detail || '').trim();
+
+      const item = document.createElement('li');
+      item.className = 'flex items-start gap-2';
+      item.innerHTML = `<span class="mt-1.5 inline-block h-2.5 w-2.5 rounded-full ${dotClass}" aria-hidden="true"></span><span class="text-sm text-ink-light">${label}${detail ? ` - ${detail}` : ''}</span>`;
+      taskList.appendChild(item);
+    });
+  };
+
+  const stopPolling = (): void => {
+    stopped = true;
+    if (timer) {
+      window.clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  const showFailure = (message: string): void => {
+    if (statusText) statusText.textContent = message;
+    spinner?.setAttribute('style', 'display:none;');
+    if (errorNode) {
+      errorNode.textContent = message;
+      errorNode.classList.remove('hidden');
+    }
+  };
+
+  const applyStatusPayload = (payload: ShareStatusResponse): void => {
+    renderTasks(payload.steps);
+    const state = normalizeState(payload.state);
+
+    if (payload.ready || state === 'completed') {
+      stopPolling();
+      window.location.reload();
+      return;
+    }
+
+    if (state === 'failed') {
+      stopPolling();
+      showFailure(payload.error?.trim() || 'Share creation failed.');
+      return;
+    }
+
+    if (statusText && !errorNode?.classList.contains('hidden')) {
+      statusText.textContent = 'Preparing your link. We will email you as soon as it is ready, so you can leave this page now or wait here for automatic updates.';
+      errorNode?.classList.add('hidden');
+    }
+  };
+
+  const poll = async (): Promise<void> => {
+    if (stopped) return;
+
+    try {
+      const response = await fetch(`/api/shares/${encodeURIComponent(token)}/status?_=${Date.now()}`, {
+        method: 'GET',
+        cache: 'no-store',
+        credentials: 'same-origin'
+      });
+
+      if (response.ok) {
+        const payload = (await response.json()) as ShareStatusResponse;
+        applyStatusPayload(payload);
+      }
+    } catch {
+      // Keep polling until timeout.
+    }
+
+    if (Date.now() - startedAt >= maxMs) {
+      stopPolling();
+      showFailure('Still processing. Wait a moment and refresh to check again.');
+      return;
+    }
+
+    timer = window.setTimeout(() => void poll(), intervalMs);
+  };
+
+  const connectSignalR = async (): Promise<void> => {
+    const connection = new signalR.HubConnectionBuilder()
+      .withUrl(hubUrl)
+      .withAutomaticReconnect()
+      .build();
+
+    connection.on('shareStatus', (payload: ShareStatusResponse) => {
+      if ((payload.token || '').trim() !== token) return;
+      applyStatusPayload(payload);
+    });
+
+    try {
+      await connection.start();
+      await connection.invoke('JoinShare', token);
+    } catch {
+      // Polling remains as fallback.
+    }
+  };
+
+  void connectSignalR();
+  void poll();
+})();
+
+function runConfetti(): void {
   const canvas = document.querySelector<HTMLCanvasElement>('[data-confetti-canvas]');
   if (!canvas) return;
 
@@ -180,4 +338,4 @@ Alpine.start();
   init();
   window.addEventListener('resize', resize, { passive: true });
   requestAnimationFrame(tick);
-})();
+}

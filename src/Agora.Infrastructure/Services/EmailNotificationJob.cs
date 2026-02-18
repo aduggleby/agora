@@ -2,6 +2,8 @@ using Agora.Application.Abstractions;
 using Agora.Application.Models;
 using Agora.Domain.Entities;
 using Agora.Infrastructure.Persistence;
+using Hangfire.Console;
+using Hangfire.Server;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -18,25 +20,29 @@ public sealed class EmailNotificationJob(
 {
     private readonly AgoraOptions _options = options.Value;
 
-    public async Task ProcessDownloadEventAsync(Guid downloadEventId, string token, CancellationToken cancellationToken)
+    public async Task ProcessDownloadEventAsync(Guid downloadEventId, string token, CancellationToken cancellationToken, PerformContext? performContext = null)
     {
+        performContext?.WriteLine($"Processing download notification for event '{downloadEventId}'.");
         var downloadEvent = await db.DownloadEvents
             .Include(x => x.Share)
             .SingleOrDefaultAsync(x => x.Id == downloadEventId, cancellationToken);
 
         if (downloadEvent is null)
         {
+            performContext?.WriteLine("Notification skipped: download event not found.");
             return;
         }
 
         if (downloadEvent.NotificationSent)
         {
+            performContext?.WriteLine("Notification skipped: already sent.");
             return;
         }
 
         var share = downloadEvent.Share;
         if (share is null)
         {
+            performContext?.WriteLine("Notification skipped: share not found.");
             return;
         }
 
@@ -67,10 +73,12 @@ public sealed class EmailNotificationJob(
             downloadEvent.NotificationSent = true;
             downloadEvent.NotificationError = null;
             await db.SaveChangesAsync(cancellationToken);
+            performContext?.WriteLine($"Download notification sent to '{share.UploaderEmail}'.");
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Download notification failed for event {EventId}", downloadEventId);
+            performContext?.WriteLine($"Download notification failed: {ex.Message}");
             downloadEvent.NotificationError = ex.Message;
             await db.SaveChangesAsync(cancellationToken);
         }

@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "sources": ["../../Scripts/local-datetime.ts"],
+  "sources": ["../../scripts/ts/local-datetime.ts"],
   "sourcesContent": ["(() => {\n  const nodes = document.querySelectorAll<HTMLElement>('[data-local-datetime]');\n  if (!nodes.length) return;\n\n  const formatter = new Intl.DateTimeFormat(undefined, {\n    dateStyle: 'medium',\n    timeStyle: 'short'\n  });\n\n  nodes.forEach((node) => {\n    const value = node.getAttribute('data-local-datetime');\n    if (!value) return;\n    const date = new Date(value);\n    if (Number.isNaN(date.getTime())) return;\n    node.textContent = formatter.format(date);\n  });\n})();\n"],
   "mappings": ";;;AAAA,GAAC,MAAM;AACL,UAAM,QAAQ,SAAS,iBAA8B,uBAAuB;AAC5E,QAAI,CAAC,MAAM,OAAQ;AAEnB,UAAM,YAAY,IAAI,KAAK,eAAe,QAAW;AAAA,MACnD,WAAW;AAAA,MACX,WAAW;AAAA,IACb,CAAC;AAED,UAAM,QAAQ,CAAC,SAAS;AACtB,YAAM,QAAQ,KAAK,aAAa,qBAAqB;AACrD,UAAI,CAAC,MAAO;AACZ,YAAM,OAAO,IAAI,KAAK,KAAK;AAC3B,UAAI,OAAO,MAAM,KAAK,QAAQ,CAAC,EAAG;AAClC,WAAK,cAAc,UAAU,OAAO,IAAI;AAAA,IAC1C,CAAC;AAAA,EACH,GAAG;",
   "names": []

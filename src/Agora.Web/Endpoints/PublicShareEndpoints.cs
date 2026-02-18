@@ -5,9 +5,6 @@ using Agora.Infrastructure.Services;
 using Agora.Web.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Formats.Jpeg;
-using SixLabors.ImageSharp.Processing;
 using System.Security.Cryptography;
 
 namespace Agora.Web.Endpoints;
@@ -130,6 +127,10 @@ public static class PublicShareEndpoints
             {
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
+            if (!string.IsNullOrWhiteSpace(share.DownloadPasswordHash))
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
 
             return Results.Ok(share.Files.Select(file => new
             {
@@ -159,6 +160,10 @@ public static class PublicShareEndpoints
             {
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
+            if (!string.IsNullOrWhiteSpace(share.DownloadPasswordHash))
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
 
             var file = share.Files.SingleOrDefault(x => x.Id == fileId);
             if (file is null)
@@ -180,9 +185,9 @@ public static class PublicShareEndpoints
                 : Results.File(absolutePath, contentType, enableRangeProcessing: true);
         }).RequireRateLimiting("DownloadEndpoints");
 
-        app.MapGet("/s/{token}/files/{fileId:guid}/thumbnail", async (
+        app.MapGet("/s/{token}/files/{fileId:guid}/preview", async (
             ShareManager manager,
-            IShareContentStore contentStore,
+            SharePreviewJobService previewJobService,
             string token,
             Guid fileId,
             int? width,
@@ -201,44 +206,150 @@ public static class PublicShareEndpoints
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
 
-            if (!ShareManager.AllowsPreview(share))
+            if (!ShareManager.AllowsPreview(share) || !string.IsNullOrWhiteSpace(share.DownloadPasswordHash))
             {
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
 
             var file = share.Files.SingleOrDefault(x => x.Id == fileId);
-            if (file is null || !string.Equals(file.RenderType, "image", StringComparison.OrdinalIgnoreCase))
+            if (file is null)
             {
                 return Results.NotFound();
             }
 
-            var absolutePath = contentStore.ResolveAbsolutePath(file.StoredRelativePath);
-            if (absolutePath is null || !File.Exists(absolutePath))
+            var payload = await previewJobService.LoadPreviewImageAsync(share, file, width, height, ct);
+            request.HttpContext.Response.Headers["X-Agora-Preview-State"] = payload.State;
+            request.HttpContext.Response.Headers["X-Content-Type-Options"] = "nosniff";
+            request.HttpContext.Response.Headers["Cache-Control"] = payload.IsCacheable
+                ? "public,max-age=31536000,immutable"
+                : "no-store";
+            return Results.File(payload.Content, payload.ContentType);
+        });
+
+        app.MapGet("/s/{token}/files/{fileId:guid}/thumbnail", async (
+            ShareManager manager,
+            SharePreviewJobService previewJobService,
+            string token,
+            Guid fileId,
+            int? width,
+            int? height,
+            HttpRequest request,
+            CancellationToken ct) =>
+        {
+            var share = await manager.FindByTokenAsync(token, ct);
+            if (share is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (ShareManager.IsExpired(share, DateTime.UtcNow))
             {
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
 
-            var targetWidth = Math.Clamp(width ?? 420, 96, 1024);
-            var targetHeight = Math.Clamp(height ?? 320, 96, 1024);
-
-            await using var imageStream = File.OpenRead(absolutePath);
-            using var image = await Image.LoadAsync(imageStream, ct);
-            image.Mutate(ctx => ctx.Resize(new ResizeOptions
+            if (!ShareManager.AllowsPreview(share) || !string.IsNullOrWhiteSpace(share.DownloadPasswordHash))
             {
-                Size = new Size(targetWidth, targetHeight),
-                Mode = ResizeMode.Crop,
-                Sampler = KnownResamplers.Bicubic,
-                Position = AnchorPositionMode.Center
-            }));
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
 
-            await using var output = new MemoryStream();
-            await image.SaveAsJpegAsync(output, new JpegEncoder { Quality = 78 }, ct);
-            output.Position = 0;
+            var file = share.Files.SingleOrDefault(x => x.Id == fileId);
+            if (file is null)
+            {
+                return Results.NotFound();
+            }
 
-            request.HttpContext.Response.Headers["Cache-Control"] = "public,max-age=31536000,immutable";
+            var payload = await previewJobService.LoadPreviewImageAsync(share, file, width ?? 420, height ?? 300, ct);
+            request.HttpContext.Response.Headers["X-Agora-Preview-State"] = payload.State;
             request.HttpContext.Response.Headers["X-Content-Type-Options"] = "nosniff";
-            return Results.File(output.ToArray(), "image/jpeg");
+            request.HttpContext.Response.Headers["Cache-Control"] = payload.IsCacheable
+                ? "public,max-age=31536000,immutable"
+                : "no-store";
+            return Results.File(payload.Content, payload.ContentType);
         });
+
+        app.MapGet("/s/{token}/files/{fileId:guid}/preview-status", async (
+            ShareManager manager,
+            SharePreviewJobService previewJobService,
+            string token,
+            Guid fileId,
+            CancellationToken ct) =>
+        {
+            var share = await manager.FindByTokenAsync(token, ct);
+            if (share is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (ShareManager.IsExpired(share, DateTime.UtcNow))
+            {
+                return Results.StatusCode(StatusCodes.Status410Gone);
+            }
+
+            if (!ShareManager.AllowsPreview(share) || !string.IsNullOrWhiteSpace(share.DownloadPasswordHash))
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            var file = share.Files.SingleOrDefault(x => x.Id == fileId);
+            if (file is null)
+            {
+                return Results.NotFound();
+            }
+
+            var availability = previewJobService.GetAvailability(share, file);
+            if (availability.State == "pending")
+            {
+                previewJobService.QueueGeneration(share.Id, file.Id);
+            }
+
+            return Results.Ok(new
+            {
+                state = availability.State,
+                reason = availability.Reason,
+                previewUrl = $"/s/{Uri.EscapeDataString(token)}/files/{fileId}/preview?width=960&height=720",
+                thumbnailUrl = $"/s/{Uri.EscapeDataString(token)}/files/{fileId}/thumbnail?width=420&height=300",
+                retryUrl = $"/s/{Uri.EscapeDataString(token)}/files/{fileId}/preview/retry"
+            });
+        });
+
+        app.MapGet("/s/{token}/files/{fileId:guid}/preview/retry", async (
+            ShareManager manager,
+            SharePreviewJobService previewJobService,
+            string token,
+            Guid fileId,
+            CancellationToken ct) =>
+        {
+            var share = await manager.FindByTokenAsync(token, ct);
+            if (share is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (ShareManager.IsExpired(share, DateTime.UtcNow))
+            {
+                return Results.StatusCode(StatusCodes.Status410Gone);
+            }
+
+            if (!ShareManager.AllowsPreview(share) || !string.IsNullOrWhiteSpace(share.DownloadPasswordHash))
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            var file = share.Files.SingleOrDefault(x => x.Id == fileId);
+            if (file is null)
+            {
+                return Results.NotFound();
+            }
+
+            var availability = previewJobService.GetAvailability(share, file);
+            if (string.Equals(availability.Reason, "unsupported_type", StringComparison.Ordinal))
+            {
+                return Results.Ok(new { state = "unavailable", reason = "unsupported_type" });
+            }
+
+            previewJobService.QueueGeneration(share.Id, file.Id);
+            return Results.Accepted();
+        }).RequireRateLimiting("DownloadEndpoints");
 
         app.MapGet("/s/{token}/gallery", (string token) => Results.Redirect($"/s/{token}"));
 

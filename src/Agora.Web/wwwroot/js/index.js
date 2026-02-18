@@ -1,6 +1,6 @@
 "use strict";
 (() => {
-  // Scripts/index.ts
+  // scripts/ts/index.ts
   (() => {
     const nodes = document.querySelectorAll("[data-local-datetime]");
     const formatter = new Intl.DateTimeFormat(void 0, { dateStyle: "medium", timeStyle: "short" });
@@ -112,34 +112,88 @@
     const fileInput = document.querySelector("[data-quick-share-input]");
     const pickButton = document.querySelector("[data-quick-share-pick]");
     const status = document.querySelector("[data-quick-share-status]");
+    const uploadList = document.querySelector("[data-quick-share-upload-list]");
     const draftIdInput = document.querySelector("[data-quick-share-draft-id]");
-    if (!dropzone || !fileInput || !pickButton || !status || !draftIdInput?.value) return;
+    if (!dropzone || !fileInput || !pickButton || !status || !uploadList || !draftIdInput?.value) return;
     const draftShareId = draftIdInput.value;
     const setStatus = (text, isError) => {
       status.textContent = text;
       status.classList.remove("text-ink-muted", "text-danger");
       status.classList.add(isError ? "text-danger" : "text-ink-muted");
     };
-    const uploadSingleFile = async (file) => {
-      const formData = new FormData();
-      formData.append("draftShareId", draftShareId);
-      formData.append("file", file, file.name);
-      const response = await fetch("/api/uploads/stage", { method: "POST", body: formData });
-      if (!response.ok) {
-        let error = "Upload failed.";
-        try {
-          const json = await response.json();
-          if (json.error) {
-            error = json.error;
+    const formatBytes = (bytes) => {
+      if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+      if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+      if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+      if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KB`;
+      return `${bytes} B`;
+    };
+    const createUploadRow = (file) => {
+      const row = document.createElement("li");
+      row.className = "rounded-lg border border-border bg-white px-2.5 py-2 min-w-0";
+      const name = document.createElement("p");
+      name.className = "text-xs text-ink-light truncate";
+      name.textContent = file.name;
+      const size = document.createElement("p");
+      size.className = "text-[11px] text-ink-muted mt-0.5";
+      size.textContent = formatBytes(file.size);
+      const barWrap = document.createElement("div");
+      barWrap.className = "mt-1.5 h-1 bg-cream-dark rounded-full overflow-hidden";
+      const bar = document.createElement("div");
+      bar.className = "h-full bg-terra transition-all";
+      bar.style.width = "0%";
+      barWrap.appendChild(bar);
+      const state = document.createElement("p");
+      state.className = "text-[11px] text-ink-muted mt-1";
+      state.textContent = "Queued...";
+      row.append(name, size, barWrap, state);
+      uploadList.appendChild(row);
+      return { row, size, bar, state };
+    };
+    const uploadSingleFile = (file) => {
+      const ui = createUploadRow(file);
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/api/uploads/stage");
+        xhr.responseType = "json";
+        xhr.upload.addEventListener("progress", (event) => {
+          if (!event.lengthComputable) return;
+          const percent = Math.min(100, Math.round(event.loaded / event.total * 100));
+          ui.bar.style.width = `${percent}%`;
+          ui.state.textContent = `Uploading ${formatBytes(event.loaded)} / ${formatBytes(event.total)} (${percent}%)`;
+        });
+        xhr.addEventListener("load", () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            ui.row.className = "rounded-lg border border-sage/35 bg-sage-wash px-2.5 py-2 min-w-0";
+            ui.size.style.display = "none";
+            ui.state.textContent = formatBytes(file.size);
+            ui.state.className = "text-[11px] text-sage mt-1";
+            resolve();
+            return;
           }
-        } catch {
-        }
-        throw new Error(error);
-      }
+          const payload = xhr.response;
+          const message = payload?.error?.trim() || "Upload failed.";
+          ui.row.className = "rounded-lg border border-danger/35 bg-danger-wash px-2.5 py-2 min-w-0";
+          ui.state.textContent = message;
+          ui.state.className = "text-[11px] text-danger mt-1";
+          reject(new Error(message));
+        });
+        xhr.addEventListener("error", () => {
+          ui.row.className = "rounded-lg border border-danger/35 bg-danger-wash px-2.5 py-2 min-w-0";
+          ui.state.textContent = "Upload failed.";
+          ui.state.className = "text-[11px] text-danger mt-1";
+          reject(new Error("Upload failed."));
+        });
+        const formData = new FormData();
+        formData.append("draftShareId", draftShareId);
+        formData.append("file", file, file.name);
+        xhr.send(formData);
+      });
     };
     const queueAndUpload = async (files) => {
       const list = Array.from(files ?? []);
       if (list.length === 0) return;
+      uploadList.innerHTML = "";
       setStatus(`Uploading ${list.length} file(s)...`, false);
       try {
         for (const file of list) {

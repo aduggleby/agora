@@ -1,6 +1,6 @@
 "use strict";
 (() => {
-  // Scripts/csrf-client.ts
+  // scripts/ts/csrf-client.ts
   (() => {
     const cookieName = "agora.csrf.request";
     const formFieldName = "__RequestVerificationToken";

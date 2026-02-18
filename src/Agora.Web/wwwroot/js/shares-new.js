@@ -1,6 +1,6 @@
 "use strict";
 (() => {
-  // Scripts/shares-new.ts
+  // scripts/ts/shares-new.ts
   (() => {
     const form = document.querySelector("[data-share-form]");
     if (!form) return;
@@ -10,6 +10,7 @@
     const hidden = form.querySelector("[data-upload-hidden]");
     const status = form.querySelector("[data-upload-status]");
     const submit = form.querySelector("[data-submit]");
+    const submitPending = form.querySelector("[data-submit-pending]");
     const dropzone = form.querySelector("[data-dropzone]");
     const expiryModeInput = form.querySelector('[name="expiryMode"]');
     const expiresAtInput = form.querySelector('[name="expiresAtUtc"]');
@@ -23,6 +24,10 @@
     const downloadPasswordInput = form.querySelector('[name="downloadPassword"]');
     const suggestedShareTokenButton = form.querySelector("[data-suggested-share-token]");
     const draftShareIdInput = form.querySelector("[data-draft-share-id]");
+    const removeDialog = form.querySelector("[data-upload-remove-dialog]");
+    const removeNameNode = form.querySelector("[data-upload-remove-file-name]");
+    const removeCancelButton = form.querySelector("[data-upload-remove-cancel]");
+    const removeConfirmButton = form.querySelector("[data-upload-remove-confirm]");
     if (!fileInput || !pickButton || !list || !hidden || !status || !submit || !draftShareIdInput) return;
     const maxFileSizeBytes = Number(form.dataset.maxFileSizeBytes || "0");
     const maxTotalUploadBytes = Number(form.dataset.maxTotalUploadBytes || "0");
@@ -32,6 +37,8 @@
     });
     let activeUploads = 0;
     let manualExpiryValue = "";
+    let pendingRemoval = null;
+    let isSubmitting = false;
     const optionsStorageKey = "agora:new-share:options-collapsed";
     const pickPrimaryClass = "px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors";
     const pickSecondaryClass = "px-4 py-2 bg-cream text-ink text-sm font-medium rounded-lg border border-border hover:bg-cream-dark/70 transition-colors";
@@ -136,6 +143,11 @@
       expiresAtInput.title = "Calculated from expiry mode.";
     };
     const refreshState = () => {
+      if (isSubmitting) {
+        submit.disabled = true;
+        submit.title = "Preparing your link...";
+        return;
+      }
       const hasUploadedFiles = uploadedIds.size > 0;
       pickButton.className = hasUploadedFiles ? pickSecondaryClass : pickPrimaryClass;
       pickButton.textContent = hasUploadedFiles ? "Add more files" : "Select files";
@@ -186,11 +198,8 @@
         if (input.value === id) input.remove();
       });
     };
-    const requestRemove = (id, row) => {
+    const executeRemove = (id, row) => {
       if (!id) return;
-      const fileNameNode = row?.querySelector("p");
-      const fileName = (fileNameNode?.textContent || "").trim() || "this file";
-      if (!window.confirm(`Remove "${fileName}" from this share?`)) return;
       const data = new FormData();
       data.append("uploadId", id);
       data.append("draftShareId", draftShareIdInput.value);
@@ -203,6 +212,19 @@
       }).catch(() => {
         status.textContent = "Unable to remove file right now.";
       });
+    };
+    const requestRemove = (id, row) => {
+      if (!id) return;
+      pendingRemoval = { id, row };
+      if (removeNameNode) {
+        const fileNameNode = row?.querySelector("p");
+        removeNameNode.textContent = (fileNameNode?.textContent || "").trim() || "this file";
+      }
+      if (removeDialog && typeof removeDialog.showModal === "function") {
+        removeDialog.showModal();
+        return;
+      }
+      executeRemove(id, row);
     };
     const createRow = (file) => {
       const row = document.createElement("li");
@@ -229,7 +251,7 @@
       state.textContent = "Queued...";
       row.append(remove, name, size, barWrap, state);
       list.appendChild(row);
-      return { row, remove, barWrap, bar, state };
+      return { row, remove, size, barWrap, bar, state };
     };
     const resolveUploadErrorMessage = (xhr) => {
       if (xhr.status === 413) {
@@ -275,8 +297,9 @@
           ui.row.setAttribute("data-upload-id", id);
           ui.row.setAttribute("data-upload-size-bytes", String(file.size || 0));
           ui.row.className = "relative rounded-lg border border-sage/35 bg-sage-wash px-2.5 py-1.5 min-w-0";
+          ui.size.style.display = "none";
           ui.barWrap.style.display = "none";
-          ui.state.textContent = `Uploaded \xB7 ${formatBytes(file.size)}`;
+          ui.state.textContent = formatBytes(file.size);
           ui.state.className = "text-[11px] text-sage mt-0.5";
           ui.remove.classList.remove("hidden");
           ui.remove.addEventListener("click", () => requestRemove(id, ui.row));
@@ -312,6 +335,17 @@
         if (!id) return;
         requestRemove(id, row);
       });
+    });
+    removeCancelButton?.addEventListener("click", () => {
+      pendingRemoval = null;
+      removeDialog?.close();
+    });
+    removeConfirmButton?.addEventListener("click", () => {
+      if (pendingRemoval) {
+        executeRemove(pendingRemoval.id, pendingRemoval.row);
+      }
+      pendingRemoval = null;
+      removeDialog?.close();
     });
     const queueSelectedFiles = (files) => {
       const selected = Array.from(files ?? []);
@@ -380,7 +414,22 @@
       });
     }
     form.addEventListener("submit", (event) => {
-      if (submit.disabled) event.preventDefault();
+      if (submit.disabled || isSubmitting) {
+        event.preventDefault();
+        return;
+      }
+      isSubmitting = true;
+      submit.disabled = true;
+      submit.title = "Preparing your link...";
+      submit.textContent = "Preparing your link...";
+      submitPending?.classList.remove("hidden");
+      form.setAttribute("aria-busy", "true");
+      fileInput.disabled = true;
+      pickButton.disabled = true;
+      optionsToggle?.setAttribute("disabled", "disabled");
+      shareTokenInput?.setAttribute("readonly", "readonly");
+      downloadPasswordInput?.setAttribute("readonly", "readonly");
+      refreshState();
     });
     const modeInput = form.querySelector("[data-template-mode]");
     const summary = form.querySelector("[data-template-summary]");

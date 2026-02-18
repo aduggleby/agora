@@ -810,7 +810,7 @@ public sealed class AuthService(
             return emailSender.SendAuthEmailAsync(message, cancellationToken);
         }
 
-        backgroundJobs.Enqueue<AuthEmailJob>(x => x.SendAsync(message, CancellationToken.None));
+        backgroundJobs.Enqueue<AuthEmailJob>(x => x.SendAsync(message, CancellationToken.None, null));
         return Task.CompletedTask;
     }
 

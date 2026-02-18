@@ -415,7 +415,7 @@ public sealed class ShareManager(
         if (shouldSend)
         {
             backgroundJobs.Enqueue<EmailNotificationJob>(x =>
-                x.ProcessDownloadEventAsync(downloadEvent.Id, token, CancellationToken.None));
+                x.ProcessDownloadEventAsync(downloadEvent.Id, token, CancellationToken.None, null));
         }
     }
 

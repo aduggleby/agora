@@ -50,7 +50,7 @@
     .preview-title { font-family:'Instrument Serif',serif; font-size:1.8rem; line-height:1.06; letter-spacing:-0.01em; }
     .preview-subtitle { font-size:0.95rem; color:var(--ink-light); margin-top:0.22rem; }
     .preview-description { font-size:0.82rem; color:var(--ink-light); margin-top:0.52rem; }
-    .preview-content { flex:1; min-height:0; overflow:auto; }
+    .preview-content { flex:1; min-height:0; overflow:scroll; }
     .mosaic-grid { padding:1rem; display:grid; grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:0.75rem; }
     .mosaic-item { border:1px solid var(--border); border-radius:0.75rem; overflow:hidden; background:#f8f4ef; position:relative; }
     .mosaic-open { display:block; text-decoration:none; }
@@ -61,20 +61,23 @@
     .file-icon-download svg { width:0.7rem; height:0.7rem; display:block; }
     .single-wrap { padding:1rem; }
     .single-preview { border:1px solid var(--border); border-radius:0.8rem; background:#fff; overflow:hidden; min-height:260px; }
-    .preview-frame { width:100%; aspect-ratio:4/3; background:#f5f1eb; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+    .preview-frame { width:100%; aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; overflow:hidden; }
     .preview-frame img { width:100%; height:100%; object-fit:contain; display:block; }
     .single-actions { display:flex; justify-content:flex-end; margin-top:0.65rem; }
     .file-download { display:inline-block; text-decoration:none; font-size:0.76rem; font-weight:600; color:#fff; background:var(--terra); border-radius:0.5rem; padding:0.45rem 0.62rem; }
-    .file-browser { display:grid; grid-template-columns:minmax(220px,280px) 1fr; min-height:100%; }
-    .file-list { border-right:1px solid var(--border); overflow:auto; padding:0.7rem; background:#fcfaf7; }
-    .file-list-item { width:100%; text-align:left; background:white; border:1px solid var(--border); border-radius:0.62rem; padding:0.62rem; margin-bottom:0.5rem; }
+    .file-browser { display:flex; height:100%; overflow:hidden; }
+    .file-list { width:220px; flex:0 0 220px; border-right:1px solid var(--border); overflow-y:auto; min-height:0; padding:0.7rem; background:#fcfaf7; }
+    .file-list-item { width:100%; text-align:left; background:white; border:1px solid var(--border); border-radius:0.62rem; padding:0.62rem; margin-bottom:0.5rem; cursor:pointer; transition:border-color .14s ease, box-shadow .14s ease, background-color .14s ease; }
+    .file-list-item:hover { border-color:var(--terra); background:#fffaf6; box-shadow:0 2px 10px rgba(26,22,20,0.08); }
+    .file-list-item:focus-visible { outline:none; border-color:var(--terra); box-shadow:0 0 0 2px rgba(196,102,58,0.24); }
     .file-list-item.active { border-color:var(--terra); box-shadow:0 0 0 1px rgba(196,102,58,0.22); }
     .file-list-row { display:flex; align-items:center; gap:0.4rem; min-width:0; }
-    .file-list-select { flex:1; min-width:0; background:transparent; border:0; padding:0; text-align:left; cursor:pointer; }
     .file-list-name { display:block; color:var(--ink); font-size:0.79rem; line-height:1.25; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:1; }
     .file-list-meta { display:flex; justify-content:space-between; gap:0.5rem; color:var(--ink-muted); font-size:0.7rem; margin-top:0.25rem; }
-    .viewer { min-width:0; display:flex; flex-direction:column; }
-    .viewer-body { padding:0.85rem; min-height:300px; display:flex; align-items:center; justify-content:center; }
+    .viewer { flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden; height:100%; }
+    .viewer-body { flex:1; min-height:0; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+    .viewer-body .preview-frame { width:auto; aspect-ratio:unset; max-width:100%; max-height:100%; }
+    .viewer-body .preview-frame img { max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; }
     .download-bar { border-top:1px solid var(--border); padding:0.95rem 1.05rem; background:#fff; }
     .download-password-label { display:block;font-size:0.75rem;font-weight:600;color:#5C534A;text-transform:uppercase;letter-spacing:.08em;margin-bottom:0.4rem; }
     .download-password-input { width:100%;padding:0.7rem 0.8rem;border:1px solid #E5DFD7;border-radius:0.5rem;margin-bottom:0.6rem;font-size:0.875rem; }
@@ -84,8 +87,8 @@
     @@media (max-width: 920px) {
       body { padding:1rem; }
       .preview-shell { width:100%; max-height:none; }
-      .file-browser { grid-template-columns:1fr; }
-      .file-list { border-right:none; border-bottom:1px solid var(--border); max-height:220px; }
+      .file-browser { flex-direction:column; }
+      .file-list { width:100%; flex:0 0 auto; max-height:220px; border-right:none; border-bottom:1px solid var(--border); }
       .preview-frame { max-height:56vh; }
     }
   </style>
@@ -109,7 +112,7 @@
           <p class="preview-description" style="margin-top:0.45rem;">@Model.Share.Files.Count @(Model.Share.Files.Count == 1 ? "file" : "files") · @Model.SizeDisplay</p>
         </header>
 
-        <div class="preview-content">
+        <div class="preview-content @(Model.IsMixedFilePreview ? "mixed" : string.Empty)">
           @if (Model.IsImageMosaicPreview)
           {
             <div class="mosaic-grid">
@@ -117,7 +120,15 @@
               {
                 <div class="mosaic-item" title="@item.OriginalFilename">
                   <a class="mosaic-open" href="@item.PreviewImageUrl" target="_blank" rel="noreferrer">
-                    <img src="@item.ThumbnailUrl" alt="@item.OriginalFilename" loading="lazy" />
+                    <img
+                      src="@item.ThumbnailUrl"
+                      alt="@item.OriginalFilename"
+                      loading="lazy"
+                      data-preview-image
+                      data-preview-url="@item.ThumbnailUrl"
+                      data-preview-status-url="@item.PreviewStatusUrl"
+                      data-preview-retry-url="@item.RetryPreviewUrl"
+                      data-preview-mode="thumbnail" />
                   </a>
                   <span class="mosaic-meta">
                     <a class="file-icon-download" href="@item.DownloadUrl" title="Download @item.OriginalFilename" aria-label="Download @item.OriginalFilename">
@@ -137,7 +148,15 @@
             <div class="single-wrap">
               <div class="single-preview">
                 <div class="preview-frame">
-                  <img src="@item.PreviewImageUrl" alt="@item.OriginalFilename preview" loading="lazy" />
+                  <img
+                    src="@item.PreviewImageUrl"
+                    alt="@item.OriginalFilename preview"
+                    loading="lazy"
+                    data-preview-image
+                    data-preview-url="@item.PreviewImageUrl"
+                    data-preview-status-url="@item.PreviewStatusUrl"
+                    data-preview-retry-url="@item.RetryPreviewUrl"
+                    data-preview-mode="full" />
                 </div>
               </div>
               <div class="single-actions">
@@ -147,29 +166,33 @@
           }
           else if (Model.IsMixedFilePreview)
           {
-            <div class="file-browser" data-file-browser>
+            <div class="file-browser bg-blue-600" data-file-browser>
               <aside class="file-list">
                 @foreach (var item in Model.PreviewItems)
                 {
                   <div
                     class="file-list-item @(item.Id == Model.InitialPreviewItem?.Id ? "active" : string.Empty)"
+                    tabindex="0"
+                    role="button"
                     data-preview-select
                     data-preview-image-url="@item.PreviewImageUrl"
+                    data-preview-status-url="@item.PreviewStatusUrl"
+                    data-preview-retry-url="@item.RetryPreviewUrl"
                     data-file-url="@item.FileUrl"
                     data-download-url="@item.DownloadUrl"
                     data-kind="@item.PreviewKind"
                     data-name="@item.OriginalFilename"
                     data-size="@item.SizeDisplay"
-                    data-ext="@item.ExtensionLabel">
+                    data-ext="@item.ExtensionLabel"
+                    title="Preview @item.OriginalFilename"
+                    aria-label="Preview @item.OriginalFilename">
                     <span class="file-list-row">
                       <a class="file-icon-download" href="@item.DownloadUrl" title="Download @item.OriginalFilename" aria-label="Download @item.OriginalFilename">
                         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                           <path d="M12 4v10m0 0l4-4m-4 4l-4-4M5 18h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
                         </svg>
                       </a>
-                      <button type="button" class="file-list-select" data-preview-open title="Preview @item.OriginalFilename">
-                        <span class="file-list-name">@item.OriginalFilename</span>
-                      </button>
+                      <span class="file-list-name">@item.OriginalFilename</span>
                     </span>
                     <span class="file-list-meta">
                       <span>@item.ExtensionLabel</span>
@@ -183,7 +206,15 @@
                   @if (Model.InitialPreviewItem is not null)
                   {
                     <div class="preview-frame">
-                      <img src="@Model.InitialPreviewItem.PreviewImageUrl" alt="@Model.InitialPreviewItem.OriginalFilename preview" loading="lazy" />
+                      <img
+                        src="@Model.InitialPreviewItem.PreviewImageUrl"
+                        alt="@Model.InitialPreviewItem.OriginalFilename preview"
+                        loading="lazy"
+                        data-preview-image
+                        data-preview-url="@Model.InitialPreviewItem.PreviewImageUrl"
+                        data-preview-status-url="@Model.InitialPreviewItem.PreviewStatusUrl"
+                        data-preview-retry-url="@Model.InitialPreviewItem.RetryPreviewUrl"
+                        data-preview-mode="full" />
                     </div>
                   }
                 </div>
@@ -215,7 +246,7 @@
           }
           <p style="color:var(--ink-muted);font-size:0.6875rem;margin-top:0.7rem;text-align:center;">
             <a href="https://github.com/aduggleby/agora" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:none;">
-              Powered by Agora - Self hosted file transfer
+              Powered by Agora - Self hosted secure file transfer
             </a>
           </p>
         </footer>
@@ -226,7 +257,7 @@
       @await Html.PartialAsync("/Pages/Shared/_ShareLandingCard.cshtml", cardModel)
       <p style="color:var(--ink-muted);font-size:0.6875rem;margin-top:1.25rem;padding-bottom:0.5rem;text-align:center;">
         <a href="https://github.com/aduggleby/agora" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:none;">
-          Powered by Agora - Self hosted file transfer
+          Powered by Agora - Self hosted secure file transfer
         </a>
       </p>
     }
