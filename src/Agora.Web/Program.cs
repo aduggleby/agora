@@ -1618,8 +1618,7 @@ app.MapPost("/api/shares", async (HttpContext context, ShareManager manager, Aut
         return Results.BadRequest("downloadPassword must be at least 8 characters when provided");
     }
 
-    var shareExperienceType = ShareManager.NormalizeShareExperienceType(form["shareExperienceType"].ToString());
-    var accessMode = ShareManager.NormalizeAccessMode(form["accessMode"].ToString());
+    var showPreviews = IsTruthy(form["showPreviews"].ToString());
 
     var templateModeRaw = form["templateMode"].ToString();
     var templateMode = string.Equals(templateModeRaw, "per_upload", StringComparison.OrdinalIgnoreCase)
@@ -1695,10 +1694,9 @@ app.MapPost("/api/shares", async (HttpContext context, ShareManager manager, Aut
                 ContentType: string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType));
         }
 
-        if (shareExperienceType == "gallery" && !uploadFiles.Any(file => IsLikelyImageFile(file.OriginalFileName, file.ContentType)))
-        {
-            return Results.BadRequest("gallery experience requires at least one image file.");
-        }
+        var allFilesAreImages = uploadFiles.All(file => IsLikelyImageFile(file.OriginalFileName, file.ContentType));
+        var shareExperienceType = showPreviews && allFilesAreImages ? "gallery" : "archive";
+        var accessMode = showPreviews ? "preview_and_download" : "download_only";
 
         var command = new CreateShareCommand
         {
@@ -1964,6 +1962,12 @@ static bool IsValidShareToken(string token)
     return true;
 }
 
+static bool IsTruthy(string? raw)
+{
+    var value = (raw ?? string.Empty).Trim().ToLowerInvariant();
+    return value is "1" or "true" or "on" or "yes";
+}
+
 static bool TryNormalizeOptionalSharePassword(string? raw, out string? password)
 {
     password = string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
@@ -2067,19 +2071,13 @@ static string RenderCreateSharePageBody(
           <p class="text-[11px] text-ink-muted mt-1">When set, the ZIP is encrypted at rest and recipients must enter this password to download.</p>
         </div>
         <div>
-          <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Share experience</label>
-          <select name="shareExperienceType" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all appearance-none">
-            <option value="archive" selected>Archive download</option>
-            <option value="gallery">Image gallery</option>
-          </select>
-        </div>
-        <div>
-          <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Access mode</label>
-          <select name="accessMode" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all appearance-none">
-            <option value="download_only" selected>Download only</option>
-            <option value="preview_only">Preview only</option>
-            <option value="preview_and_download">Preview and download</option>
-          </select>
+          <label style="display:flex;align-items:flex-start;gap:0.7rem;padding:0.75rem;border:1px solid #E5DFD7;border-radius:0.75rem;background:#FAF7F2;">
+            <input type="checkbox" name="showPreviews" value="1" style="margin-top:0.12rem;width:1rem;height:1rem;accent-color:#C4663A;" />
+            <span style="display:block;">
+              <span style="display:block;font-size:0.88rem;font-weight:600;color:#1A1614;">Show previews</span>
+              <span style="display:block;font-size:0.75rem;color:#5C534A;margin-top:0.18rem;">If enabled, recipients can preview files and still download the ZIP.</span>
+            </span>
+          </label>
         </div>
         <div>
           <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Download notifications</label>

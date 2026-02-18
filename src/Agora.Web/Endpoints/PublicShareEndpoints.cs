@@ -5,6 +5,9 @@ using Agora.Infrastructure.Services;
 using Agora.Web.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats.Jpeg;
+using SixLabors.ImageSharp.Processing;
 using System.Security.Cryptography;
 
 namespace Agora.Web.Endpoints;
@@ -176,6 +179,66 @@ public static class PublicShareEndpoints
                 ? Results.File(absolutePath, contentType, file.OriginalFilename, enableRangeProcessing: true)
                 : Results.File(absolutePath, contentType, enableRangeProcessing: true);
         }).RequireRateLimiting("DownloadEndpoints");
+
+        app.MapGet("/s/{token}/files/{fileId:guid}/thumbnail", async (
+            ShareManager manager,
+            IShareContentStore contentStore,
+            string token,
+            Guid fileId,
+            int? width,
+            int? height,
+            HttpRequest request,
+            CancellationToken ct) =>
+        {
+            var share = await manager.FindByTokenAsync(token, ct);
+            if (share is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (ShareManager.IsExpired(share, DateTime.UtcNow))
+            {
+                return Results.StatusCode(StatusCodes.Status410Gone);
+            }
+
+            if (!ShareManager.AllowsPreview(share))
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            var file = share.Files.SingleOrDefault(x => x.Id == fileId);
+            if (file is null || !string.Equals(file.RenderType, "image", StringComparison.OrdinalIgnoreCase))
+            {
+                return Results.NotFound();
+            }
+
+            var absolutePath = contentStore.ResolveAbsolutePath(file.StoredRelativePath);
+            if (absolutePath is null || !File.Exists(absolutePath))
+            {
+                return Results.StatusCode(StatusCodes.Status410Gone);
+            }
+
+            var targetWidth = Math.Clamp(width ?? 420, 96, 1024);
+            var targetHeight = Math.Clamp(height ?? 320, 96, 1024);
+
+            await using var imageStream = File.OpenRead(absolutePath);
+            using var image = await Image.LoadAsync(imageStream, ct);
+            image.Mutate(ctx => ctx.Resize(new ResizeOptions
+            {
+                Size = new Size(targetWidth, targetHeight),
+                Mode = ResizeMode.Crop,
+                Sampler = KnownResamplers.Bicubic,
+                Position = AnchorPositionMode.Center
+            }));
+
+            await using var output = new MemoryStream();
+            await image.SaveAsJpegAsync(output, new JpegEncoder { Quality = 78 }, ct);
+            output.Position = 0;
+
+            request.HttpContext.Response.Headers["Cache-Control"] = "public,max-age=31536000,immutable";
+            request.HttpContext.Response.Headers["X-Content-Type-Options"] = "nosniff";
+            return Results.File(output.ToArray(), "image/jpeg");
+        });
 
         app.MapGet("/s/{token}/gallery", (string token) => Results.Redirect($"/s/{token}"));
 

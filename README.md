@@ -17,6 +17,7 @@ Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, gene
 - Previous shares support reopening the Share Ready link screen
 - Previous shares Details modal lists archived filenames and sizes
 - Share links default to unique 8-character alphanumeric tokens and can be customized (letters, numbers, `-`, `_`)
+- Optional `Show previews` mode auto-adapts recipient view: image mosaic for image-only uploads, and file-by-file preview for mixed uploads
 - Download page designer supports configurable download card position (corners, edges, centered)
 - Account settings include email and password update forms
 - Registration requires email confirmation before first login

@@ -9,6 +9,17 @@ namespace Agora.Web.Pages.S;
 
 public class IndexModel(ShareManager manager, ShareExperienceRendererResolver shareExperienceRendererResolver, IOptions<AgoraOptions> agoraOptions, ILogger<IndexModel> logger) : PageModel
 {
+    public sealed record PreviewItemViewModel(
+        Guid Id,
+        string OriginalFilename,
+        string SizeDisplay,
+        string PreviewKind,
+        string RenderType,
+        string FileUrl,
+        string DownloadUrl,
+        string ThumbnailUrl,
+        string ExtensionLabel);
+
     public Domain.Entities.Share? Share { get; private set; }
     public string Token { get; private set; } = string.Empty;
     public bool IsExpired { get; private set; }
@@ -20,12 +31,14 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
     public string PageUrl { get; private set; } = string.Empty;
     public string? DownloadError { get; private set; }
     public bool RequiresPassword { get; private set; }
-    public string ShareExperienceType { get; private set; } = "archive";
-    public string AccessMode { get; private set; } = "download_only";
     public bool AllowsPreview { get; private set; }
     public bool AllowsZipDownload { get; private set; }
-    public IReadOnlyList<Domain.Entities.ShareFile> PreviewFiles { get; private set; } = [];
-    public IReadOnlyList<Domain.Entities.ShareFile> GalleryFiles { get; private set; } = [];
+    public IReadOnlyList<PreviewItemViewModel> PreviewItems { get; private set; } = [];
+    public PreviewItemViewModel? InitialPreviewItem { get; private set; }
+    public bool HasPreviewExperience => !IsExpired && AllowsPreview && PreviewItems.Count > 0;
+    public bool IsSingleFilePreview => HasPreviewExperience && PreviewItems.Count == 1;
+    public bool IsImageMosaicPreview => HasPreviewExperience && PreviewItems.Count > 1 && PreviewItems.All(x => x.PreviewKind == "image");
+    public bool IsMixedFilePreview => HasPreviewExperience && !IsSingleFilePreview && !IsImageMosaicPreview;
 
     public async Task<IActionResult> OnGet(string token, CancellationToken ct)
     {
@@ -38,12 +51,19 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
 
         IsExpired = ShareManager.IsExpired(Share, DateTime.UtcNow);
         var presentation = shareExperienceRendererResolver.Resolve(Share);
-        ShareExperienceType = presentation.ExperienceType;
-        AccessMode = ShareManager.NormalizeAccessMode(Share.AccessMode);
         AllowsPreview = presentation.AllowsPreview;
         AllowsZipDownload = presentation.AllowsZipDownload;
-        PreviewFiles = presentation.PreviewFiles;
-        GalleryFiles = presentation.GalleryFiles;
+        PreviewItems = presentation.PreviewFiles.Select(file => new PreviewItemViewModel(
+            file.Id,
+            file.OriginalFilename,
+            FormatSize(file.OriginalSizeBytes),
+            ResolvePreviewKind(file.RenderType),
+            file.RenderType,
+            $"/s/{token}/files/{file.Id}",
+            $"/s/{token}/files/{file.Id}?download=1",
+            $"/s/{token}/files/{file.Id}/thumbnail?width=420&height=300",
+            ResolveExtensionLabel(file.OriginalFilename))).ToList();
+        InitialPreviewItem = PreviewItems.FirstOrDefault();
         RequiresPassword = !string.IsNullOrWhiteSpace(Share.DownloadPasswordHash);
         DownloadError = (Request.Query["downloadError"].ToString().Trim().ToLowerInvariant()) switch
         {
@@ -91,5 +111,40 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
 
         ViewData["Title"] = "File Download";
         return Page();
+    }
+
+    private static string ResolvePreviewKind(string? renderType)
+    {
+        var value = (renderType ?? string.Empty).Trim().ToLowerInvariant();
+        return value switch
+        {
+            "image" => "image",
+            "video" => "video",
+            "audio" => "audio",
+            "pdf" => "pdf",
+            "text" => "text",
+            _ => "generic"
+        };
+    }
+
+    private static string ResolveExtensionLabel(string? fileName)
+    {
+        var ext = Path.GetExtension(fileName ?? string.Empty).Trim().TrimStart('.').ToUpperInvariant();
+        return ext.Length == 0 ? "FILE" : ext;
+    }
+
+    private static string FormatSize(long sizeBytes)
+    {
+        if (sizeBytes >= 1024L * 1024L)
+        {
+            return $"{sizeBytes / (1024.0 * 1024.0):F1} MB";
+        }
+
+        if (sizeBytes >= 1024L)
+        {
+            return $"{sizeBytes / 1024.0:F0} KB";
+        }
+
+        return $"{sizeBytes} B";
     }
 }
