@@ -23,7 +23,7 @@ Agora is an ASP.NET Core 10 file sharing app for sending files with branded down
 
 | Password on Download | Image Gallery Mode | File Preview Mode |
 | --- | --- | --- |
-| [![Password on download](docs/screenshots/new-share-password-option.png)](docs/screenshots/new-share-password-option.png) | [![Image gallery mode](docs/screenshots/account-password-settings.png)](docs/screenshots/account-password-settings.png) | [![File preview mode](docs/screenshots/file-preview-sample-pdf.png)](docs/screenshots/file-preview-sample-pdf.png) |
+| [![Password on download](docs/screenshots/new-share-password-option.png)](docs/screenshots/new-share-password-option.png) | [![Image gallery mode](docs/screenshots/gallery-real-photos.png)](docs/screenshots/gallery-real-photos.png) | [![File preview mode](docs/screenshots/file-preview-sample-pdf.png)](docs/screenshots/file-preview-sample-pdf.png) |
 
 ## Deployment
 
@@ -51,7 +51,7 @@ Run container:
 docker run -d \
   --name agora \
   -p 18080:18080 \
-  -e ConnectionStrings__Default="Data Source=/app/data/uploads/agora.db" \
+  -e ConnectionStrings__Default="Server=YOUR_SQL_HOST,1433;Database=Agora;User Id=agora;Password=YOUR_PASSWORD;TrustServerCertificate=true" \
   -e Agora__PublicBaseUrl="https://files.yourdomain.com" \
   -e Email__Provider="Resend" \
   -e Email__Resend__ApiToken="<your_token>" \
@@ -85,7 +85,7 @@ services:
     ports:
       - "18080:18080"
     environment:
-      - ConnectionStrings__Default=Data Source=/app/data/uploads/agora.db
+      - ConnectionStrings__Default=Server=YOUR_SQL_HOST,1433;Database=Agora;User Id=agora;Password=YOUR_PASSWORD;TrustServerCertificate=true
       - Email__Provider=Resend
       - Email__Resend__ApiToken=YOUR_RESEND_API_TOKEN
       - Email__Resend__FromDisplayName=YOUR_FROM_DISPLAY_NAME
@@ -97,19 +97,13 @@ services:
     restart: unless-stopped
 ```
 
-Optional SQL Server connection string:
-
-```text
-Server=YOUR_HOST,1433;Database=Agora;User Id=agora;Password=YOUR_AGORA_PASSWORD;TrustServerCertificate=true
-```
-
 ## Configuration
 
 ### Core settings
 
 | Setting | Default | What it controls |
 | --- | --- | --- |
-| `ConnectionStrings__Default` | `Data Source=/app/data/uploads/agora.db` | Database connection |
+| `ConnectionStrings__Default` | *(required)* | SQL Server connection string |
 | `Agora__PublicBaseUrl` | request host | Public base URL in generated links |
 | `Serilog__WriteTo__0__Args__path` | `/app/data/logs/agora-.log` | Log file path (daily rolling, 30-day retention) |
 

@@ -3,7 +3,7 @@
 ## Project Identity
 
 - Name: `Agora`
-- Stack: ASP.NET Core 10, EF Core SQLite, Serilog, Docker
+- Stack: ASP.NET Core 10, EF Core (SQL Server), Serilog, Docker
 - Reserved ports: `18000-18099`
 - Default app port: `18080`
 

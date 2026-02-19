@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.6] - 2026-02-19
+
+### Changed
+- SQL Server is now the primary database. All deployment examples and defaults updated from SQLite.
+- Image gallery mosaic layout improved with natural-width tiles and vertical scrolling.
+- Preview polling handles concurrent refresh requests and probes image availability before displaying.
+- Encrypted archive size is now reported correctly (was previously reporting unencrypted ZIP size).
+- Upload staging now correctly assigns purpose tags to share files vs template backgrounds.
+- Added `ARCHITECTURE.md` with full system design documentation.
+- New gallery and PDF preview screenshots added to README.
+
 ## [0.9.5] - 2026-02-19
 
 ### Changed

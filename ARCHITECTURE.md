@@ -73,7 +73,7 @@ Hangfire worker queues:
 
 Storage model:
 
-- DB: SQLite by default, SQL Server supported by connection string detection.
+- DB: SQL Server (primary). SQLite is supported as a legacy fallback via connection string detection.
 - File data: rooted under `AgoraOptions.StorageRoot`.
 - Container contract: mutable runtime data under `/app/data`.
 
@@ -315,8 +315,7 @@ Primary seams for additive change:
 
 Supported topologies:
 
-- single container with SQLite and bind/volume-mounted `/app/data`
-- single container with external SQL Server
+- single container with external SQL Server and bind/volume-mounted `/app/data`
 - reverse-proxy fronted deployment with forwarded headers enabled
 
 The architecture is intentionally monolithic for operational simplicity while preserving clear boundaries for future extraction if needed.
