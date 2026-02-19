@@ -26,6 +26,7 @@ Open `http://127.0.0.1:18080`.
 - Multi-file upload with ZIP archive generation
 - Upload limits default to 5 GB per file and 10 GB total per share
 - Upload progress UI with transferred bytes and percentage
+- Quick-share uploader pre-renders all selected files as `Pending` and supports canceling in-flight uploads with immediate background cleanup
 - Uploaded file list with per-file sizes and remove confirmation
 - Share creation is queued in Hangfire so submit returns immediately while processing continues in the background
 - Share creation progress is streamed to the browser via SignalR with live task-step updates

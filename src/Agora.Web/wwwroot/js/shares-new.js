@@ -1,11 +1,94 @@
 "use strict";
 (() => {
+  // scripts/ts/upload-limits.ts
+  var formatLimitBytes = (bytes) => {
+    if (!Number.isFinite(bytes) || bytes <= 0) return "";
+    if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${bytes} B`;
+  };
+  var validateFileSelection = (files, limits, currentFileCount, currentTotalBytes) => {
+    if (files.length === 0) return { ok: true };
+    if (limits.maxFilesPerShare > 0 && currentFileCount >= limits.maxFilesPerShare) {
+      return { ok: false, message: `You already have ${currentFileCount} file(s) staged \u2014 the maximum is ${limits.maxFilesPerShare} files per share.` };
+    }
+    if (limits.maxFilesPerShare > 0 && currentFileCount + files.length > limits.maxFilesPerShare) {
+      const remaining = limits.maxFilesPerShare - currentFileCount;
+      return {
+        ok: false,
+        message: `You selected ${files.length} file(s) but can only add ${remaining} more (limit: ${limits.maxFilesPerShare} per share).`
+      };
+    }
+    let batchBytes = 0;
+    for (const file of files) {
+      if (limits.maxFileSizeBytes > 0 && file.size > limits.maxFileSizeBytes) {
+        return {
+          ok: false,
+          message: `"${file.name}" is ${formatLimitBytes(file.size)} which exceeds the per-file limit of ${formatLimitBytes(limits.maxFileSizeBytes)}.`
+        };
+      }
+      batchBytes += file.size;
+      if (limits.maxTotalUploadBytes > 0 && currentTotalBytes + batchBytes > limits.maxTotalUploadBytes) {
+        return {
+          ok: false,
+          message: `Adding these files would exceed the total upload limit of ${formatLimitBytes(limits.maxTotalUploadBytes)}.`
+        };
+      }
+    }
+    return { ok: true };
+  };
+  var limitDialog = null;
+  var limitDialogMessage = null;
+  var ensureDialog = () => {
+    if (limitDialog && limitDialogMessage) return { dialog: limitDialog, messageNode: limitDialogMessage };
+    const dialog = document.createElement("dialog");
+    dialog.className = "rounded-xl border border-border bg-white p-0 w-full max-w-sm m-auto";
+    dialog.style.cssText = "margin: auto;";
+    dialog.setAttribute("style", "margin: auto; --tw-shadow: 0 10px 15px -3px rgb(0 0 0 / .1); box-shadow: var(--tw-shadow);");
+    const inner = document.createElement("div");
+    inner.className = "p-5";
+    const heading = document.createElement("h3");
+    heading.className = "font-display text-2xl tracking-tight";
+    heading.textContent = "Upload limit reached";
+    const message = document.createElement("p");
+    message.className = "text-sm text-ink-muted mt-2";
+    const footer = document.createElement("div");
+    footer.className = "mt-5 flex justify-end";
+    const okButton = document.createElement("button");
+    okButton.type = "button";
+    okButton.className = "px-4 py-2 text-sm bg-terra text-white rounded-lg hover:bg-terra/90 transition-colors";
+    okButton.textContent = "OK";
+    okButton.addEventListener("click", () => dialog.close());
+    footer.appendChild(okButton);
+    inner.append(heading, message, footer);
+    dialog.appendChild(inner);
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) dialog.close();
+    });
+    document.body.appendChild(dialog);
+    limitDialog = dialog;
+    limitDialogMessage = message;
+    return { dialog, messageNode: message };
+  };
+  var showLimitDialog = (message) => {
+    const { dialog, messageNode } = ensureDialog();
+    messageNode.textContent = message;
+    dialog.showModal();
+  };
+  var readLimitsFromElement = (el) => ({
+    maxFilesPerShare: Number(el.dataset.maxFilesPerShare || "0"),
+    maxFileSizeBytes: Number(el.dataset.maxFileSizeBytes || "0"),
+    maxTotalUploadBytes: Number(el.dataset.maxTotalUploadBytes || "0")
+  });
+
   // scripts/ts/shares-new.ts
   (() => {
     const form = document.querySelector("[data-share-form]");
     if (!form) return;
     const fileInput = form.querySelector("[data-file-input]");
     const pickButton = form.querySelector("[data-pick-files]");
+    const cancelUploadsButton = form.querySelector("[data-upload-cancel]");
     const list = form.querySelector("[data-upload-list]");
     const hidden = form.querySelector("[data-upload-hidden]");
     const status = form.querySelector("[data-upload-status]");
@@ -28,9 +111,8 @@
     const removeNameNode = form.querySelector("[data-upload-remove-file-name]");
     const removeCancelButton = form.querySelector("[data-upload-remove-cancel]");
     const removeConfirmButton = form.querySelector("[data-upload-remove-confirm]");
-    if (!fileInput || !pickButton || !list || !hidden || !status || !submit || !draftShareIdInput) return;
-    const maxFileSizeBytes = Number(form.dataset.maxFileSizeBytes || "0");
-    const maxTotalUploadBytes = Number(form.dataset.maxTotalUploadBytes || "0");
+    if (!fileInput || !pickButton || !cancelUploadsButton || !list || !hidden || !status || !submit || !draftShareIdInput) return;
+    const limits = readLimitsFromElement(form);
     const uploadedIds = /* @__PURE__ */ new Set();
     hidden.querySelectorAll('input[name="uploadedFileIds"]').forEach((input) => {
       if (input.value) uploadedIds.add(input.value);
@@ -39,6 +121,8 @@
     let manualExpiryValue = "";
     let pendingRemoval = null;
     let isSubmitting = false;
+    let cancelRequested = false;
+    const activeRequests = /* @__PURE__ */ new Set();
     const optionsStorageKey = "agora:new-share:options-collapsed";
     const pickPrimaryClass = "px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors";
     const pickSecondaryClass = "px-4 py-2 bg-cream text-ink text-sm font-medium rounded-lg border border-border hover:bg-cream-dark/70 transition-colors";
@@ -72,13 +156,6 @@
         ":",
         pad(date.getMinutes())
       ].join("");
-    };
-    const formatLimitBytes = (bytes) => {
-      if (!Number.isFinite(bytes) || bytes <= 0) return "";
-      if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-      if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-      if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-      return `${bytes} B`;
     };
     const formatBytes = (bytes) => {
       if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
@@ -181,9 +258,33 @@
       submit.title = reason;
       if (activeUploads > 0) {
         status.textContent = `Uploading ${activeUploads} file(s)...`;
+        cancelUploadsButton.classList.remove("hidden");
+        cancelUploadsButton.disabled = false;
+        cancelUploadsButton.title = "Cancel upload and queue immediate cleanup.";
         return;
       }
+      cancelUploadsButton.classList.add("hidden");
+      cancelUploadsButton.disabled = true;
+      cancelUploadsButton.title = "No upload is currently running.";
       status.textContent = uploadedIds.size > 0 ? `${uploadedIds.size} file(s) uploaded and ready.` : "No files uploaded yet.";
+    };
+    const markCanceledUi = (ui, detail) => {
+      ui.row.className = "relative rounded-lg border border-border bg-cream px-2.5 py-2 min-w-0";
+      ui.barWrap.style.display = "none";
+      ui.state.textContent = detail || "Canceled";
+      ui.state.className = "text-[11px] text-ink-muted mt-1";
+      ui.remove.classList.add("hidden");
+    };
+    const queueDraftCleanup = async () => {
+      const data = new FormData();
+      data.append("draftShareId", draftShareIdInput.value);
+      try {
+        const response = await fetch("/api/uploads/cancel", { method: "POST", body: data, credentials: "same-origin" });
+        if (!response.ok) throw new Error();
+        status.textContent = "Upload canceled. Cleanup queued in background.";
+      } catch {
+        status.textContent = "Upload canceled. Cleanup request failed; please retry.";
+      }
     };
     const addHidden = (id) => {
       const input = document.createElement("input");
@@ -248,7 +349,7 @@
       barWrap.appendChild(bar);
       const state = document.createElement("p");
       state.className = "text-[11px] text-ink-muted mt-1";
-      state.textContent = "Queued...";
+      state.textContent = "Pending";
       row.append(remove, name, size, barWrap, state);
       list.appendChild(row);
       return { row, remove, size, barWrap, bar, state };
@@ -279,8 +380,17 @@
       activeUploads += 1;
       refreshState();
       const xhr = new XMLHttpRequest();
+      activeRequests.add(xhr);
       xhr.open("POST", "/api/uploads/stage");
       xhr.responseType = "json";
+      let settled = false;
+      const finalize = () => {
+        if (settled) return;
+        settled = true;
+        activeRequests.delete(xhr);
+        activeUploads = Math.max(0, activeUploads - 1);
+        refreshState();
+      };
       xhr.upload.addEventListener("progress", (event) => {
         if (!event.lengthComputable) return;
         const percent = Math.min(100, Math.round(event.loaded / event.total * 100));
@@ -288,8 +398,12 @@
         ui.state.textContent = `Uploading ${formatBytes(event.loaded)} / ${formatBytes(event.total)} (${percent}%)`;
       });
       xhr.addEventListener("load", () => {
-        activeUploads -= 1;
+        finalize();
         const response = xhr.response;
+        if (cancelRequested) {
+          markCanceledUi(ui, "Canceled (cleanup queued)");
+          return;
+        }
         if (xhr.status >= 200 && xhr.status < 300 && response?.uploadId) {
           const id = response.uploadId;
           uploadedIds.add(id);
@@ -311,23 +425,42 @@
           ui.state.className = "text-[11px] text-danger mt-1";
           status.textContent = errorMessage;
         }
-        refreshState();
+      });
+      xhr.addEventListener("abort", () => {
+        finalize();
+        markCanceledUi(ui);
       });
       xhr.addEventListener("error", () => {
-        activeUploads -= 1;
+        finalize();
+        if (cancelRequested) {
+          markCanceledUi(ui);
+          return;
+        }
         const errorMessage = resolveUploadErrorMessage(xhr);
         ui.row.className = "relative rounded-lg border border-danger/35 bg-danger-wash px-2.5 py-2 min-w-0";
         ui.bar.className = "h-full bg-danger";
         ui.state.textContent = errorMessage;
         ui.state.className = "text-[11px] text-danger mt-1";
         status.textContent = errorMessage;
-        refreshState();
       });
       const data = new FormData();
       data.append("draftShareId", draftShareIdInput.value);
       data.append("file", file, file.name);
       xhr.send(data);
     };
+    cancelUploadsButton.addEventListener("click", async () => {
+      if (activeUploads <= 0 || cancelRequested) return;
+      cancelRequested = true;
+      cancelUploadsButton.disabled = true;
+      cancelUploadsButton.title = "Canceling upload...";
+      status.textContent = "Canceling upload...";
+      uploadedIds.clear();
+      hidden.querySelectorAll('input[name="uploadedFileIds"]').forEach((input) => input.remove());
+      activeRequests.forEach((request) => request.abort());
+      await queueDraftCleanup();
+      cancelRequested = false;
+      refreshState();
+    });
     list.querySelectorAll("[data-upload-remove]").forEach((button) => {
       button.addEventListener("click", () => {
         const row = button.closest("[data-upload-id]");
@@ -349,20 +482,16 @@
     });
     const queueSelectedFiles = (files) => {
       const selected = Array.from(files ?? []);
-      const existingBytes = Array.from(list.querySelectorAll("[data-upload-size-bytes]")).map((row) => Number(row.getAttribute("data-upload-size-bytes") || "0")).filter((value) => Number.isFinite(value) && value > 0).reduce((sum, value) => sum + value, 0);
-      let pendingBytes = 0;
-      selected.forEach((file) => {
-        if (maxFileSizeBytes > 0 && file.size > maxFileSizeBytes) {
-          status.textContent = `Upload failed: "${file.name}" exceeds per-file limit (${formatLimitBytes(maxFileSizeBytes)}).`;
-          return;
-        }
-        if (maxTotalUploadBytes > 0 && existingBytes + pendingBytes + file.size > maxTotalUploadBytes) {
-          status.textContent = `Upload failed: adding "${file.name}" exceeds total upload limit (${formatLimitBytes(maxTotalUploadBytes)}).`;
-          return;
-        }
-        pendingBytes += file.size;
-        uploadFile(file);
-      });
+      if (selected.length === 0) return;
+      cancelRequested = false;
+      const currentFileCount = uploadedIds.size + activeUploads;
+      const currentTotalBytes = Array.from(list.querySelectorAll("[data-upload-size-bytes]")).map((row) => Number(row.getAttribute("data-upload-size-bytes") || "0")).filter((value) => Number.isFinite(value) && value > 0).reduce((sum, value) => sum + value, 0);
+      const result = validateFileSelection(selected, limits, currentFileCount, currentTotalBytes);
+      if (!result.ok) {
+        showLimitDialog(result.message);
+        return;
+      }
+      selected.forEach((file) => uploadFile(file));
     };
     pickButton.addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", () => {

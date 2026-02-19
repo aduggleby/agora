@@ -56,11 +56,12 @@ E2E defaults:
 
 ## File Ownership and Layout
 
-- `src/Agora.Web` - endpoints, startup, hosted services
+- `src/Agora.Web` - endpoints, startup, hosted services, Razor pages, browser scripts
 - `src/Agora.Application` - models, abstractions, utility logic
 - `src/Agora.Infrastructure` - persistence and concrete services
 - `src/Agora.Domain` - entities
 - `tests/Agora.Application.Tests` - fast unit tests
+- `tests/e2e` - end-to-end browser tests
 - `docs/plans` - planning artifacts
 - `todos` - file-based work tracking
 
@@ -78,12 +79,65 @@ Key constraints:
 
 ## Coding Rules
 
+General:
 - Keep new code ASCII unless file requires Unicode.
 - Prefer explicit validation for user inputs.
 - Use UTC for all persisted timestamps.
 - Display all user-facing date/time values in the browser's local timezone.
 - Stream file operations; avoid loading full payloads in memory.
 - Keep APIs stable and additive where possible.
+- Prefer small, focused methods and explicit naming over clever abstractions.
+
+C# and .NET:
+- Prefer async APIs end-to-end for I/O paths.
+- Pass `CancellationToken` through async call chains where available.
+- Validate boundary inputs at endpoint/service edges.
+- Keep domain logic in `Agora.Application`/`Agora.Infrastructure`, not in Razor views.
+- Avoid static mutable state in web/runtime code.
+- Keep structured logging fields stable and meaningful.
+
+TypeScript:
+- Author source under `src/Agora.Web/scripts/ts` and treat `src/Agora.Web/wwwroot/js` as build output.
+- Prefer strict typing; avoid `any` unless unavoidable and locally justified.
+- Model wire data with explicit interfaces/types.
+- Keep DOM access defensive (`querySelector` null checks) and fail-safe.
+- Prefer pure helper functions for formatting/transforms.
+- Keep browser code framework-light and dependency-minimal.
+
+Alpine.js:
+- Use Alpine for local interaction state only, not app-wide state management.
+- Keep `x-data` scopes small and component-specific.
+- Prefer `x-on` handlers that call named methods over large inline expressions.
+- Use `x-cloak` for hidden-until-ready UI to avoid flicker.
+- Keep server as source of truth for security-sensitive decisions.
+- Do not store secrets or trusted authorization state in client-side Alpine state.
+
+Razor/HTML:
+- Keep markup accessible: semantic structure, labels for inputs, and keyboard-operable controls.
+- Use `aria-*` only when native semantics are insufficient.
+- Keep inline scripts/styles minimal except where explicitly required (for example public share page portability).
+- Avoid duplicating formatting rules in multiple views; centralize when practical.
+
+CSS/Tailwind:
+- Prefer design tokens and existing utilities over one-off values.
+- Keep utility class lists readable and consistent with nearby patterns.
+- Avoid introducing new theme colors/fonts without design-system updates.
+
+## Testing & Validation Rules
+
+- For backend changes, run at least `dotnet build Agora.slnx` and targeted tests.
+- For frontend behavior changes, run relevant e2e specs under `tests/e2e` when feasible.
+- If changing TypeScript sources, ensure generated JS artifacts are updated when the repo expects committed outputs.
+- Add or update tests for behavior changes where practical.
+- If tests are skipped, explicitly document what was not run and why.
+
+## Security & Data Handling
+
+- Never log secrets, raw passwords, or token material.
+- Keep token hashing and password verification flows unchanged unless explicitly requested.
+- Validate uploaded file metadata and paths defensively.
+- Preserve path traversal protections on all file read/write operations.
+- Keep retention and cleanup behavior predictable and idempotent.
 
 ## Operational Rules
 
@@ -124,3 +178,8 @@ Use these defaults in docs/examples unless user asks otherwise:
 - DB: `Data Source=/app/data/uploads/agora.db`
 - Storage root: `/app/data/uploads`
 - Logs: `/app/data/logs`
+
+## Local Claude Compatibility
+
+- A global `~/.claude/CLAUDE.MD` file was not found in this environment during this update.
+- If that file is later added, mirror relevant persistent guidance here or reference it from this section.

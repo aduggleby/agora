@@ -3,6 +3,13 @@
 @using System.Text.Json
 @{
   var nowUtc = DateTime.UtcNow;
+  string FormatFileSize(long bytes)
+  {
+    if (bytes >= 1024L * 1024L * 1024L) return $"{bytes / (1024.0 * 1024.0 * 1024.0):F2} GB";
+    if (bytes >= 1024L * 1024L) return $"{bytes / (1024.0 * 1024.0):F2} MB";
+    if (bytes >= 1024L) return $"{bytes / 1024.0:F2} KB";
+    return $"{bytes} B";
+  }
 }
 <section class="mb-10 rounded-2xl border border-border bg-white p-8">
   <h1 class="font-display text-5xl tracking-tight leading-tight">Fast, branded file sharing for your team.</h1>
@@ -10,10 +17,13 @@
 
   <input type="hidden" value="@Model.QuickDraftShareId" data-quick-share-draft-id />
   <input type="file" multiple accept="*/*" class="sr-only" data-quick-share-input />
-  <div class="mt-6 rounded-lg border border-dashed border-border bg-cream p-4 cursor-pointer" data-quick-share-dropzone tabindex="0" role="button">
+  <div class="mt-6 rounded-lg border border-dashed border-border bg-cream p-4 cursor-pointer" data-quick-share-dropzone data-max-files-per-share="@Model.MaxFilesPerShare" data-max-file-size-bytes="@Model.MaxFileSizeBytes" data-max-total-upload-bytes="@Model.MaxTotalUploadBytes" tabindex="0" role="button">
     <div class="flex items-center justify-between gap-3">
-      <p class="text-sm text-ink-light">Drop files here or click to select files</p>
-      <button type="button" class="px-3 py-1.5 bg-terra text-white text-xs font-medium rounded-md hover:bg-terra/90 transition-colors" data-quick-share-pick>Choose files</button>
+      <p class="text-sm text-ink-light">Drop files here or click to select — max @Model.MaxFilesPerShare files, @FormatFileSize(Model.MaxFileSizeBytes) per file, @FormatFileSize(Model.MaxTotalUploadBytes) total</p>
+      <div class="flex items-center gap-2">
+        <button type="button" class="hidden px-3 py-1.5 border border-border bg-cream-dark/70 text-ink text-xs font-medium rounded-md hover:bg-cream-dark transition-colors disabled:opacity-60 disabled:cursor-not-allowed" data-quick-share-cancel disabled title="No upload is currently running.">Cancel upload</button>
+        <button type="button" class="px-3 py-1.5 bg-terra text-white text-xs font-medium rounded-md hover:bg-terra/90 transition-colors" data-quick-share-pick>Choose files</button>
+      </div>
     </div>
     <p class="text-xs text-ink-muted mt-2" data-quick-share-status>We'll take you to the next step as soon as your files are ready.</p>
     <ul class="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2" data-quick-share-upload-list></ul>

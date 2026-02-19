@@ -732,6 +732,68 @@ public sealed class ShareManager(
         return true;
     }
 
+    public async Task<int> DeleteStagedUploadsForDraftAsync(
+        string uploaderEmail,
+        string draftShareId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedUploader = uploaderEmail.Trim();
+        var normalizedDraftShareId = (draftShareId ?? string.Empty).Trim();
+        if (normalizedDraftShareId.Length == 0)
+        {
+            return 0;
+        }
+
+        var stagingRoot = GetStagingRoot();
+        if (!Directory.Exists(stagingRoot))
+        {
+            return 0;
+        }
+
+        var removed = 0;
+        foreach (var stagingDirectory in Directory.EnumerateDirectories(stagingRoot))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
+            if (!File.Exists(metadataPath))
+            {
+                continue;
+            }
+
+            StagedUploadMetadata? metadata;
+            try
+            {
+                var json = await File.ReadAllTextAsync(metadataPath, cancellationToken);
+                metadata = JsonSerializer.Deserialize<StagedUploadMetadata>(json);
+            }
+            catch
+            {
+                metadata = null;
+            }
+
+            if (metadata is null)
+            {
+                continue;
+            }
+
+            if (!string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!string.Equals(metadata.DraftShareId, normalizedDraftShareId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            Directory.Delete(stagingDirectory, recursive: true);
+            removed++;
+        }
+
+        return removed;
+    }
+
     public async Task<int> CleanupZombieUploadsAsync(CancellationToken cancellationToken)
     {
         var staleDraftIds = await CleanupStaleDraftSharesAsync(cancellationToken);

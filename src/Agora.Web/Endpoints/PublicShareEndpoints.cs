@@ -190,8 +190,6 @@ public static class PublicShareEndpoints
             SharePreviewJobService previewJobService,
             string token,
             Guid fileId,
-            int? width,
-            int? height,
             HttpRequest request,
             CancellationToken ct) =>
         {
@@ -217,7 +215,7 @@ public static class PublicShareEndpoints
                 return Results.NotFound();
             }
 
-            var payload = await previewJobService.LoadPreviewImageAsync(share, file, width, height, ct);
+            var payload = await previewJobService.LoadPreviewImageAsync(share, file, ct);
             request.HttpContext.Response.Headers["X-Agora-Preview-State"] = payload.State;
             request.HttpContext.Response.Headers["X-Content-Type-Options"] = "nosniff";
             request.HttpContext.Response.Headers["Cache-Control"] = payload.IsCacheable
@@ -231,8 +229,6 @@ public static class PublicShareEndpoints
             SharePreviewJobService previewJobService,
             string token,
             Guid fileId,
-            int? width,
-            int? height,
             HttpRequest request,
             CancellationToken ct) =>
         {
@@ -258,7 +254,7 @@ public static class PublicShareEndpoints
                 return Results.NotFound();
             }
 
-            var payload = await previewJobService.LoadPreviewImageAsync(share, file, width ?? 420, height ?? 300, ct);
+            var payload = await previewJobService.LoadThumbnailAsync(share, file, ct);
             request.HttpContext.Response.Headers["X-Agora-Preview-State"] = payload.State;
             request.HttpContext.Response.Headers["X-Content-Type-Options"] = "nosniff";
             request.HttpContext.Response.Headers["Cache-Control"] = payload.IsCacheable

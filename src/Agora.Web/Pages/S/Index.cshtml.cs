@@ -67,12 +67,12 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
                 FormatSize(file.OriginalSizeBytes),
                 ResolvePreviewKind(file.RenderType),
                 file.RenderType,
-                $"/s/{token}/files/{file.Id}/preview?width=960&height=720",
+                $"/s/{token}/files/{file.Id}/preview",
                 $"/s/{token}/files/{file.Id}/preview-status",
                 $"/s/{token}/files/{file.Id}/preview/retry",
                 $"/s/{token}/files/{file.Id}",
                 $"/s/{token}/files/{file.Id}?download=1",
-                $"/s/{token}/files/{file.Id}/thumbnail?width=420&height=300",
+                $"/s/{token}/files/{file.Id}/thumbnail",
                 ResolveExtensionLabel(file.OriginalFilename)))
             .ToList();
         InitialPreviewItem = PreviewItems.FirstOrDefault();
@@ -161,12 +161,12 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
 
         if (sizeBytes >= GbSwitchThreshold)
         {
-            return $"{sizeBytes / (double)OneGb:F1} GB";
+            return $"{sizeBytes / (double)OneGb:0.#} GB";
         }
 
         if (sizeBytes >= 1024L * 1024L)
         {
-            return $"{sizeBytes / (1024.0 * 1024.0):F1} MB";
+            return $"{sizeBytes / (1024.0 * 1024.0):0.#} MB";
         }
 
         if (sizeBytes >= 1024L)

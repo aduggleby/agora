@@ -81,6 +81,22 @@ public sealed class SharePreviewImageGenerator
         }
     }
 
+    public async Task<byte[]> GenerateMosaicThumbnailAsync(string absolutePath, int maxHeight, CancellationToken ct)
+    {
+        using var source = await Image.LoadAsync<Rgba32>(absolutePath, ct);
+
+        source.Mutate(ctx => ctx.Resize(new ResizeOptions
+        {
+            Size = new Size(0, maxHeight),
+            Mode = ResizeMode.Max,
+            Sampler = KnownResamplers.Bicubic
+        }));
+
+        await using var output = new MemoryStream();
+        await source.SaveAsJpegAsync(output, new JpegEncoder { Quality = 82 }, ct);
+        return output.ToArray();
+    }
+
     private async Task<byte[]> RenderContainedImageAsync(Image<Rgba32> source, CancellationToken ct)
     {
         using var canvas = new Image<Rgba32>(CanvasWidth, CanvasHeight, White);

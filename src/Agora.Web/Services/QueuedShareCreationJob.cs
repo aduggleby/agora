@@ -69,10 +69,6 @@ public sealed class QueuedShareCreationJob(
             var validateDone = statusStore.UpdateStep(token, "validate", "completed");
             await broadcaster.BroadcastAsync(validateDone, ct);
 
-            var resolveActive = statusStore.UpdateStep(token, "resolve_uploads", "active", "Resolving staged upload files...");
-            performContext?.WriteLine("Resolving staged upload files...");
-            await broadcaster.BroadcastAsync(resolveActive, ct);
-
             if (stagedUploads.Count == 0)
             {
                 throw new InvalidOperationException("At least one uploaded file is required.");
@@ -118,9 +114,6 @@ public sealed class QueuedShareCreationJob(
                         ContentType: resolved.ContentType);
                 }
             }
-
-            var resolveDone = statusStore.UpdateStep(token, "resolve_uploads", "completed");
-            await broadcaster.BroadcastAsync(resolveDone, ct);
 
             var uploadFiles = stagedUploads
                 .Select(staged => new UploadSourceFile(

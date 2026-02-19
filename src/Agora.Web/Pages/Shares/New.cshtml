@@ -12,12 +12,12 @@
 
 <section class="mb-10">
   <h2 class="font-display text-4xl tracking-tight mb-1">Share files</h2>
-  <p class="text-ink-muted text-sm mt-3 max-w-md">Upload files, tune options, and generate a share link.</p>
+  <p class="text-ink-muted text-sm mt-3 max-w-md">Upload files, choose additional options, and generate a share link.</p>
 </section>
 
 <section class="mb-10">
   <div class="bg-white rounded-2xl border border-border p-6">
-    <form action="/api/shares" method="post" enctype="multipart/form-data" class="space-y-5" data-share-form data-max-file-size-bytes="@Model.MaxFileSizeBytes" data-max-total-upload-bytes="@Model.MaxTotalUploadBytes">
+    <form action="/api/shares" method="post" enctype="multipart/form-data" class="space-y-5" data-share-form data-max-file-size-bytes="@Model.MaxFileSizeBytes" data-max-total-upload-bytes="@Model.MaxTotalUploadBytes" data-max-files-per-share="@Model.MaxFilesPerShare">
       <div>
         <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Files</label>
         <input type="file" name="files" multiple accept="*/*" class="sr-only" data-file-input />
@@ -25,11 +25,14 @@
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p class="text-sm text-ink-light">Select files and they upload immediately in the background.</p>
-              <p class="text-xs text-ink-muted mt-1">You can keep filling in form details while upload progresses. Max 5 GB per file, 10 GB total.</p>
+              <p class="text-xs text-ink-muted mt-1">You can keep filling in form details while upload progresses. Max @Model.MaxFilesPerShare files, @FormatFileSize(Model.MaxFileSizeBytes) per file, @FormatFileSize(Model.MaxTotalUploadBytes) total.</p>
             </div>
             <button type="button" class="@(Model.StagedUploads.Count > 0 ? "px-4 py-2 bg-cream text-ink text-sm font-medium rounded-lg border border-border hover:bg-cream-dark/70 transition-colors" : "px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors")" data-pick-files>@(Model.StagedUploads.Count > 0 ? "Add more files" : "Select files")</button>
           </div>
-          <p class="text-xs text-ink-muted mt-3" data-upload-status>@(Model.StagedUploads.Count > 0 ? $"{Model.StagedUploads.Count} file(s) uploaded and ready." : "No files uploaded yet.")</p>
+          <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
+            <p class="text-xs text-ink-muted" data-upload-status>@(Model.StagedUploads.Count > 0 ? $"{Model.StagedUploads.Count} file(s) uploaded and ready." : "No files uploaded yet.")</p>
+            <button type="button" class="hidden px-3 py-1.5 border border-border bg-cream-dark/70 text-ink text-xs font-medium rounded-md hover:bg-cream-dark transition-colors disabled:opacity-60 disabled:cursor-not-allowed" data-upload-cancel disabled title="No upload is currently running.">Cancel upload</button>
+          </div>
           <div class="mt-4 hidden" data-upload-hidden>
             @foreach (var upload in Model.StagedUploads)
             {

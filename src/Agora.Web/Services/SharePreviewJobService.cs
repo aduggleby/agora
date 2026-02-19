@@ -8,9 +8,6 @@ using Hangfire.Console;
 using Hangfire.Server;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Formats.Jpeg;
-using SixLabors.ImageSharp.Processing;
 
 namespace Agora.Web.Services;
 
@@ -80,30 +77,13 @@ public sealed class SharePreviewJobService(
             : new Availability("unavailable", previewPath, "generation_failed");
     }
 
-    public async Task<ImagePayload> LoadPreviewImageAsync(Share share, ShareFile file, int? width, int? height, CancellationToken ct)
+    public async Task<ImagePayload> LoadPreviewImageAsync(Share share, ShareFile file, CancellationToken ct)
     {
         var availability = GetAvailability(share, file);
         if (availability.State == "ready")
         {
-            await using var stream = File.OpenRead(availability.PreviewPath);
-            using var image = await Image.LoadAsync(stream, ct);
-
-            if (width is not null || height is not null)
-            {
-                image.Mutate(ctx => ctx.Resize(new ResizeOptions
-                {
-                    Size = new Size(
-                        Math.Clamp(width ?? image.Width, 96, 1024),
-                        Math.Clamp(height ?? image.Height, 96, 1024)),
-                    Mode = ResizeMode.Crop,
-                    Sampler = KnownResamplers.Bicubic,
-                    Position = AnchorPositionMode.Center
-                }));
-            }
-
-            await using var output = new MemoryStream();
-            await image.SaveAsJpegAsync(output, new JpegEncoder { Quality = 82 }, ct);
-            return new ImagePayload("ready", output.ToArray(), "image/jpeg", IsCacheable: true);
+            var content = await File.ReadAllBytesAsync(availability.PreviewPath, ct);
+            return new ImagePayload("ready", content, "image/jpeg", IsCacheable: true);
         }
 
         if (availability.State == "pending")
@@ -115,6 +95,19 @@ public sealed class SharePreviewJobService(
 
         var unavailable = await imageGenerator.GenerateUnavailablePreviewAsync(ct);
         return new ImagePayload("unavailable", unavailable, "image/jpeg", IsCacheable: false);
+    }
+
+    public async Task<ImagePayload> LoadThumbnailAsync(Share share, ShareFile file, CancellationToken ct)
+    {
+        var thumbPath = SharePreviewPaths.ThumbnailAbsolute(_options.StorageRoot, share.Id, file.Id);
+        if (File.Exists(thumbPath))
+        {
+            var content = await File.ReadAllBytesAsync(thumbPath, ct);
+            return new ImagePayload("ready", content, "image/jpeg", IsCacheable: true);
+        }
+
+        // Fall back to the standard preview
+        return await LoadPreviewImageAsync(share, file, ct);
     }
 
     [Queue("previews")]
@@ -178,6 +171,20 @@ public sealed class SharePreviewJobService(
             await File.WriteAllBytesAsync(tempPath, content, ct);
             File.Move(tempPath, previewPath, overwrite: true);
             performContext?.WriteLine("Preview generated.");
+
+            var renderType = (file.RenderType ?? string.Empty).Trim().ToLowerInvariant();
+            if (renderType == "image")
+            {
+                var thumbPath = SharePreviewPaths.ThumbnailAbsolute(_options.StorageRoot, shareId, fileId);
+                if (!File.Exists(thumbPath))
+                {
+                    var thumbContent = await imageGenerator.GenerateMosaicThumbnailAsync(absoluteSourcePath, 300, ct);
+                    var thumbTempPath = thumbPath + ".tmp";
+                    await File.WriteAllBytesAsync(thumbTempPath, thumbContent, ct);
+                    File.Move(thumbTempPath, thumbPath, overwrite: true);
+                    performContext?.WriteLine("Mosaic thumbnail generated.");
+                }
+            }
             if (File.Exists(failedPath))
             {
                 File.Delete(failedPath);

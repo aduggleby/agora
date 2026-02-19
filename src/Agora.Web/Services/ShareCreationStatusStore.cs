@@ -12,7 +12,6 @@ public sealed class ShareCreationStatusStore(IOptions<AgoraOptions> options)
     private static readonly Step[] DefaultSteps =
     [
         new("validate", "Validate request", "pending", null, null),
-        new("resolve_uploads", "Resolve staged uploads", "pending", null, null),
         new("create_share", "Create share archive", "pending", null, null),
         new("queue_previews", "Queue preview generation", "pending", null, null),
         new("notify_uploader", "Notify uploader by email", "pending", null, null)

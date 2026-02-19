@@ -1,3 +1,5 @@
+import { readLimitsFromElement, validateFileSelection, formatLimitBytes, showLimitDialog } from './upload-limits';
+
 type UploadStageResponse = {
   uploadId?: string;
 };
@@ -17,6 +19,7 @@ type UploadUi = {
 
   const fileInput = form.querySelector<HTMLInputElement>('[data-file-input]');
   const pickButton = form.querySelector<HTMLButtonElement>('[data-pick-files]');
+  const cancelUploadsButton = form.querySelector<HTMLButtonElement>('[data-upload-cancel]');
   const list = form.querySelector<HTMLUListElement>('[data-upload-list]');
   const hidden = form.querySelector<HTMLElement>('[data-upload-hidden]');
   const status = form.querySelector<HTMLElement>('[data-upload-status]');
@@ -40,10 +43,9 @@ type UploadUi = {
   const removeCancelButton = form.querySelector<HTMLButtonElement>('[data-upload-remove-cancel]');
   const removeConfirmButton = form.querySelector<HTMLButtonElement>('[data-upload-remove-confirm]');
 
-  if (!fileInput || !pickButton || !list || !hidden || !status || !submit || !draftShareIdInput) return;
+  if (!fileInput || !pickButton || !cancelUploadsButton || !list || !hidden || !status || !submit || !draftShareIdInput) return;
 
-  const maxFileSizeBytes = Number(form.dataset.maxFileSizeBytes || '0');
-  const maxTotalUploadBytes = Number(form.dataset.maxTotalUploadBytes || '0');
+  const limits = readLimitsFromElement(form);
   const uploadedIds = new Set<string>();
 
   hidden.querySelectorAll<HTMLInputElement>('input[name="uploadedFileIds"]').forEach((input) => {
@@ -54,6 +56,8 @@ type UploadUi = {
   let manualExpiryValue = '';
   let pendingRemoval: { id: string; row: Element | null } | null = null;
   let isSubmitting = false;
+  let cancelRequested = false;
+  const activeRequests = new Set<XMLHttpRequest>();
 
   const optionsStorageKey = 'agora:new-share:options-collapsed';
   const pickPrimaryClass = 'px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors';
@@ -92,14 +96,6 @@ type UploadUi = {
       ':',
       pad(date.getMinutes())
     ].join('');
-  };
-
-  const formatLimitBytes = (bytes: number): string => {
-    if (!Number.isFinite(bytes) || bytes <= 0) return '';
-    if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${bytes} B`;
   };
 
   const formatBytes = (bytes: number): string => {
@@ -218,9 +214,36 @@ type UploadUi = {
 
     if (activeUploads > 0) {
       status.textContent = `Uploading ${activeUploads} file(s)...`;
+      cancelUploadsButton.classList.remove('hidden');
+      cancelUploadsButton.disabled = false;
+      cancelUploadsButton.title = 'Cancel upload and queue immediate cleanup.';
       return;
     }
+
+    cancelUploadsButton.classList.add('hidden');
+    cancelUploadsButton.disabled = true;
+    cancelUploadsButton.title = 'No upload is currently running.';
     status.textContent = uploadedIds.size > 0 ? `${uploadedIds.size} file(s) uploaded and ready.` : 'No files uploaded yet.';
+  };
+
+  const markCanceledUi = (ui: UploadUi, detail?: string): void => {
+    ui.row.className = 'relative rounded-lg border border-border bg-cream px-2.5 py-2 min-w-0';
+    ui.barWrap.style.display = 'none';
+    ui.state.textContent = detail || 'Canceled';
+    ui.state.className = 'text-[11px] text-ink-muted mt-1';
+    ui.remove.classList.add('hidden');
+  };
+
+  const queueDraftCleanup = async (): Promise<void> => {
+    const data = new FormData();
+    data.append('draftShareId', draftShareIdInput.value);
+    try {
+      const response = await fetch('/api/uploads/cancel', { method: 'POST', body: data, credentials: 'same-origin' });
+      if (!response.ok) throw new Error();
+      status.textContent = 'Upload canceled. Cleanup queued in background.';
+    } catch {
+      status.textContent = 'Upload canceled. Cleanup request failed; please retry.';
+    }
   };
 
   const addHidden = (id: string): void => {
@@ -302,7 +325,7 @@ type UploadUi = {
 
     const state = document.createElement('p');
     state.className = 'text-[11px] text-ink-muted mt-1';
-    state.textContent = 'Queued...';
+    state.textContent = 'Pending';
 
     row.append(remove, name, size, barWrap, state);
     list.appendChild(row);
@@ -341,8 +364,17 @@ type UploadUi = {
     refreshState();
 
     const xhr = new XMLHttpRequest();
+    activeRequests.add(xhr);
     xhr.open('POST', '/api/uploads/stage');
     xhr.responseType = 'json';
+    let settled = false;
+    const finalize = (): void => {
+      if (settled) return;
+      settled = true;
+      activeRequests.delete(xhr);
+      activeUploads = Math.max(0, activeUploads - 1);
+      refreshState();
+    };
 
     xhr.upload.addEventListener('progress', (event) => {
       if (!event.lengthComputable) return;
@@ -352,8 +384,13 @@ type UploadUi = {
     });
 
     xhr.addEventListener('load', () => {
-      activeUploads -= 1;
+      finalize();
       const response = xhr.response as UploadStageResponse | null;
+      if (cancelRequested) {
+        markCanceledUi(ui, 'Canceled (cleanup queued)');
+        return;
+      }
+
       if (xhr.status >= 200 && xhr.status < 300 && response?.uploadId) {
         const id = response.uploadId;
         uploadedIds.add(id);
@@ -375,18 +412,25 @@ type UploadUi = {
         ui.state.className = 'text-[11px] text-danger mt-1';
         status.textContent = errorMessage;
       }
-      refreshState();
+    });
+
+    xhr.addEventListener('abort', () => {
+      finalize();
+      markCanceledUi(ui);
     });
 
     xhr.addEventListener('error', () => {
-      activeUploads -= 1;
+      finalize();
+      if (cancelRequested) {
+        markCanceledUi(ui);
+        return;
+      }
       const errorMessage = resolveUploadErrorMessage(xhr);
       ui.row.className = 'relative rounded-lg border border-danger/35 bg-danger-wash px-2.5 py-2 min-w-0';
       ui.bar.className = 'h-full bg-danger';
       ui.state.textContent = errorMessage;
       ui.state.className = 'text-[11px] text-danger mt-1';
       status.textContent = errorMessage;
-      refreshState();
     });
 
     const data = new FormData();
@@ -394,6 +438,22 @@ type UploadUi = {
     data.append('file', file, file.name);
     xhr.send(data);
   };
+
+  cancelUploadsButton.addEventListener('click', async () => {
+    if (activeUploads <= 0 || cancelRequested) return;
+    cancelRequested = true;
+    cancelUploadsButton.disabled = true;
+    cancelUploadsButton.title = 'Canceling upload...';
+    status.textContent = 'Canceling upload...';
+
+    uploadedIds.clear();
+    hidden.querySelectorAll<HTMLInputElement>('input[name="uploadedFileIds"]').forEach((input) => input.remove());
+
+    activeRequests.forEach((request) => request.abort());
+    await queueDraftCleanup();
+    cancelRequested = false;
+    refreshState();
+  });
 
   list.querySelectorAll<HTMLButtonElement>('[data-upload-remove]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -419,26 +479,22 @@ type UploadUi = {
 
   const queueSelectedFiles = (files: FileList | File[] | null | undefined): void => {
     const selected = Array.from(files ?? []);
-    const existingBytes = Array.from(list.querySelectorAll<HTMLElement>('[data-upload-size-bytes]'))
+    if (selected.length === 0) return;
+    cancelRequested = false;
+
+    const currentFileCount = uploadedIds.size + activeUploads;
+    const currentTotalBytes = Array.from(list.querySelectorAll<HTMLElement>('[data-upload-size-bytes]'))
       .map((row) => Number(row.getAttribute('data-upload-size-bytes') || '0'))
       .filter((value) => Number.isFinite(value) && value > 0)
       .reduce((sum, value) => sum + value, 0);
 
-    let pendingBytes = 0;
-    selected.forEach((file) => {
-      if (maxFileSizeBytes > 0 && file.size > maxFileSizeBytes) {
-        status.textContent = `Upload failed: "${file.name}" exceeds per-file limit (${formatLimitBytes(maxFileSizeBytes)}).`;
-        return;
-      }
+    const result = validateFileSelection(selected, limits, currentFileCount, currentTotalBytes);
+    if (!result.ok) {
+      showLimitDialog(result.message);
+      return;
+    }
 
-      if (maxTotalUploadBytes > 0 && existingBytes + pendingBytes + file.size > maxTotalUploadBytes) {
-        status.textContent = `Upload failed: adding "${file.name}" exceeds total upload limit (${formatLimitBytes(maxTotalUploadBytes)}).`;
-        return;
-      }
-
-      pendingBytes += file.size;
-      uploadFile(file);
-    });
+    selected.forEach((file) => uploadFile(file));
   };
 
   pickButton.addEventListener('click', () => fileInput.click());

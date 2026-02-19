@@ -1066,6 +1066,46 @@ app.MapPost("/api/uploads/remove", async (
         : Results.NotFound(new { error = "Upload not found." });
 }).RequireAuthorization();
 
+app.MapPost("/api/uploads/cancel", async (
+    HttpContext context,
+    ShareManager manager,
+    IBackgroundJobClient backgroundJobs,
+    HttpRequest request,
+    CancellationToken ct) =>
+{
+    if (!request.HasFormContentType)
+    {
+        return Results.BadRequest(new { error = "Expected form data." });
+    }
+
+    var uploaderEmail = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+    if (string.IsNullOrWhiteSpace(uploaderEmail))
+    {
+        return Results.Unauthorized();
+    }
+
+    var form = await request.ReadFormAsync(ct);
+    var draftShareId = form["draftShareId"].ToString().Trim();
+    if (string.IsNullOrWhiteSpace(draftShareId))
+    {
+        return Results.BadRequest(new { error = "draftShareId is required." });
+    }
+
+    try
+    {
+        draftShareId = await manager.EnsureDraftShareAsync(uploaderEmail, draftShareId, ct);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+
+    var jobId = backgroundJobs.Enqueue<ShareManager>(x =>
+        x.DeleteStagedUploadsForDraftAsync(uploaderEmail, draftShareId, CancellationToken.None));
+
+    return Results.Ok(new { canceled = true, cleanupJobId = jobId });
+}).RequireAuthorization();
+
 app.MapPost("/api/shares", async (
     HttpContext context,
     ShareManager manager,

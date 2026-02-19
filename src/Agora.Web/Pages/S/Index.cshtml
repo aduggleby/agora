@@ -46,20 +46,19 @@
     body { font-family:'DM Sans',sans-serif; background: var(--cream); color: var(--ink); min-height:100vh; display:flex; flex-direction:column; align-items:@Model.ContainerAlignItems; justify-content:@Model.ContainerJustifyContent; padding:2rem; @(!string.IsNullOrWhiteSpace(Model.Share?.PageBackgroundColorHex) ? $"background-color:{Model.Share.PageBackgroundColorHex};" : "") @(!string.IsNullOrWhiteSpace(Model.BackgroundImageUrl) ? $"background-image:url({Model.BackgroundImageUrl});background-size:cover;background-position:center;" : "") }
 
     .preview-shell { width:min(80vw,1080px); max-height:80vh; background:white; border:1px solid var(--border); border-radius:1rem; box-shadow:0 12px 38px rgba(26,22,20,0.11); display:flex; flex-direction:column; overflow:hidden; }
+    .preview-shell.mosaic-mode { width:90vw; max-width:90vw; max-height:90vh; }
     .preview-header { padding:1.15rem 1.25rem; border-bottom:1px solid var(--border); background:linear-gradient(180deg,#fff 0%,#fdfaf6 100%); }
     .preview-title { font-family:'Instrument Serif',serif; font-size:1.8rem; line-height:1.06; letter-spacing:-0.01em; }
     .preview-subtitle { font-size:0.95rem; color:var(--ink-light); margin-top:0.22rem; }
     .preview-description { font-size:0.82rem; color:var(--ink-light); margin-top:0.52rem; }
     .preview-content { flex:1; min-height:0; overflow:scroll; }
     .preview-content.mixed { overflow:hidden; display:flex; flex-direction:column; }
-    .mosaic-grid { padding:1rem; display:grid; grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:0.75rem; }
-    .mosaic-item { border:1px solid var(--border); border-radius:0.75rem; overflow:hidden; background:#f8f4ef; position:relative; }
-    .mosaic-open { display:block; text-decoration:none; }
-    .mosaic-item img { width:100%; height:150px; object-fit:cover; display:block; }
-    .mosaic-meta { display:flex; align-items:center; gap:0.4rem; padding:0.45rem 0.55rem; min-width:0; }
-    .mosaic-label { font-size:0.7rem; line-height:1.2; color:var(--ink-light); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:1; }
-    .file-icon-download { display:inline-flex; align-items:center; justify-content:center; width:1.2rem; height:1.2rem; border-radius:999px; text-decoration:none; color:#fff; background:var(--terra); flex:0 0 auto; }
-    .file-icon-download svg { width:0.7rem; height:0.7rem; display:block; }
+    .mosaic-grid { display:flex; flex-wrap:wrap; line-height:0; }
+    .mosaic-item { position:relative; overflow:hidden; height:300px; cursor:pointer; flex-grow:1; min-width:150px; }
+    .mosaic-open { display:block; text-decoration:none; height:100%; }
+    .mosaic-item img { height:100%; width:100%; max-width:none; object-fit:cover; display:block; }
+    .file-icon-download { display:inline-flex; align-items:center; justify-content:center; width:1.4rem; height:1.4rem; border-radius:999px; text-decoration:none; color:#fff; background:var(--terra); flex:0 0 auto; }
+    .file-icon-download svg { width:0.75rem; height:0.75rem; display:block; }
     .single-wrap { padding:1rem; }
     .single-preview { border:1px solid var(--border); border-radius:0.8rem; background:#fff; overflow:hidden; min-height:260px; }
     .preview-frame { width:100%; aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; overflow:hidden; }
@@ -85,9 +84,24 @@
     .download-error { color:#7a3f20;font-size:0.75rem;margin-bottom:0.6rem;padding:0.55rem;border-radius:0.5rem;background:#f6e5dc;border:1px solid #e8c8b5; }
     .download-button { display:inline-block;width:100%;padding:0.78rem 1.5rem;background:#C4663A;color:white;border:none;border-radius:0.55rem;font-size:0.88rem;font-weight:600;text-align:center;text-decoration:none;cursor:pointer; }
 
+    .lightbox { position:fixed; inset:0; z-index:1000; background:rgba(0,0,0,0.85); display:none; align-items:center; justify-content:center; flex-direction:column; }
+    .lightbox.open { display:flex; }
+    .lightbox-img { max-width:90vw; max-height:80vh; object-fit:contain; border-radius:0.25rem; }
+    .lightbox-caption { color:#fff; font-size:0.85rem; margin-top:0.75rem; text-align:center; max-width:90vw; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .lightbox-close { position:absolute; top:1rem; right:1rem; background:rgba(255,255,255,0.15); border:none; color:#fff; width:2.2rem; height:2.2rem; border-radius:999px; font-size:1.2rem; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:background .15s; }
+    .lightbox-close:hover { background:rgba(255,255,255,0.3); }
+    .lightbox-nav { position:absolute; top:50%; transform:translateY(-50%); background:rgba(255,255,255,0.15); border:none; color:#fff; width:2.8rem; height:2.8rem; border-radius:999px; font-size:1.4rem; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:background .15s; }
+    .lightbox-nav:hover { background:rgba(255,255,255,0.3); }
+    .lightbox-prev { left:1rem; }
+    .lightbox-next { right:1rem; }
+    .lightbox-download { position:absolute; bottom:1.2rem; right:1.2rem; display:inline-flex; align-items:center; gap:0.4rem; padding:0.5rem 0.85rem; background:var(--terra); color:#fff; text-decoration:none; border-radius:0.5rem; font-size:0.8rem; font-weight:600; transition:background .15s; }
+    .lightbox-download:hover { background:#b55a32; }
+    .lightbox-download svg { width:0.85rem; height:0.85rem; }
+
     @@media (max-width: 920px) {
       body { padding:1rem; }
       .preview-shell { width:100%; max-height:none; }
+      .mosaic-item { min-width:120px; }
       .file-browser { flex-direction:column; }
       .file-list { width:100%; flex:0 0 auto; max-height:220px; border-right:none; border-bottom:1px solid var(--border); }
       .preview-frame { max-height:56vh; }
@@ -99,7 +113,7 @@
   {
     @if (Model.HasPreviewExperience)
     {
-      <section class="preview-shell">
+      <section class="preview-shell @(Model.IsImageMosaicPreview ? "mosaic-mode" : "")">
         <header class="preview-header">
           <h1 class="preview-title">@Model.DisplayH1</h1>
           @if (!string.IsNullOrWhiteSpace(Model.Share.PageTitle))
@@ -119,8 +133,12 @@
             <div class="mosaic-grid">
               @foreach (var item in Model.PreviewItems)
               {
-                <div class="mosaic-item" title="@item.OriginalFilename">
-                  <a class="mosaic-open" href="@item.PreviewImageUrl" target="_blank" rel="noreferrer">
+                <div class="mosaic-item" title="@item.OriginalFilename"
+                     data-lightbox-src="@item.PreviewImageUrl"
+                     data-lightbox-name="@item.OriginalFilename"
+                     data-lightbox-download="@item.DownloadUrl">
+                  <a class="mosaic-open" href="@item.PreviewImageUrl" rel="noreferrer"
+                     onclick="event.preventDefault(); openLightbox(this.closest('.mosaic-item'));">
                     <img
                       src="@item.ThumbnailUrl"
                       alt="@item.OriginalFilename"
@@ -131,14 +149,6 @@
                       data-preview-retry-url="@item.RetryPreviewUrl"
                       data-preview-mode="thumbnail" />
                   </a>
-                  <span class="mosaic-meta">
-                    <a class="file-icon-download" href="@item.DownloadUrl" title="Download @item.OriginalFilename" aria-label="Download @item.OriginalFilename">
-                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <path d="M12 4v10m0 0l4-4m-4 4l-4-4M5 18h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                      </svg>
-                    </a>
-                    <span class="mosaic-label">@item.OriginalFilename</span>
-                  </span>
                 </div>
               }
             </div>
@@ -264,6 +274,19 @@
     }
   }
 
+  <div class="lightbox" id="lightbox" aria-hidden="true">
+    <button class="lightbox-close" aria-label="Close" onclick="closeLightbox()">&times;</button>
+    <button class="lightbox-nav lightbox-prev" aria-label="Previous" onclick="navLightbox(-1)">&#8249;</button>
+    <button class="lightbox-nav lightbox-next" aria-label="Next" onclick="navLightbox(1)">&#8250;</button>
+    <img class="lightbox-img" id="lightbox-img" src="" alt="" />
+    <span class="lightbox-caption" id="lightbox-caption"></span>
+    <a class="lightbox-download" id="lightbox-download" href="#" aria-label="Download">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4v10m0 0l4-4m-4 4l-4-4M5 18h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Download
+    </a>
+  </div>
+
   <script src="/js/share-download.js"></script>
+  <script src="/js/lightbox.js"></script>
 </body>
 </html>

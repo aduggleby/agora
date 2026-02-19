@@ -25,6 +25,7 @@ public class NewModel(AuthService authService, ShareManager manager, IOptions<Ag
     public string ShareLinkPrefix { get; private set; } = string.Empty;
     public long MaxFileSizeBytes => _options.MaxFileSizeBytes;
     public long MaxTotalUploadBytes => _options.MaxTotalUploadBytes;
+    public int MaxFilesPerShare => _options.MaxFilesPerShare;
 
     public async Task OnGet(CancellationToken ct)
     {

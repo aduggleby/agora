@@ -14,7 +14,8 @@ const entryPoints = [
   'scripts/ts/shares-created.ts',
   'scripts/ts/local-datetime.ts',
   'scripts/ts/share-delete.ts',
-  'scripts/ts/quick-share-dropzone.ts'
+  'scripts/ts/quick-share-dropzone.ts',
+  'scripts/ts/lightbox.ts'
 ];
 
 await build({
