@@ -22,6 +22,7 @@ Presentation and runtime composition layer.
 
 - `Program.cs`: DI setup, middleware pipeline, endpoint mapping, Hangfire servers, recurring jobs.
 - `Pages/*`: Razor Pages for authenticated UX (new share, account settings, admin, etc.).
+- `Pages/U/Index.cshtml`: public upload intake page (`/u/{token}`).
 - `Endpoints/PublicShareEndpoints.cs`: public recipient API surface (`/s/{token}/...`).
 - `Services/*`: UI/runtime services (preview generation orchestration, rendering strategies, progress broadcast, OG image generation).
 - `Hubs/ShareProgressHub.cs`: SignalR hub for real-time queued share status.
@@ -88,6 +89,7 @@ Key fields:
 - `ShareToken`: public lookup key, unique.
 - `ZipDiskPath`, `ZipDisplayName`, `ZipSizeBytes`: archived payload metadata.
 - `DownloadPasswordHash`: hash of recipient password if password-protected.
+- `SenderName`, `SenderEmail`, `SenderMessage`: attribution metadata from public upload intake.
 - `ShareExperienceType`, `AccessMode`: rendering and access semantics.
 - `PageTitle`, `PageH1`, `PageDescription`, `BackgroundImageUrl`, `PageBackgroundColorHex`, `PageContainerPosition`: download-page customization.
 - `ExpiresAtUtc`, `DeletedAtUtc`: lifecycle gates.
@@ -109,7 +111,7 @@ Immutable-ish audit/event stream for downloads.
 
 ### `UserAccount`
 
-Authentication, confirmation, lockout, and account defaults.
+Authentication, confirmation, lockout, account defaults, and public upload token (`UploadToken`).
 
 ### `AccountTemplate`
 
@@ -120,6 +122,18 @@ Per-account default download page template used when creating new shares.
 Mutable system-level configuration flags stored in DB (for example registration toggle).
 
 ## 5. Primary Request and Job Flows
+
+## 5.0 Public Upload Intake Flow
+
+Anonymous users can send files to a registered user through a personal upload link (`/u/{token}`).
+
+1. Each account has an `UploadToken` (generated at registration, regenerable from Settings).
+2. Visitor opens `/u/{token}`, which resolves the token to a `UserAccount`.
+3. Page renders an upload form with sender name, email, optional message, and file picker.
+4. Files are staged individually via `POST /api/public-uploads/stage` (same staging pipeline as authenticated uploads).
+5. On submit, `POST /api/public-uploads/create-share` validates inputs, resolves staged files, and queues share creation using the account owner's default expiry/notify settings and template.
+6. The created `Share` stores `SenderName`, `SenderEmail`, and `SenderMessage` for attribution.
+7. Both endpoints are rate-limited under the `PublicUploadEndpoints` policy.
 
 ## 5.1 Share Creation Flow
 

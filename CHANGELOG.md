@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.7] - 2026-02-19
+
+### Added
+- Public upload intake: anonymous users can upload files to a registered user via tokenized links (`/u/{token}`).
+- Each account gets a personal upload URL shown in Account Settings, with a regenerate option.
+- Upload form collects sender name, email, and optional message; metadata is stored on the share.
+- New `Share` fields: `SenderName`, `SenderEmail`, `SenderMessage` for public upload attribution.
+- New `UserAccount` fields: `UploadToken`, `UploadTokenUpdatedAtUtc` for per-account upload links.
+- Rate limiting policy `PublicUploadEndpoints` for anonymous upload traffic.
+- Public upload API endpoints: `/api/public-uploads/stage` and `/api/public-uploads/create-share`.
+- Migration `V0902_PublicUploadLinksAndSenderMetadata`.
+
 ## [0.9.6] - 2026-02-19
 
 ### Changed
