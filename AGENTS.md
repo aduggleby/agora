@@ -24,6 +24,8 @@ When working in this repository, agents should prioritize:
 - Keep all persisted mutable runtime data under `/app/data` when containerized.
 - Ensure log retention remains daily rolling with 30-day retention.
 - Share tokens are stored and queried in plaintext via `ShareToken` (indexed). Do not reintroduce hashing without an explicit request.
+- Never hand-author EF migration files. Create/remove migrations only via `dotnet ef` tooling.
+- SQLite must not be used for app runtime or e2e. Use SQL Server only.
 
 ## Build/Test Commands
 
@@ -52,7 +54,8 @@ Agents should use ports in this range for local services and examples.
 
 E2E defaults:
 - Web app (Playwright): `18090`
-- Dedicated E2E database: `.e2e-data/agora_e2e.db`
+- Dedicated E2E SQL Server container: `mcr.microsoft.com/mssql/server:2022-latest` on `18091`
+- Dedicated E2E database: `agora_e2e`
 
 ## File Ownership and Layout
 
@@ -175,7 +178,7 @@ Quick checks:
 Use these defaults in docs/examples unless user asks otherwise:
 
 - Port: `18080`
-- DB: `Data Source=/app/data/uploads/agora.db`
+- DB: `Server=<sql-server-host>,1433;Database=agora;User Id=sa;Password=<password>;Encrypt=True;TrustServerCertificate=True`
 - Storage root: `/app/data/uploads`
 - Logs: `/app/data/logs`
 

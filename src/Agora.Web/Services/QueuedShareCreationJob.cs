@@ -8,6 +8,9 @@ using Microsoft.Extensions.Options;
 
 namespace Agora.Web.Services;
 
+/// <summary>
+/// Background job that validates staged uploads, creates a share, queues preview generation, and reports progress.
+/// </summary>
 public sealed class QueuedShareCreationJob(
     ShareManager manager,
     IBackgroundJobClient backgroundJobs,
@@ -98,6 +101,7 @@ public sealed class QueuedShareCreationJob(
             UploadSourceFile? templateBackgroundFile = null;
             if (!string.IsNullOrWhiteSpace(payload.TemplateBackgroundUploadId))
             {
+                // Resolve template background from the dedicated upload purpose so it is never treated as share content.
                 var stagedBackground = await manager.ResolveStagedUploadsAsync(
                     payload.UploaderEmail,
                     [payload.TemplateBackgroundUploadId.Trim()],
@@ -125,6 +129,7 @@ public sealed class QueuedShareCreationJob(
                 .ToList();
 
             var allFilesAreImages = uploadFiles.All(file => LooksLikeImage(file.OriginalFileName, file.ContentType));
+            // Gallery mode requires image-only content; mixed sets fall back to archive mode.
             var shareExperienceType = payload.ShowPreviews && allFilesAreImages ? "gallery" : "archive";
             var accessMode = payload.ShowPreviews ? "preview_and_download" : "download_only";
             var expiryMode = string.Equals(payload.ExpiryMode, "indefinite", StringComparison.OrdinalIgnoreCase)

@@ -12,6 +12,9 @@ using Microsoft.Extensions.Logging;
 
 namespace Agora.Infrastructure.Services;
 
+/// <summary>
+/// Orchestrates share lifecycle operations: staging files, creating share archives, resolving templates, and cleanup.
+/// </summary>
 public sealed class ShareManager(
     AgoraDbContext db,
     IOptions<AgoraOptions> options,
@@ -114,8 +117,8 @@ public sealed class ShareManager(
             }
         }
 
-        var zipInfo = new FileInfo(zipAbsolutePath);
         var archiveDiskPath = zipRelativePath;
+        long archiveSizeBytes;
         if (downloadPassword is not null)
         {
             var encryptedRelativePath = Path.Combine("zips", now.ToString("yyyy"), now.ToString("MM"), $"{Guid.NewGuid()}.agz");
@@ -124,6 +127,11 @@ public sealed class ShareManager(
             await ZipEncryption.EncryptFileAsync(zipAbsolutePath, encryptedAbsolutePath, downloadPassword, cancellationToken);
             File.Delete(zipAbsolutePath);
             archiveDiskPath = encryptedRelativePath;
+            archiveSizeBytes = new FileInfo(encryptedAbsolutePath).Length;
+        }
+        else
+        {
+            archiveSizeBytes = new FileInfo(zipAbsolutePath).Length;
         }
 
         var template = await ResolveTemplateAsync(command, cancellationToken);
@@ -169,7 +177,7 @@ public sealed class ShareManager(
                 ShareToken = token,
                 ZipDisplayName = zipName,
                 ZipDiskPath = archiveDiskPath,
-                ZipSizeBytes = zipInfo.Length,
+                ZipSizeBytes = archiveSizeBytes,
                 ShareExperienceType = shareExperienceType,
                 AccessMode = accessMode,
                 ContentRootPath = shareContentRelativePath,
@@ -208,6 +216,8 @@ public sealed class ShareManager(
                 {
                     throw new InvalidOperationException("Share token is already in use.", ex);
                 }
+
+                // Random collision on generated token; retry with a new token.
             }
         }
 
@@ -375,6 +385,7 @@ public sealed class ShareManager(
         await using var tx = await db.Database.BeginTransactionAsync(cancellationToken);
         if (mode == "once")
         {
+            // Atomic first-download update ensures only one notification is sent in concurrent requests.
             var affected = await db.Database.ExecuteSqlInterpolatedAsync(
                 $"UPDATE Shares SET FirstDownloadedAtUtc = {now} WHERE Id = {share.Id} AND FirstDownloadedAtUtc IS NULL", cancellationToken);
             shouldSend = affected == 1;
@@ -611,6 +622,7 @@ public sealed class ShareManager(
             var metadataPurpose = NormalizeUploadPurpose(metadata.UploadPurpose);
             if (!string.Equals(metadataPurpose, normalizedPurpose, StringComparison.Ordinal))
             {
+                // Prevent cross-purpose reuse (for example template backgrounds as share files).
                 throw new InvalidOperationException($"Uploaded file '{uploadId}' is not available for this operation.");
             }
 

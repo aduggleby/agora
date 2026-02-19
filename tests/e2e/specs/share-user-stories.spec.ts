@@ -1,7 +1,7 @@
 import path from 'node:path';
 import AdmZip from 'adm-zip';
 import { expect, test } from '@playwright/test';
-import { createE2EUser, createTempFiles, extractShareUrl, login, tokenFromShareUrl } from '../support/helpers';
+import { createE2EUser, createTempFiles, extractShareUrl, login, tokenFromShareUrl, waitForShareReady } from '../support/helpers';
 
 test.describe('Share user stories', () => {
   test('uses a custom share link slug when provided', async ({ page, request }, testInfo) => {
@@ -26,7 +26,7 @@ test.describe('Share user stories', () => {
     await page.waitForURL(new RegExp(`/shares/created\\?token=${customSlug}$`));
 
     const shareUrlText = await page.locator('main').innerText();
-    const shareUrl = extractShareUrl(shareUrlText);
+    const shareUrl = extractShareUrl(shareUrlText, page.url());
     const parsed = new URL(shareUrl);
     expect(parsed.pathname).toBe(`/s/${customSlug}`);
   });
@@ -56,7 +56,8 @@ test.describe('Share user stories', () => {
 
     await page.waitForURL(/\/shares\/created\?token=/);
     const messageText = await page.locator('main').innerText();
-    const shareUrl = extractShareUrl(messageText);
+    const shareUrl = extractShareUrl(messageText, page.url());
+    await waitForShareReady(page, shareUrl);
 
     await page.goto(shareUrl);
     await expect(page.getByRole('button', { name: 'Download' }).or(page.getByRole('link', { name: 'Download' }))).toBeVisible();
@@ -78,7 +79,7 @@ test.describe('Share user stories', () => {
     const user = await createE2EUser(request, 'pdf-share');
     await login(page, user.email, user.password);
 
-    const minimalPdf = `%PDF-1.1
+    const minimalPdf = Buffer.from(`%PDF-1.1
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
 endobj
@@ -91,7 +92,7 @@ endobj
 trailer
 << /Root 1 0 R >>
 %%EOF
-`;
+`, 'utf8');
 
     const inputFiles = await createTempFiles(testInfo.outputPath('files-pdf'), [
       { name: 'proof.pdf', content: minimalPdf },
@@ -108,7 +109,8 @@ trailer
     await page.waitForURL(/\/shares\/created\?token=/);
 
     const messageText = await page.locator('main').innerText();
-    const shareUrl = extractShareUrl(messageText);
+    const shareUrl = extractShareUrl(messageText, page.url());
+    await waitForShareReady(page, shareUrl);
 
     await page.goto(shareUrl);
     await expect(page.getByRole('button', { name: 'Download' }).or(page.getByRole('link', { name: 'Download' }))).toBeVisible();
@@ -146,8 +148,9 @@ trailer
     await page.waitForURL(/\/shares\/created\?token=/);
 
     const messageText = await page.locator('main').innerText();
-    const shareUrl = extractShareUrl(messageText);
+    const shareUrl = extractShareUrl(messageText, page.url());
     const token = tokenFromShareUrl(shareUrl);
+    await waitForShareReady(page, shareUrl);
 
     const setExpiry = await request.post(`/api/e2e/shares/${token}/expires-in-seconds`, {
       form: { seconds: '5' },

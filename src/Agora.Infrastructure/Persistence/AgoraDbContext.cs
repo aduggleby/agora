@@ -3,6 +3,9 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Agora.Infrastructure.Persistence;
 
+/// <summary>
+/// EF Core database context for Agora runtime entities, including shares, uploaded-file metadata, and account settings.
+/// </summary>
 public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : DbContext(options)
 {
     public DbSet<Share> Shares => Set<Share>();
@@ -17,6 +20,7 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
         modelBuilder.Entity<Share>(builder =>
         {
             builder.HasKey(x => x.Id);
+            // ShareToken is now the canonical lookup key for public links.
             builder.HasIndex(x => x.ShareToken).IsUnique();
             builder.Property(x => x.UploaderEmail).HasMaxLength(320);
             builder.Property(x => x.ShareToken).HasMaxLength(120);

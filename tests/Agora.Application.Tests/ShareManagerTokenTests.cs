@@ -13,6 +13,9 @@ using Microsoft.Extensions.Options;
 
 namespace Agora.Application.Tests;
 
+/// <summary>
+/// Covers share-token lookup/uniqueness behavior and staged-upload purpose isolation in <see cref="ShareManager"/>.
+/// </summary>
 public sealed class ShareManagerTokenTests
 {
     [Fact]
@@ -195,6 +198,7 @@ public sealed class ShareManagerTokenTests
             var db = new AgoraDbContext(options);
             await db.Database.EnsureCreatedAsync();
 
+            // Use a unique temp storage root per test to avoid cross-test filesystem coupling.
             var storageRoot = Path.Combine(Path.GetTempPath(), "agora-sharemanager-tests", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(storageRoot);
             var appOptions = Options.Create(new AgoraOptions { StorageRoot = storageRoot });

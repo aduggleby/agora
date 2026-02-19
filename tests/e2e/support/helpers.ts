@@ -63,23 +63,36 @@ export async function login(page: Page, email: string, password: string) {
   }
 }
 
-export async function createTempFiles(baseDir: string, files: Array<{ name: string; content: string }>) {
+export async function createTempFiles(baseDir: string, files: Array<{ name: string; content: string | Buffer }>) {
   await fs.mkdir(baseDir, { recursive: true });
   const paths: string[] = [];
   for (const file of files) {
     const filePath = path.join(baseDir, file.name);
-    await fs.writeFile(filePath, file.content, 'utf8');
+    if (Buffer.isBuffer(file.content)) {
+      await fs.writeFile(filePath, file.content);
+    } else {
+      await fs.writeFile(filePath, file.content, 'utf8');
+    }
     paths.push(filePath);
   }
   return paths;
 }
 
-export function extractShareUrl(text: string): string {
+export function extractShareUrl(text: string, fallbackPageUrl?: string): string {
   const match = text.match(/https?:\/\/[^\s]+\/s\/[A-Za-z0-9_-]+/);
-  if (!match) {
-    throw new Error(`Could not find share URL in text: ${text}`);
+  if (match) {
+    return match[0];
   }
-  return match[0];
+
+  if (fallbackPageUrl) {
+    const fallback = new URL(fallbackPageUrl);
+    const token = fallback.searchParams.get('token');
+    if (token) {
+      return `${fallback.origin}/s/${token}`;
+    }
+  }
+
+  throw new Error(`Could not find share URL in text: ${text}`);
 }
 
 export function tokenFromShareUrl(shareUrl: string): string {
@@ -90,4 +103,23 @@ export function tokenFromShareUrl(shareUrl: string): string {
     throw new Error(`Invalid share URL: ${shareUrl}`);
   }
   return token;
+}
+
+export async function waitForShareReady(page: Page, shareUrl: string, timeoutMs = 120_000): Promise<void> {
+  const token = tokenFromShareUrl(shareUrl);
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const response = await page.request.get(`/api/shares/${token}/status`);
+    if (response.ok()) {
+      const payload = await response.json() as { ready?: boolean; state?: string };
+      if (payload.ready || payload.state === 'completed') {
+        return;
+      }
+    }
+
+    await page.waitForTimeout(1000);
+  }
+
+  throw new Error(`Timed out waiting for share ${token} to become ready.`);
 }

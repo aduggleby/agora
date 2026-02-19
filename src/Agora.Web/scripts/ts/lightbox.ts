@@ -5,26 +5,6 @@ type LightboxItem = {
 };
 
 (() => {
-  // Set flex-grow on mosaic items based on image natural aspect ratio
-  document.querySelectorAll<HTMLElement>('.mosaic-item').forEach((item) => {
-    const img = item.querySelector<HTMLImageElement>('img');
-    if (!img) return;
-
-    const apply = (): void => {
-      if (img.naturalWidth && img.naturalHeight) {
-        const ratio = img.naturalWidth / img.naturalHeight;
-        item.style.flexGrow = String(ratio);
-        item.style.minWidth = `${Math.round(ratio * 300)}px`;
-      }
-    };
-
-    if (img.complete && img.naturalWidth) {
-      apply();
-    } else {
-      img.addEventListener('load', apply);
-    }
-  });
-
   // Lightbox
   const box = document.getElementById('lightbox');
   const lbImg = document.getElementById('lightbox-img') as HTMLImageElement | null;

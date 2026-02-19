@@ -34,7 +34,7 @@ public sealed class OgImageGenerator
         collection.Add(IOPath.Combine(fontsDirectory, "DMSans-Medium.ttf"));
         _fontFamily = collection.Add(IOPath.Combine(fontsDirectory, "DMSans-Bold.ttf"));
 
-        _titleFont = _fontFamily.CreateFont(44, FontStyle.Bold);
+        _titleFont = _fontFamily.CreateFont(35, FontStyle.Bold);
         _subtitleFont = _fontFamily.CreateFont(22, FontStyle.Regular);
         _smallFont = _fontFamily.CreateFont(16, FontStyle.Regular);
         _brandFont = _fontFamily.CreateFont(18, FontStyle.Bold);
@@ -303,7 +303,7 @@ public sealed class OgImageGenerator
             Origin = new PointF(100, Height - 38),
             VerticalAlignment = VerticalAlignment.Center
         };
-        canvas.Mutate(ctx => ctx.DrawText(tagOpts, "Self-hosted file transfer", textColor));
+        canvas.Mutate(ctx => ctx.DrawText(tagOpts, "Self hosted secure file transfer", textColor));
     }
 
     private static string Truncate(string text, int max)

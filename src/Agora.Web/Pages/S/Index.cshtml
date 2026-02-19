@@ -53,10 +53,10 @@
     .preview-description { font-size:0.82rem; color:var(--ink-light); margin-top:0.52rem; }
     .preview-content { flex:1; min-height:0; overflow:scroll; }
     .preview-content.mixed { overflow:hidden; display:flex; flex-direction:column; }
-    .mosaic-grid { display:flex; flex-wrap:wrap; line-height:0; }
-    .mosaic-item { position:relative; overflow:hidden; height:300px; cursor:pointer; flex-grow:1; min-width:150px; }
-    .mosaic-open { display:block; text-decoration:none; height:100%; }
-    .mosaic-item img { height:100%; width:100%; max-width:none; object-fit:cover; display:block; }
+    .mosaic-grid { display:flex; flex-wrap:wrap; justify-content:flex-start; align-content:flex-start; align-items:flex-start; line-height:0; overflow-y:auto; overflow-x:hidden; }
+    .mosaic-item { position:relative; overflow:hidden; height:300px; cursor:pointer; flex:0 0 auto; width:auto; max-width:100%; }
+    .mosaic-open { display:block; text-decoration:none; height:100%; width:auto; }
+    .mosaic-item img { height:100%; width:auto; max-width:none; display:block; }
     .file-icon-download { display:inline-flex; align-items:center; justify-content:center; width:1.4rem; height:1.4rem; border-radius:999px; text-decoration:none; color:#fff; background:var(--terra); flex:0 0 auto; }
     .file-icon-download svg { width:0.75rem; height:0.75rem; display:block; }
     .single-wrap { padding:1rem; }
@@ -103,7 +103,7 @@
     @@media (max-width: 920px) {
       body { padding:1rem; }
       .preview-shell { width:100%; max-height:none; }
-      .mosaic-item { min-width:120px; }
+      .mosaic-item { height:180px; }
       .file-browser { flex-direction:column; }
       .file-list { width:100%; flex:0 0 auto; max-height:220px; border-right:none; border-bottom:1px solid var(--border); }
       .preview-frame { max-height:56vh; }

@@ -32,7 +32,7 @@ test('account default background image is shown on download page', async ({ page
   await page.waitForURL(/\/shares\/created\?token=/);
 
   const shareUrlText = await page.locator('main').innerText();
-  const shareUrl = extractShareUrl(shareUrlText);
+  const shareUrl = extractShareUrl(shareUrlText, page.url());
   const sharePath = new URL(shareUrl).pathname;
 
   const backgroundLoad = page.waitForResponse((response) =>
@@ -88,7 +88,7 @@ test('per-share custom background image is shown on download page', async ({ pag
   await page.waitForURL(/\/shares\/created\?token=/);
 
   const shareUrlText = await page.locator('main').innerText();
-  const shareUrl = extractShareUrl(shareUrlText);
+  const shareUrl = extractShareUrl(shareUrlText, page.url());
   const sharePath = new URL(shareUrl).pathname;
 
   const backgroundLoad = page.waitForResponse((response) =>

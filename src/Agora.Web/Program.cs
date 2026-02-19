@@ -33,6 +33,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Threading.RateLimiting;
 
+// Composes the web host, infrastructure services, middleware pipeline, and startup data/bootstrap routines.
 var builder = WebApplication.CreateBuilder(args);
 
 var initialUploadLimits = builder.Configuration.GetSection(AgoraOptions.Section);
@@ -189,6 +190,7 @@ builder.Services.AddHangfireServer(options =>
 });
 builder.Services.AddHangfireServer(options =>
 {
+    // Keep preview generation isolated so long-running image work does not starve default jobs.
     options.Queues = ["previews"];
     options.WorkerCount = Math.Max(1, Environment.ProcessorCount / 4);
 });
@@ -966,7 +968,7 @@ app.MapPost("/api/uploads/stage", async (
         file.ContentType,
         stream,
         ct,
-        ShareManager.UploadPurposeTemplateBackground);
+        ShareManager.UploadPurposeShareFile);
 
     return Results.Ok(new
     {
@@ -1035,7 +1037,8 @@ app.MapPost("/api/uploads/stage-template-background", async (
         file.Length,
         file.ContentType,
         stream,
-        ct);
+        ct,
+        ShareManager.UploadPurposeTemplateBackground);
 
     return Results.Ok(new
     {

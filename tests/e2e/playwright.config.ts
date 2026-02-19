@@ -6,6 +6,10 @@ const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(thisDir, '../..');
 const runId = process.env.PLAYWRIGHT_E2E_RUN_ID ?? `${Date.now()}`;
 const dataRoot = path.join(repoRoot, '.e2e-data', 'runs', runId);
+const sqlContainerName = `agora-e2e-sql-${runId}`;
+const sqlPort = Number.parseInt(process.env.PLAYWRIGHT_E2E_SQL_PORT ?? '18091', 10);
+const sqlPassword = process.env.PLAYWRIGHT_E2E_SQL_PASSWORD ?? 'AgoraE2E!Passw0rd';
+process.env.PLAYWRIGHT_E2E_SQL_CONTAINER_NAME = sqlContainerName;
 
 export default defineConfig({
   testDir: './specs',
@@ -16,6 +20,7 @@ export default defineConfig({
     timeout: 10_000,
   },
   reporter: [['list'], ['html', { open: 'never' }]],
+  globalTeardown: './support/global-teardown.ts',
   use: {
     baseURL: 'http://127.0.0.1:18090',
     trace: 'on-first-retry',
@@ -23,7 +28,7 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
   webServer: {
-    command: `bash -lc "mkdir -p '${path.join(dataRoot, 'storage')}' '${path.join(dataRoot, 'emails')}' '${path.join(dataRoot, 'logs')}' && dotnet run --project src/Agora.Web/Agora.Web.csproj --urls http://127.0.0.1:18090"`,
+    command: 'bash ./tests/e2e/support/start-e2e-server.sh',
     cwd: repoRoot,
     port: 18090,
     timeout: 120_000,
@@ -32,7 +37,10 @@ export default defineConfig({
       PLAYWRIGHT_E2E_DATA_ROOT: dataRoot,
       ASPNETCORE_ENVIRONMENT: 'E2E',
       AGORA_E2E: '1',
-      ConnectionStrings__Default: `Data Source=${path.join(dataRoot, 'agora_e2e.db')}`,
+      PLAYWRIGHT_E2E_SQL_CONTAINER_NAME: sqlContainerName,
+      PLAYWRIGHT_E2E_SQL_PORT: sqlPort.toString(),
+      PLAYWRIGHT_E2E_SQL_PASSWORD: sqlPassword,
+      ConnectionStrings__Default: `Server=127.0.0.1,${sqlPort};Database=agora_e2e;User Id=sa;Password=${sqlPassword};Encrypt=True;TrustServerCertificate=True`,
       Agora__StorageRoot: path.join(dataRoot, 'storage'),
       Email__Provider: 'filesystem',
       Email__FileSystem__OutputDirectory: path.join(dataRoot, 'emails'),

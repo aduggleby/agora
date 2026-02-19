@@ -69,6 +69,7 @@ type PreviewStatusResponse = {
     let timer: number | null = null;
     let imageRetryTimer: number | null = null;
     let active = true;
+    let isRefreshing = false;
 
     const setPanel = (message: string, showRetry: boolean): void => {
       label.textContent = message;
@@ -103,8 +104,8 @@ type PreviewStatusResponse = {
       }
     };
 
-    const probePreviewImage = async (): Promise<'ready' | 'not_found' | 'error'> => {
-      const requestUrl = `${currentPreviewUrl}${currentPreviewUrl.includes('?') ? '&' : '?'}v=${Date.now()}`;
+    const probePreviewImage = async (url: string): Promise<'ready' | 'not_found' | 'error'> => {
+      const requestUrl = `${url}${url.includes('?') ? '&' : '?'}v=${Date.now()}`;
       try {
         let response = await fetch(requestUrl, {
           method: 'HEAD',
@@ -132,15 +133,7 @@ type PreviewStatusResponse = {
       if (!active) return;
       clearImageRetry();
       imageRetryTimer = window.setTimeout(async () => {
-        const result = await probePreviewImage();
-        if (result === 'ready') {
-          setImageSource(currentPreviewUrl);
-          return;
-        }
-
-        showPlaceholder();
-        setPanel('Preparing preview...', false);
-        scheduleImageRetry();
+        await refresh();
       }, imageRetryIntervalMs);
     };
 
@@ -151,6 +144,8 @@ type PreviewStatusResponse = {
 
     const refresh = async (): Promise<void> => {
       if (!active) return;
+      if (isRefreshing) return;
+      isRefreshing = true;
 
       try {
         const response = await fetch(`${statusUrl}${statusUrl.includes('?') ? '&' : '?'}_=${Date.now()}`, {
@@ -167,25 +162,32 @@ type PreviewStatusResponse = {
         const state = (status.state || '').trim().toLowerCase();
         const reason = (status.reason || '').trim().toLowerCase();
         retryUrl = status.retryUrl || retryUrl;
-
-        if (img.dataset.previewMode === 'thumbnail' && status.thumbnailUrl) {
-          setImageSource(status.thumbnailUrl);
-        } else if (status.previewUrl) {
-          setImageSource(status.previewUrl);
-        } else {
-          setImageSource(initialPreviewUrl);
-        }
+        const nextPreviewUrl = img.dataset.previewMode === 'thumbnail'
+          ? (status.thumbnailUrl || initialPreviewUrl)
+          : (status.previewUrl || initialPreviewUrl);
+        currentPreviewUrl = nextPreviewUrl;
 
         if (state === 'ready') {
-          clearImageRetry();
-          clearPanel();
+          const imageState = await probePreviewImage(currentPreviewUrl);
+          if (imageState === 'ready') {
+            setImageSource(currentPreviewUrl);
+            clearImageRetry();
+            clearPanel();
+            return;
+          }
+
+          showPlaceholder();
+          setPanel('Preparing preview...', false);
+          scheduleImageRetry();
           return;
         }
 
         if (state === 'pending') {
+          showPlaceholder();
           const elapsed = Date.now() - startedAt;
           if (elapsed <= maxAutoRetryMs) {
             setPanel('Preparing preview...', false);
+            scheduleImageRetry();
             scheduleNext();
           } else {
             setPanel('Still preparing. You can retry now.', true);
@@ -202,6 +204,8 @@ type PreviewStatusResponse = {
         }
       } catch {
         setPanel('Unable to check preview status.', true);
+      } finally {
+        isRefreshing = false;
       }
     };
 
@@ -244,6 +248,7 @@ type PreviewStatusResponse = {
       scheduleImageRetry();
     });
 
+    showPlaceholder();
     void refresh();
   };
 

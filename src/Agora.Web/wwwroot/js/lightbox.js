@@ -2,22 +2,6 @@
 (() => {
   // scripts/ts/lightbox.ts
   (() => {
-    document.querySelectorAll(".mosaic-item").forEach((item) => {
-      const img = item.querySelector("img");
-      if (!img) return;
-      const apply = () => {
-        if (img.naturalWidth && img.naturalHeight) {
-          const ratio = img.naturalWidth / img.naturalHeight;
-          item.style.flexGrow = String(ratio);
-          item.style.minWidth = `${Math.round(ratio * 300)}px`;
-        }
-      };
-      if (img.complete && img.naturalWidth) {
-        apply();
-      } else {
-        img.addEventListener("load", apply);
-      }
-    });
     const box = document.getElementById("lightbox");
     const lbImg = document.getElementById("lightbox-img");
     const cap = document.getElementById("lightbox-caption");
