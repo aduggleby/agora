@@ -4,17 +4,23 @@
   (() => {
     const maxAutoRetryMs = 5 * 60 * 1e3;
     const autoRetryIntervalMs = 15 * 1e3;
+    const imageRetryIntervalMs = 2500;
     const toSafeHtml = (value) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
     const attachPreviewLifecycle = (img) => {
       const statusUrl = img.dataset.previewStatusUrl || "";
       const initialPreviewUrl = img.dataset.previewUrl || img.getAttribute("src") || "";
       let retryUrl = img.dataset.previewRetryUrl || "";
+      let currentPreviewUrl = initialPreviewUrl;
       if (!statusUrl || !initialPreviewUrl) return;
       const frame = img.closest(".preview-frame");
       if (!frame) return;
       if (frame.dataset.previewLifecycleAttached === "1") return;
       frame.dataset.previewLifecycleAttached = "1";
       frame.style.position = "relative";
+      const placeholder = document.createElement("div");
+      placeholder.className = "preview-loading-placeholder";
+      placeholder.style.display = "none";
+      frame.appendChild(placeholder);
       const panel = document.createElement("div");
       panel.className = "hidden";
       panel.style.position = "absolute";
@@ -46,6 +52,7 @@
       frame.appendChild(panel);
       let startedAt = Date.now();
       let timer = null;
+      let imageRetryTimer = null;
       let active = true;
       const setPanel = (message, showRetry) => {
         label.textContent = message;
@@ -55,9 +62,60 @@
       const clearPanel = () => {
         panel.style.display = "none";
       };
+      const showPlaceholder = () => {
+        placeholder.style.display = "";
+        img.style.visibility = "hidden";
+      };
+      const hidePlaceholder = () => {
+        placeholder.style.display = "none";
+        img.style.visibility = "visible";
+      };
       const setImageSource = (url) => {
+        currentPreviewUrl = url;
         const separator = url.includes("?") ? "&" : "?";
         img.src = `${url}${separator}v=${Date.now()}`;
+      };
+      const clearImageRetry = () => {
+        if (imageRetryTimer) {
+          window.clearTimeout(imageRetryTimer);
+          imageRetryTimer = null;
+        }
+      };
+      const probePreviewImage = async () => {
+        const requestUrl = `${currentPreviewUrl}${currentPreviewUrl.includes("?") ? "&" : "?"}v=${Date.now()}`;
+        try {
+          let response = await fetch(requestUrl, {
+            method: "HEAD",
+            cache: "no-store",
+            credentials: "same-origin"
+          });
+          if (response.status === 405) {
+            response = await fetch(requestUrl, {
+              method: "GET",
+              cache: "no-store",
+              credentials: "same-origin"
+            });
+          }
+          if (response.ok) return "ready";
+          if (response.status === 404) return "not_found";
+          return "error";
+        } catch {
+          return "error";
+        }
+      };
+      const scheduleImageRetry = () => {
+        if (!active) return;
+        clearImageRetry();
+        imageRetryTimer = window.setTimeout(async () => {
+          const result = await probePreviewImage();
+          if (result === "ready") {
+            setImageSource(currentPreviewUrl);
+            return;
+          }
+          showPlaceholder();
+          setPanel("Preparing preview...", false);
+          scheduleImageRetry();
+        }, imageRetryIntervalMs);
       };
       const scheduleNext = () => {
         if (!active) return;
@@ -87,6 +145,7 @@
             setImageSource(initialPreviewUrl);
           }
           if (state === "ready") {
+            clearImageRetry();
             clearPanel();
             return;
           }
@@ -101,6 +160,8 @@
             return;
           }
           if (reason === "unsupported_type") {
+            clearImageRetry();
+            hidePlaceholder();
             setPanel("Preview cannot be shown for this file type.", false);
           } else {
             setPanel("Preview unavailable. Retry generation.", true);
@@ -124,6 +185,8 @@
           });
           startedAt = Date.now();
           button.disabled = false;
+          showPlaceholder();
+          scheduleImageRetry();
           setPanel("Preparing preview...", false);
           if (timer) window.clearTimeout(timer);
           scheduleNext();
@@ -131,6 +194,16 @@
           button.disabled = false;
           setPanel("Retry failed. Try again.", true);
         }
+      });
+      img.addEventListener("load", () => {
+        hidePlaceholder();
+        clearImageRetry();
+        clearPanel();
+      });
+      img.addEventListener("error", () => {
+        showPlaceholder();
+        setPanel("Preparing preview...", false);
+        scheduleImageRetry();
       });
       void refresh();
     };

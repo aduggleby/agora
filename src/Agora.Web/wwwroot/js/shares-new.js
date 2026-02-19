@@ -97,6 +97,8 @@
     const dropzone = form.querySelector("[data-dropzone]");
     const expiryModeInput = form.querySelector('[name="expiryMode"]');
     const expiresAtInput = form.querySelector('[name="expiresAtUtc"]');
+    const notifyModeInput = form.querySelector('[name="notifyMode"]');
+    const showPreviewsInput = form.querySelector('[name="showPreviews"]');
     const accountDefaultExpiryInput = form.querySelector("[data-account-default-expiry-mode]");
     const optionsToggle = form.querySelector("[data-options-toggle]");
     const optionsHeader = form.querySelector("[data-options-header]");
@@ -124,8 +126,54 @@
     let cancelRequested = false;
     const activeRequests = /* @__PURE__ */ new Set();
     const optionsStorageKey = "agora:new-share:options-collapsed";
+    const optionsStateStoragePrefix = "agora:new-share:options-state:";
+    const optionsStateStorageKey = `${optionsStateStoragePrefix}${draftShareIdInput.value.trim()}`;
     const pickPrimaryClass = "px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors";
     const pickSecondaryClass = "px-4 py-2 bg-cream text-ink text-sm font-medium rounded-lg border border-border hover:bg-cream-dark/70 transition-colors";
+    const allowedNotifyModes = /* @__PURE__ */ new Set(["account_default", "none", "once", "every_time"]);
+    const allowedExpiryModes = /* @__PURE__ */ new Set(["account_default", "1_hour", "24_hours", "7_days", "30_days", "1_year", "date", "indefinite"]);
+    const allowedTemplateModes = /* @__PURE__ */ new Set(["account_default", "per_upload"]);
+    const saveOptionsState = () => {
+      const state = {
+        showPreviews: showPreviewsInput?.checked === true,
+        notifyMode: notifyModeInput?.value || "account_default",
+        expiryMode: expiryModeInput?.value || "account_default",
+        expiresAtUtc: expiresAtInput?.value || "",
+        templateMode: form.querySelector("[data-template-mode]")?.value || "account_default"
+      };
+      try {
+        localStorage.setItem(optionsStateStorageKey, JSON.stringify(state));
+      } catch {
+      }
+    };
+    const restoreOptionsState = () => {
+      let state = null;
+      try {
+        const raw = localStorage.getItem(optionsStateStorageKey);
+        if (!raw) return;
+        state = JSON.parse(raw);
+      } catch {
+        state = null;
+      }
+      if (!state) return;
+      if (showPreviewsInput && typeof state.showPreviews === "boolean") {
+        showPreviewsInput.checked = state.showPreviews;
+      }
+      if (notifyModeInput && state.notifyMode && allowedNotifyModes.has(state.notifyMode)) {
+        notifyModeInput.value = state.notifyMode;
+      }
+      if (expiryModeInput && state.expiryMode && allowedExpiryModes.has(state.expiryMode)) {
+        expiryModeInput.value = state.expiryMode;
+      }
+      if (expiresAtInput && typeof state.expiresAtUtc === "string" && state.expiresAtUtc.trim()) {
+        expiresAtInput.value = state.expiresAtUtc.trim();
+        manualExpiryValue = expiresAtInput.value;
+      }
+      const templateModeInput = form.querySelector("[data-template-mode]");
+      if (templateModeInput && state.templateMode && allowedTemplateModes.has(state.templateMode)) {
+        templateModeInput.value = state.templateMode;
+      }
+    };
     const setOptionsCollapsed = (isCollapsed) => {
       if (!optionsPanel || !optionsToggle) return;
       optionsPanel.classList.toggle("hidden", isCollapsed);
@@ -509,7 +557,11 @@
       queueSelectedFiles(event.dataTransfer?.files || []);
     });
     expiryModeInput?.addEventListener("change", refreshState);
+    expiryModeInput?.addEventListener("change", saveOptionsState);
     expiresAtInput?.addEventListener("input", refreshState);
+    expiresAtInput?.addEventListener("input", saveOptionsState);
+    notifyModeInput?.addEventListener("change", saveOptionsState);
+    showPreviewsInput?.addEventListener("change", saveOptionsState);
     shareTokenInput?.addEventListener("input", refreshState);
     downloadPasswordInput?.addEventListener("input", refreshState);
     suggestedShareTokenButton?.addEventListener("click", () => {
@@ -580,8 +632,13 @@
     };
     designerLink?.addEventListener("click", (event) => {
       if (modeInput?.value !== "per_upload") event.preventDefault();
+      else saveOptionsState();
     });
-    modeInput?.addEventListener("change", refreshTemplateMode);
+    modeInput?.addEventListener("change", () => {
+      refreshTemplateMode();
+      saveOptionsState();
+    });
+    restoreOptionsState();
     refreshTemplateMode();
     refreshState();
   })();

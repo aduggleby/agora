@@ -39,6 +39,7 @@ Open `http://127.0.0.1:18080`.
 - Share-created success screen with one-click link copy
 - Previous shares support reopening the Share Ready link screen
 - Previous shares Details modal lists archived filenames and sizes
+- New share checkbox/select options persist per draft when opening the custom download page designer
 - Share links default to unique 8-character alphanumeric tokens and can be customized (letters, numbers, `-`, `_`)
 - Expiry options: date-based or indefinite
 - Download notifications (`none`, `once`, `every_time`)
@@ -51,11 +52,13 @@ Open `http://127.0.0.1:18080`.
 - PDF files render a first-page image preview automatically
 - Share links include auto-generated OG images (1200x630) for social media and messaging previews
 - Download page designer supports configurable download card position (corners, edges, centered)
+- Per-share template background uploads are isolated from share file staging so they never appear as preview/download items
 - Pending previews return a temporary placeholder image and retry-friendly UI behavior
 
 ### Security and Compliance
 
 - Optional per-share download password with encrypted-at-rest ZIP storage
+- Share links are identified directly by unique `ShareToken` values
 - CSRF protection on unsafe HTTP methods (forms, fetch, and XHR)
 - Built-in rate limiting for auth, authenticated user traffic, and share downloads
 - Login brute-force protection with temporary account lockout after repeated failures

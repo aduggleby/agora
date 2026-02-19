@@ -19,6 +19,9 @@ public sealed class ShareManager(
     IBackgroundJobClient backgroundJobs,
     ILogger<ShareManager> logger)
 {
+    public const string UploadPurposeShareFile = "share_file";
+    public const string UploadPurposeTemplateBackground = "template_background";
+
     public sealed record ShareArchiveFileSummary(
         string OriginalFilename,
         long OriginalSizeBytes);
@@ -60,7 +63,8 @@ public sealed class ShareManager(
         string OriginalFileName,
         long OriginalSizeBytes,
         string ContentType,
-        DateTime CreatedAtUtc);
+        DateTime CreatedAtUtc,
+        string? UploadPurpose);
 
     private sealed record DraftShareMetadata(
         string DraftShareId,
@@ -157,16 +161,12 @@ public sealed class ShareManager(
             var token = hasRequestedToken
                 ? requestedToken!
                 : TokenCodec.GenerateAlphanumericToken(8);
-            var tokenHash = TokenCodec.HashToken(token);
-            var tokenPrefix = TokenCodec.TokenPrefix(token);
 
             var share = new Share
             {
                 Id = Guid.NewGuid(),
                 UploaderEmail = command.UploaderEmail.Trim(),
                 ShareToken = token,
-                ShareTokenHash = tokenHash,
-                ShareTokenPrefix = tokenPrefix,
                 ZipDisplayName = zipName,
                 ZipDiskPath = archiveDiskPath,
                 ZipSizeBytes = zipInfo.Length,
@@ -216,19 +216,17 @@ public sealed class ShareManager(
 
     public Task<Share?> FindByTokenAsync(string token, CancellationToken cancellationToken)
     {
-        var hash = TokenCodec.HashToken(token);
         return db.Shares
             .Include(x => x.Files)
             .Include(x => x.DownloadEvents)
-            .SingleOrDefaultAsync(x => x.ShareTokenHash == hash, cancellationToken);
+            .SingleOrDefaultAsync(x => x.ShareToken == token, cancellationToken);
     }
 
     public Task<Share?> FindByTokenForUploaderAsync(string token, string uploaderEmail, CancellationToken cancellationToken)
     {
-        var hash = TokenCodec.HashToken(token);
         var normalizedEmail = uploaderEmail.Trim();
         return db.Shares
-            .SingleOrDefaultAsync(x => x.ShareTokenHash == hash && x.UploaderEmail == normalizedEmail, cancellationToken);
+            .SingleOrDefaultAsync(x => x.ShareToken == token && x.UploaderEmail == normalizedEmail, cancellationToken);
     }
 
     public Task<List<UserShareSummary>> ListRecentSharesForUploaderAsync(string uploaderEmail, int take, CancellationToken cancellationToken)
@@ -319,19 +317,16 @@ public sealed class ShareManager(
             return share.ShareToken;
         }
 
-        // Backfill legacy rows that predate recoverable token storage.
+        // Backfill legacy rows with a missing token value.
         var generated = await GenerateUniqueShareTokenAsync(8, cancellationToken);
         share.ShareToken = generated;
-        share.ShareTokenHash = TokenCodec.HashToken(generated);
-        share.ShareTokenPrefix = TokenCodec.TokenPrefix(generated);
         await db.SaveChangesAsync(cancellationToken);
         return generated;
     }
 
     public async Task<bool> IsShareTokenAvailableAsync(string token, CancellationToken cancellationToken)
     {
-        var hash = TokenCodec.HashToken(token);
-        return !await db.Shares.AsNoTracking().AnyAsync(x => x.ShareTokenHash == hash, cancellationToken);
+        return !await db.Shares.AsNoTracking().AnyAsync(x => x.ShareToken == token, cancellationToken);
     }
 
     public async Task<string> GenerateUniqueShareTokenAsync(int length, CancellationToken cancellationToken)
@@ -515,10 +510,12 @@ public sealed class ShareManager(
         long originalSizeBytes,
         string contentType,
         Stream source,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string uploadPurpose = UploadPurposeShareFile)
     {
+        var normalizedPurpose = NormalizeUploadPurpose(uploadPurpose);
         var uploadId = Guid.NewGuid().ToString("N");
-        var stagingDirectory = Path.Combine(GetStagingRoot(), uploadId);
+        var stagingDirectory = Path.Combine(GetStagingRoot(normalizedPurpose), uploadId);
         Directory.CreateDirectory(stagingDirectory);
 
         var sanitizedName = ArchiveNameResolver.Sanitize(originalFileName);
@@ -537,7 +534,8 @@ public sealed class ShareManager(
             OriginalFileName: sanitizedName,
             OriginalSizeBytes: originalSizeBytes,
             ContentType: string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType,
-            CreatedAtUtc: DateTime.UtcNow);
+            CreatedAtUtc: DateTime.UtcNow,
+            UploadPurpose: normalizedPurpose);
 
         await File.WriteAllTextAsync(metadataPath, JsonSerializer.Serialize(metadata), cancellationToken);
 
@@ -554,7 +552,8 @@ public sealed class ShareManager(
         string uploaderEmail,
         IReadOnlyCollection<string> uploadIds,
         string? expectedDraftShareId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string requiredPurpose = UploadPurposeShareFile)
     {
         if (uploadIds.Count == 0)
         {
@@ -563,6 +562,7 @@ public sealed class ShareManager(
 
         var resolved = new List<StagedUploadFile>(uploadIds.Count);
         var normalizedUploader = uploaderEmail.Trim();
+        var normalizedPurpose = NormalizeUploadPurpose(requiredPurpose);
 
         foreach (var rawId in uploadIds)
         {
@@ -572,7 +572,7 @@ public sealed class ShareManager(
                 continue;
             }
 
-            var stagingDirectory = Path.Combine(GetStagingRoot(), uploadId);
+            var stagingDirectory = Path.Combine(GetStagingRoot(normalizedPurpose), uploadId);
             var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
             var payloadPath = Path.Combine(stagingDirectory, "payload.bin");
 
@@ -608,6 +608,12 @@ public sealed class ShareManager(
                 throw new InvalidOperationException($"Uploaded file '{uploadId}' does not belong to this draft share.");
             }
 
+            var metadataPurpose = NormalizeUploadPurpose(metadata.UploadPurpose);
+            if (!string.Equals(metadataPurpose, normalizedPurpose, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"Uploaded file '{uploadId}' is not available for this operation.");
+            }
+
             resolved.Add(new StagedUploadFile(
                 UploadId: uploadId,
                 OriginalFileName: metadata.OriginalFileName,
@@ -625,7 +631,7 @@ public sealed class ShareManager(
         string draftShareId,
         CancellationToken cancellationToken)
     {
-        var stagingRoot = GetStagingRoot();
+        var stagingRoot = GetStagingRoot(UploadPurposeShareFile);
         if (!Directory.Exists(stagingRoot))
         {
             return [];
@@ -669,6 +675,11 @@ public sealed class ShareManager(
                 continue;
             }
 
+            if (!string.Equals(NormalizeUploadPurpose(metadata.UploadPurpose), UploadPurposeShareFile, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             result.Add(new StagedUploadFile(
                 metadata.UploadId,
                 metadata.OriginalFileName,
@@ -694,7 +705,7 @@ public sealed class ShareManager(
             return false;
         }
 
-        var stagingDirectory = Path.Combine(GetStagingRoot(), normalizedUploadId);
+        var stagingDirectory = Path.Combine(GetStagingRoot(UploadPurposeShareFile), normalizedUploadId);
         var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
         var payloadPath = Path.Combine(stagingDirectory, "payload.bin");
         if (!Directory.Exists(stagingDirectory) || !File.Exists(metadataPath) || !File.Exists(payloadPath))
@@ -744,51 +755,53 @@ public sealed class ShareManager(
             return 0;
         }
 
-        var stagingRoot = GetStagingRoot();
-        if (!Directory.Exists(stagingRoot))
-        {
-            return 0;
-        }
-
         var removed = 0;
-        foreach (var stagingDirectory in Directory.EnumerateDirectories(stagingRoot))
+        foreach (var stagingRoot in GetAllStagingRoots())
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
-            if (!File.Exists(metadataPath))
+            if (!Directory.Exists(stagingRoot))
             {
                 continue;
             }
 
-            StagedUploadMetadata? metadata;
-            try
+            foreach (var stagingDirectory in Directory.EnumerateDirectories(stagingRoot))
             {
-                var json = await File.ReadAllTextAsync(metadataPath, cancellationToken);
-                metadata = JsonSerializer.Deserialize<StagedUploadMetadata>(json);
-            }
-            catch
-            {
-                metadata = null;
-            }
+                cancellationToken.ThrowIfCancellationRequested();
 
-            if (metadata is null)
-            {
-                continue;
-            }
+                var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
+                if (!File.Exists(metadataPath))
+                {
+                    continue;
+                }
 
-            if (!string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
+                StagedUploadMetadata? metadata;
+                try
+                {
+                    var json = await File.ReadAllTextAsync(metadataPath, cancellationToken);
+                    metadata = JsonSerializer.Deserialize<StagedUploadMetadata>(json);
+                }
+                catch
+                {
+                    metadata = null;
+                }
 
-            if (!string.Equals(metadata.DraftShareId, normalizedDraftShareId, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
+                if (metadata is null)
+                {
+                    continue;
+                }
 
-            Directory.Delete(stagingDirectory, recursive: true);
-            removed++;
+                if (!string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!string.Equals(metadata.DraftShareId, normalizedDraftShareId, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                Directory.Delete(stagingDirectory, recursive: true);
+                removed++;
+            }
         }
 
         return removed;
@@ -797,46 +810,47 @@ public sealed class ShareManager(
     public async Task<int> CleanupZombieUploadsAsync(CancellationToken cancellationToken)
     {
         var staleDraftIds = await CleanupStaleDraftSharesAsync(cancellationToken);
-        var stagingRoot = GetStagingRoot();
-        if (!Directory.Exists(stagingRoot))
-        {
-            return staleDraftIds.Count;
-        }
-
         var cutoff = DateTime.UtcNow.AddHours(-Math.Abs(_options.ZombieUploadRetentionHours));
         var removed = 0;
-
-        foreach (var stagingDirectory in Directory.EnumerateDirectories(stagingRoot))
+        foreach (var stagingRoot in GetAllStagingRoots())
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
-            var payloadPath = Path.Combine(stagingDirectory, "payload.bin");
-            var createdAtUtc = Directory.GetCreationTimeUtc(stagingDirectory);
-
-            if (File.Exists(metadataPath))
+            if (!Directory.Exists(stagingRoot))
             {
-                try
-                {
-                    var json = await File.ReadAllTextAsync(metadataPath, cancellationToken);
-                    var metadata = JsonSerializer.Deserialize<StagedUploadMetadata>(json);
-                    if (metadata is not null)
-                    {
-                        createdAtUtc = metadata.CreatedAtUtc;
-                    }
-                }
-                catch
-                {
-                    // Keep fallback timestamp when metadata cannot be parsed.
-                }
+                continue;
             }
 
-            var isInvalid = !File.Exists(metadataPath) || !File.Exists(payloadPath);
-            var isStaleDraftUpload = metadataPath is not null && IsUploadForStaleDraft(metadataPath, staleDraftIds, cancellationToken);
-            if (isInvalid || isStaleDraftUpload || createdAtUtc <= cutoff)
+            foreach (var stagingDirectory in Directory.EnumerateDirectories(stagingRoot))
             {
-                Directory.Delete(stagingDirectory, recursive: true);
-                removed++;
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
+                var payloadPath = Path.Combine(stagingDirectory, "payload.bin");
+                var createdAtUtc = Directory.GetCreationTimeUtc(stagingDirectory);
+
+                if (File.Exists(metadataPath))
+                {
+                    try
+                    {
+                        var json = await File.ReadAllTextAsync(metadataPath, cancellationToken);
+                        var metadata = JsonSerializer.Deserialize<StagedUploadMetadata>(json);
+                        if (metadata is not null)
+                        {
+                            createdAtUtc = metadata.CreatedAtUtc;
+                        }
+                    }
+                    catch
+                    {
+                        // Keep fallback timestamp when metadata cannot be parsed.
+                    }
+                }
+
+                var isInvalid = !File.Exists(metadataPath) || !File.Exists(payloadPath);
+                var isStaleDraftUpload = metadataPath is not null && IsUploadForStaleDraft(metadataPath, staleDraftIds, cancellationToken);
+                if (isInvalid || isStaleDraftUpload || createdAtUtc <= cutoff)
+                {
+                    Directory.Delete(stagingDirectory, recursive: true);
+                    removed++;
+                }
             }
         }
 
@@ -1054,9 +1068,24 @@ public sealed class ShareManager(
         };
     }
 
-    private string GetStagingRoot()
+    private string GetStagingRoot(string uploadPurpose)
     {
-        return Path.Combine(_options.StorageRoot, "uploads", "staged");
+        return string.Equals(uploadPurpose, UploadPurposeTemplateBackground, StringComparison.Ordinal)
+            ? Path.Combine(_options.StorageRoot, "uploads", "staged-template-backgrounds")
+            : Path.Combine(_options.StorageRoot, "uploads", "staged");
+    }
+
+    private IEnumerable<string> GetAllStagingRoots()
+    {
+        yield return GetStagingRoot(UploadPurposeShareFile);
+        yield return GetStagingRoot(UploadPurposeTemplateBackground);
+    }
+
+    private static string NormalizeUploadPurpose(string? uploadPurpose)
+    {
+        return string.Equals(uploadPurpose, UploadPurposeTemplateBackground, StringComparison.OrdinalIgnoreCase)
+            ? UploadPurposeTemplateBackground
+            : UploadPurposeShareFile;
     }
 
     private string GetDraftsRoot()
@@ -1178,8 +1207,8 @@ public sealed class ShareManager(
     private static bool IsShareTokenConflict(DbUpdateException ex)
     {
         var text = ex.ToString();
-        return text.Contains("ShareTokenHash", StringComparison.OrdinalIgnoreCase) ||
-               text.Contains("IX_Shares_ShareTokenHash", StringComparison.OrdinalIgnoreCase);
+        return text.Contains("ShareToken", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("IX_Shares_ShareToken", StringComparison.OrdinalIgnoreCase);
     }
 
     private string CopyTemplateBackgroundToShareDirectory(UploadSourceFile backgroundFile, string zipRelativePath)

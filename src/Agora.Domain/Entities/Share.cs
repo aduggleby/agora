@@ -5,8 +5,6 @@ public sealed class Share
     public Guid Id { get; set; }
     public string UploaderEmail { get; set; } = string.Empty;
     public string ShareToken { get; set; } = string.Empty;
-    public string ShareTokenHash { get; set; } = string.Empty;
-    public string ShareTokenPrefix { get; set; } = string.Empty;
     public string ZipDisplayName { get; set; } = string.Empty;
     public string ZipDiskPath { get; set; } = string.Empty;
     public long ZipSizeBytes { get; set; }

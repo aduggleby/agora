@@ -17,12 +17,11 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
         modelBuilder.Entity<Share>(builder =>
         {
             builder.HasKey(x => x.Id);
-            builder.HasIndex(x => x.ShareTokenHash).IsUnique();
+            builder.HasIndex(x => x.ShareToken).IsUnique();
             builder.Property(x => x.UploaderEmail).HasMaxLength(320);
             builder.Property(x => x.ShareToken).HasMaxLength(120);
             builder.Property(x => x.NotifyMode).HasMaxLength(20);
             builder.Property(x => x.ZipDisplayName).HasMaxLength(255);
-            builder.Property(x => x.ShareTokenPrefix).HasMaxLength(16);
             builder.Property(x => x.ShareExperienceType).HasMaxLength(32);
             builder.Property(x => x.AccessMode).HasMaxLength(32);
             builder.Property(x => x.ContentRootPath).HasMaxLength(400);

@@ -102,7 +102,8 @@ public sealed class QueuedShareCreationJob(
                     payload.UploaderEmail,
                     [payload.TemplateBackgroundUploadId.Trim()],
                     payload.DraftShareId,
-                    ct);
+                    ct,
+                    ShareManager.UploadPurposeTemplateBackground);
 
                 var resolved = stagedBackground.SingleOrDefault();
                 if (resolved is not null)
@@ -210,11 +211,11 @@ public sealed class QueuedShareCreationJob(
                     Subject: "Your share link is ready",
                     Preheader: "Your files finished processing and the share link is ready.",
                     Headline: "Your share link is ready",
-                    IntroText: "You can leave the page while processing; this email confirms your link is now ready to share.",
-                    DetailText: "Your upload has completed in the background.",
+                    IntroText: "Your upload has completed in the background.",
+                    DetailText: null,
                     ActionLabel: "Open share link",
                     ActionUrl: shareUrl,
-                    SecondaryText: "If you are already on the status page, it will update automatically."),
+                    SecondaryText: null),
                     ct);
 
                 var notifyDone = statusStore.UpdateStep(token, "notify_uploader", "completed");

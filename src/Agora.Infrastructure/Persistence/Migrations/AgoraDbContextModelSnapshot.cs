@@ -166,15 +166,6 @@ namespace Agora.Infrastructure.Persistence.Migrations
                         .HasMaxLength(120)
                         .HasColumnType("TEXT");
 
-                    b.Property<string>("ShareTokenHash")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("ShareTokenPrefix")
-                        .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("TEXT");
-
                     b.Property<string>("ShareExperienceType")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -202,7 +193,7 @@ namespace Agora.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("ShareTokenHash")
+                    b.HasIndex("ShareToken")
                         .IsUnique();
 
                     b.ToTable("Shares");

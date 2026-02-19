@@ -63,6 +63,7 @@
     .single-preview { border:1px solid var(--border); border-radius:0.8rem; background:#fff; overflow:hidden; min-height:260px; }
     .preview-frame { width:100%; aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; overflow:hidden; }
     .preview-frame img { width:100%; height:100%; object-fit:contain; display:block; }
+    .preview-loading-placeholder { position:absolute; inset:0; background:linear-gradient(90deg,#f4efe8 0%,#ede7df 50%,#f4efe8 100%); background-size:200% 100%; animation:previewPulse 1.2s ease-in-out infinite; }
     .single-actions { display:flex; justify-content:flex-end; margin-top:0.65rem; }
     .file-download { display:inline-block; text-decoration:none; font-size:0.76rem; font-weight:600; color:#fff; background:var(--terra); border-radius:0.5rem; padding:0.45rem 0.62rem; }
     .file-browser { display:flex; flex:1; min-height:0; overflow:hidden; }
@@ -97,6 +98,7 @@
     .lightbox-download { position:absolute; bottom:1.2rem; right:1.2rem; display:inline-flex; align-items:center; gap:0.4rem; padding:0.5rem 0.85rem; background:var(--terra); color:#fff; text-decoration:none; border-radius:0.5rem; font-size:0.8rem; font-weight:600; transition:background .15s; }
     .lightbox-download:hover { background:#b55a32; }
     .lightbox-download svg { width:0.85rem; height:0.85rem; }
+    @@keyframes previewPulse { 0% { background-position:200% 0; } 100% { background-position:-200% 0; } }
 
     @@media (max-width: 920px) {
       body { padding:1rem; }

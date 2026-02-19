@@ -541,8 +541,7 @@ if (isE2E)
             return Results.BadRequest(new { error = "seconds is required." });
         }
 
-        var hash = TokenCodec.HashToken(token);
-        var share = await db.Shares.SingleOrDefaultAsync(x => x.ShareTokenHash == hash, ct);
+        var share = await db.Shares.SingleOrDefaultAsync(x => x.ShareToken == token, ct);
         if (share is null)
         {
             return Results.NotFound(new { error = "Share not found." });
@@ -807,7 +806,12 @@ app.MapPost("/api/share-drafts/{draftShareId}/template", async (HttpContext cont
     {
         try
         {
-            await manager.ResolveStagedUploadsAsync(email, [backgroundUploadId], draftShareId, ct);
+            await manager.ResolveStagedUploadsAsync(
+                email,
+                [backgroundUploadId],
+                draftShareId,
+                ct,
+                ShareManager.UploadPurposeTemplateBackground);
         }
         catch (InvalidOperationException ex)
         {
@@ -835,7 +839,12 @@ app.MapGet("/api/share-drafts/{draftShareId}/background-preview", async (HttpCon
     IReadOnlyList<ShareManager.StagedUploadFile> staged;
     try
     {
-        staged = await manager.ResolveStagedUploadsAsync(email, [uploadId], draftShareId, ct);
+        staged = await manager.ResolveStagedUploadsAsync(
+            email,
+            [uploadId],
+            draftShareId,
+            ct,
+            ShareManager.UploadPurposeTemplateBackground);
     }
     catch (InvalidOperationException)
     {
@@ -956,7 +965,8 @@ app.MapPost("/api/uploads/stage", async (
         file.Length,
         file.ContentType,
         stream,
-        ct);
+        ct,
+        ShareManager.UploadPurposeTemplateBackground);
 
     return Results.Ok(new
     {
@@ -1283,7 +1293,12 @@ app.MapPost("/api/shares", async (
     {
         try
         {
-            await manager.ResolveStagedUploadsAsync(uploaderEmail, [templateBackgroundUploadId], draftShareId, ct);
+            await manager.ResolveStagedUploadsAsync(
+                uploaderEmail,
+                [templateBackgroundUploadId],
+                draftShareId,
+                ct,
+                ShareManager.UploadPurposeTemplateBackground);
         }
         catch (InvalidOperationException ex)
         {
