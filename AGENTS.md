@@ -23,7 +23,7 @@ When working in this repository, agents should prioritize:
 - Do not hardcode secrets.
 - Keep all persisted mutable runtime data under `/app/data` when containerized.
 - Ensure log retention remains daily rolling with 30-day retention.
-- Preserve token-at-rest hashing behavior.
+- Share tokens are stored and queried in plaintext via `ShareToken` (indexed). Do not reintroduce hashing without an explicit request.
 
 ## Build/Test Commands
 
@@ -134,7 +134,7 @@ CSS/Tailwind:
 ## Security & Data Handling
 
 - Never log secrets, raw passwords, or token material.
-- Keep token hashing and password verification flows unchanged unless explicitly requested.
+- Keep password verification flows unchanged unless explicitly requested.
 - Validate uploaded file metadata and paths defensively.
 - Preserve path traversal protections on all file read/write operations.
 - Keep retention and cleanup behavior predictable and idempotent.

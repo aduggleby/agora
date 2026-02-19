@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.5] - 2026-02-19
+
+### Changed
+- Replaced hashed share token lookup (`ShareTokenHash`/`ShareTokenPrefix`) with direct `ShareToken` index for simpler, faster share resolution.
+- Added upload purpose tracking to isolate template background uploads from share files.
+- New share checkbox/select options now persist per draft when opening the custom download page designer.
+- Refreshed README screenshots for password and gallery share views.
+
+### Removed
+- `ShareTokenHash` and `ShareTokenPrefix` columns (migration `V0901_ShareTokenPlaintextOnly`).
+
 ## [0.9.4] - 2026-02-19
 
 ### Changed
