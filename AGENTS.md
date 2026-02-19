@@ -67,7 +67,7 @@ E2E defaults:
 
 ## UI & Design
 
-All frontend UI follows the **Warm Craft** design system. See [`STYLEGUIDE.md`](./STYLEGUIDE.md) for the full specification including colors, typography, components, and layout patterns.
+All frontend UI follows the **Warm Craft** design system. See [`docs/STYLEGUIDE.md`](./docs/STYLEGUIDE.md) for the full specification including colors, typography, components, and layout patterns.
 
 Key constraints:
 - Use Tailwind CSS v4 classes from the theme defined in `src/Agora.Web/Styles/tailwind.css`
