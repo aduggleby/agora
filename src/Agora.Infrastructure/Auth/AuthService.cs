@@ -9,6 +9,7 @@ using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using System.Net.Mail;
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 
 namespace Agora.Infrastructure.Auth;
 
@@ -24,6 +25,8 @@ public sealed class AuthService(
     private static readonly TimeSpan LockoutDuration = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan EmailConfirmationTokenLifetime = TimeSpan.FromHours(24);
     private static readonly TimeSpan PasswordResetTokenLifetime = TimeSpan.FromHours(2);
+    private const int UploadTokenLength = 8;
+    private static readonly Regex UploadTokenFormatRegex = new("^[A-Za-z0-9]{2,64}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public async Task<(bool Success, string Error)> RegisterAsync(string email, string password, string confirmEmailUrlBase, CancellationToken cancellationToken)
     {
@@ -67,6 +70,10 @@ public sealed class AuthService(
                 user.UploadToken = await GenerateUniqueUploadTokenAsync(cancellationToken);
                 user.UploadTokenUpdatedAtUtc = DateTime.UtcNow;
             }
+            if (string.IsNullOrWhiteSpace(user.DisplayName))
+            {
+                user.DisplayName = DefaultDisplayNameForEmail(email);
+            }
         }
         else
         {
@@ -75,6 +82,7 @@ public sealed class AuthService(
             {
                 Id = Guid.NewGuid(),
                 Email = email,
+                DisplayName = DefaultDisplayNameForEmail(email),
                 EmailConfirmed = false,
                 PasswordHash = PasswordHasher.Hash(password),
                 Role = isFirstUser ? "admin" : "user",
@@ -256,6 +264,11 @@ public sealed class AuthService(
                 existing.UploadTokenUpdatedAtUtc = DateTime.UtcNow;
                 changed = true;
             }
+            if (string.IsNullOrWhiteSpace(existing.DisplayName))
+            {
+                existing.DisplayName = DefaultDisplayNameForEmail(email);
+                changed = true;
+            }
 
             if (changed)
             {
@@ -270,6 +283,7 @@ public sealed class AuthService(
         {
             Id = Guid.NewGuid(),
             Email = email,
+            DisplayName = DefaultDisplayNameForEmail(email),
             EmailConfirmed = true,
             EmailConfirmedAtUtc = DateTime.UtcNow,
             PasswordHash = PasswordHasher.Hash(generatedPassword),
@@ -429,6 +443,78 @@ public sealed class AuthService(
         user.UploadTokenUpdatedAtUtc = DateTime.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
         return user.UploadToken;
+    }
+
+    public async Task<(bool Success, string Error, string? DisplayName)> SetDisplayNameAsync(string email, string displayName, CancellationToken cancellationToken)
+    {
+        email = NormalizeEmail(email);
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return (false, "Account not found.", null);
+        }
+
+        var normalized = (displayName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return (false, "Name is required.", null);
+        }
+
+        if (normalized.Length > 200)
+        {
+            return (false, "Name must be 200 characters or fewer.", null);
+        }
+
+        var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
+        if (user is null)
+        {
+            return (false, "Account not found.", null);
+        }
+
+        user.DisplayName = normalized;
+        await db.SaveChangesAsync(cancellationToken);
+        return (true, string.Empty, user.DisplayName);
+    }
+
+    public async Task<(bool Success, string Error, string? UploadToken)> SetUploadTokenAsync(string email, string requestedToken, CancellationToken cancellationToken)
+    {
+        email = NormalizeEmail(email);
+        var normalizedToken = NormalizeUploadToken(requestedToken);
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return (false, "Account not found.", null);
+        }
+
+        if (!IsValidUploadToken(normalizedToken))
+        {
+            return (false, "Upload code must be 2-64 letters or numbers.", null);
+        }
+
+        var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
+        if (user is null)
+        {
+            return (false, "Account not found.", null);
+        }
+
+        var isTaken = await db.Users.AnyAsync(
+            x => x.UploadToken == normalizedToken && x.Id != user.Id,
+            cancellationToken);
+        if (isTaken)
+        {
+            return (false, "That upload code is already in use.", null);
+        }
+
+        user.UploadToken = normalizedToken;
+        user.UploadTokenUpdatedAtUtc = DateTime.UtcNow;
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex) when (IsUploadTokenConflict(ex))
+        {
+            return (false, "That upload code is already in use.", null);
+        }
+
+        return (true, string.Empty, user.UploadToken);
     }
 
     public async Task<bool> GetAllowRegistrationAsync(CancellationToken cancellationToken)
@@ -876,9 +962,28 @@ public sealed class AuthService(
         return (value ?? string.Empty).Trim().ToLowerInvariant();
     }
 
+    private static string DefaultDisplayNameForEmail(string email)
+    {
+        var normalized = NormalizeEmail(email);
+        var at = normalized.IndexOf('@');
+        var local = at > 0 ? normalized[..at] : normalized;
+        var candidate = local.Trim();
+        if (candidate.Length == 0)
+        {
+            return "User";
+        }
+
+        return candidate.Length <= 200 ? candidate : candidate[..200];
+    }
+
     private static string NormalizeUploadToken(string value)
     {
         return (value ?? string.Empty).Trim();
+    }
+
+    private static bool IsValidUploadToken(string token)
+    {
+        return UploadTokenFormatRegex.IsMatch(token);
     }
 
     private Task QueueAuthEmailAsync(AuthEmailMessage message, CancellationToken cancellationToken)
@@ -956,9 +1061,9 @@ public sealed class AuthService(
 
     private async Task<string> GenerateUniqueUploadTokenAsync(CancellationToken cancellationToken)
     {
-        for (var attempt = 0; attempt < 32; attempt += 1)
+        for (var attempt = 0; attempt < 64; attempt += 1)
         {
-            var candidate = TokenCodec.GenerateAlphanumericToken(24);
+            var candidate = TokenCodec.GenerateAlphanumericToken(UploadTokenLength);
             var exists = await db.Users.AnyAsync(x => x.UploadToken == candidate, cancellationToken);
             if (!exists)
             {
@@ -967,6 +1072,13 @@ public sealed class AuthService(
         }
 
         throw new InvalidOperationException("Unable to generate a unique upload token right now.");
+    }
+
+    private static bool IsUploadTokenConflict(DbUpdateException ex)
+    {
+        var text = ex.ToString();
+        return text.Contains("UploadToken", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("IX_Users_UploadToken", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string IssueEmailConfirmationToken(UserAccount user, DateTime nowUtc)

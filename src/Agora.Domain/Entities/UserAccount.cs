@@ -4,6 +4,7 @@ public sealed class UserAccount
 {
     public Guid Id { get; set; }
     public string Email { get; set; } = string.Empty;
+    public string? DisplayName { get; set; }
     public bool EmailConfirmed { get; set; }
     public DateTime? EmailConfirmedAtUtc { get; set; }
     public string? EmailConfirmationTokenHash { get; set; }

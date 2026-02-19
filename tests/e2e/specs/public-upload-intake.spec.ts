@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { createE2EUser, createTempFiles, login } from '../support/helpers';
 
 type FileSystemEmailRecord = {
@@ -14,13 +15,14 @@ type FileSystemEmailRecord = {
   };
 };
 
-function extractUploadUrl(text: string): string {
-  const match = text.match(/https?:\/\/[^\s]+\/u\/[A-Za-z0-9_-]+/);
-  if (!match) {
-    throw new Error(`Could not find upload URL in: ${text}`);
+async function uploadUrlFromSettings(page: Page): Promise<string> {
+  const prefix = (await page.locator('[data-upload-url-prefix]').innerText()).trim();
+  const token = (await page.locator('#uploadToken').inputValue()).trim();
+  if (!prefix || !token) {
+    throw new Error(`Could not build upload URL from settings. Prefix='${prefix}' token='${token}'.`);
   }
 
-  return match[0];
+  return `${prefix}${encodeURIComponent(token)}`;
 }
 
 function resolveRepoRoot(): string {
@@ -90,8 +92,7 @@ test.describe('Public upload intake', () => {
     await login(page, user.email, user.password);
 
     await page.goto('/account/settings');
-    const settingsText = await page.locator('#upload-link-settings').innerText();
-    const uploadUrl = extractUploadUrl(settingsText);
+    const uploadUrl = await uploadUrlFromSettings(page);
 
     await page.goto(uploadUrl);
     await expect(page.getByRole('heading', { name: 'Send files' })).toBeVisible();
@@ -101,13 +102,49 @@ test.describe('Public upload intake', () => {
     await expect(page.getByText('Upload link unavailable')).toBeVisible();
   });
 
+  test('upload page toggles select button style/text and requires sender email before enabling send button', async ({ browser, page, request }, testInfo) => {
+    const user = await createE2EUser(request, 'public-upload-cta-state');
+    await login(page, user.email, user.password);
+
+    await page.goto('/account/settings');
+    const uploadUrl = await uploadUrlFromSettings(page);
+
+    const files = await createTempFiles(testInfo.outputPath('public-intake-cta-state'), [
+      { name: 'cta-state.txt', content: 'state check' },
+    ]);
+
+    const anonPage = await browser.newPage();
+    await anonPage.goto(uploadUrl);
+
+    const pickButton = anonPage.locator('[data-public-pick-files]');
+    const submitButton = anonPage.locator('[data-public-submit]');
+
+    await expect(pickButton).toHaveText('Select files');
+    await expect(pickButton).toHaveClass(/bg-terra/);
+    await expect(submitButton).toBeHidden();
+
+    await anonPage.setInputFiles('[data-public-file-input]', files);
+    await expect(anonPage.locator('[data-public-upload-list] li')).toHaveCount(1);
+
+    await expect(pickButton).toHaveText('Add more files');
+    await expect(pickButton).toHaveClass(/bg-cream/);
+    await expect(pickButton).toHaveClass(/border/);
+    await expect(submitButton).toBeVisible();
+    await expect(submitButton).toBeDisabled();
+    await expect(submitButton).toHaveAttribute('title', 'Enter your email first.');
+
+    await anonPage.locator('input[name="senderEmail"]').fill('sender@example.test');
+    await expect(submitButton).toBeEnabled();
+    await expect(submitButton).toHaveAttribute('title', '');
+    await anonPage.close();
+  });
+
   test('accepts anonymous upload and emails owner with sender details and share link', async ({ browser, page, request }, testInfo) => {
     const user = await createE2EUser(request, 'public-upload-happy');
     await login(page, user.email, user.password);
 
     await page.goto('/account/settings');
-    const settingsText = await page.locator('#upload-link-settings').innerText();
-    const uploadUrl = extractUploadUrl(settingsText);
+    const uploadUrl = await uploadUrlFromSettings(page);
 
     const files = await createTempFiles(testInfo.outputPath('public-intake-files'), [
       { name: 'public-upload.txt', content: 'hello from public intake e2e' },
@@ -120,16 +157,20 @@ test.describe('Public upload intake', () => {
     const startMs = Date.now();
     const anonPage = await browser.newPage();
     await anonPage.goto(uploadUrl);
+    await expect(anonPage.locator('[data-public-submit]')).toBeHidden();
+    await expect(anonPage.locator('[data-public-pick-files]')).toHaveText('Select files');
     await anonPage.locator('input[name="senderName"]').fill(senderName);
     await anonPage.locator('input[name="senderEmail"]').fill(senderEmail);
     await anonPage.locator('textarea[name="senderMessage"]').fill(senderMessage);
 
     await anonPage.setInputFiles('[data-public-file-input]', files);
     await expect(anonPage.locator('[data-public-upload-list] li')).toHaveCount(1);
+    await expect(anonPage.locator('[data-public-pick-files]')).toHaveText('Add more files');
+    await expect(anonPage.locator('[data-public-submit]')).toBeVisible();
     await expect(anonPage.locator('[data-public-submit]')).toBeEnabled();
 
     await anonPage.locator('[data-public-submit]').click();
-    await anonPage.waitForURL(/\/u\/[A-Za-z0-9_-]+\?msg=/);
+    await anonPage.waitForURL(/\/u\/[A-Za-z0-9]{2,64}\?msg=/);
     await expect(anonPage.getByText('Thanks, your files are being processed.')).toBeVisible();
 
     const readyEmail = await waitForReadyEmail(user.email, startMs);
@@ -152,8 +193,7 @@ test.describe('Public upload intake', () => {
     await login(page, user.email, user.password);
 
     await page.goto('/account/settings');
-    const settingsText = await page.locator('#upload-link-settings').innerText();
-    const uploadUrl = extractUploadUrl(settingsText);
+    const uploadUrl = await uploadUrlFromSettings(page);
 
     const files = await createTempFiles(testInfo.outputPath('public-intake-invalid-email'), [
       { name: 'invalid-email-check.txt', content: 'invalid email test' },
@@ -214,8 +254,7 @@ test.describe('Public upload intake', () => {
     await login(page, user.email, user.password);
 
     await page.goto('/account/settings');
-    const settingsText = await page.locator('#upload-link-settings').innerText();
-    const uploadUrl = extractUploadUrl(settingsText);
+    const uploadUrl = await uploadUrlFromSettings(page);
 
     const files = await createTempFiles(
       testInfo.outputPath('public-intake-limit-files'),
@@ -236,13 +275,55 @@ test.describe('Public upload intake', () => {
     await anonPage.close();
   });
 
+  test('remembers sender name and email in localStorage', async ({ browser, page, request }) => {
+    const user = await createE2EUser(request, 'public-upload-remember-sender');
+    await login(page, user.email, user.password);
+
+    await page.goto('/account/settings');
+    const uploadUrl = await uploadUrlFromSettings(page);
+
+    const anonPage = await browser.newPage();
+    await anonPage.goto(uploadUrl);
+
+    const senderName = `Stored Sender ${Date.now()}`;
+    const senderEmail = `stored-${Date.now()}@example.test`;
+    await anonPage.locator('input[name="senderName"]').fill(senderName);
+    await anonPage.locator('input[name="senderEmail"]').fill(senderEmail);
+
+    await anonPage.reload();
+
+    await expect(anonPage.locator('input[name="senderName"]')).toHaveValue(senderName);
+    await expect(anonPage.locator('input[name="senderEmail"]')).toHaveValue(senderEmail);
+    await anonPage.close();
+  });
+
+  test('uses account display name on upload page and in account menu', async ({ browser, page, request }) => {
+    const user = await createE2EUser(request, 'public-upload-display-name');
+    await login(page, user.email, user.password);
+
+    const displayName = `Jordan ${Date.now().toString(36).slice(-5)}`;
+    await page.goto('/account/settings');
+    await page.locator('input[name="displayName"]').fill(displayName);
+    await page.getByRole('button', { name: 'Save profile' }).click();
+    await page.waitForURL(/\/account\/settings\?msg=/);
+
+    const menuToggle = page.locator('summary[data-account-menu-toggle]');
+    await expect(menuToggle).toContainText(displayName);
+
+    const uploadUrl = await uploadUrlFromSettings(page);
+    const anonPage = await browser.newPage();
+    await anonPage.goto(uploadUrl);
+    await expect(anonPage.getByText(`Share your files with ${displayName}.`)).toBeVisible();
+    await expect(anonPage.getByText(user.email)).toHaveCount(0);
+    await anonPage.close();
+  });
+
   test('regenerates upload link and invalidates the previous token', async ({ page, request }) => {
     const user = await createE2EUser(request, 'public-upload-regenerated-token');
     await login(page, user.email, user.password);
 
     await page.goto('/account/settings');
-    const beforeText = await page.locator('#upload-link-settings').innerText();
-    const originalUploadUrl = extractUploadUrl(beforeText);
+    const originalUploadUrl = await uploadUrlFromSettings(page);
 
     const regenerate = await request.post('/api/e2e/users/regenerate-upload-token', {
       form: {
@@ -256,8 +337,7 @@ test.describe('Public upload intake', () => {
     const regeneratedUploadUrl = new URL(`/u/${encodeURIComponent(newToken)}`, page.url()).toString();
 
     await page.goto('/account/settings');
-    const afterText = await page.locator('#upload-link-settings').innerText();
-    const updatedUploadUrl = extractUploadUrl(afterText);
+    const updatedUploadUrl = await uploadUrlFromSettings(page);
     expect(updatedUploadUrl).toBe(regeneratedUploadUrl);
     expect(updatedUploadUrl).not.toBe(originalUploadUrl);
 
@@ -268,4 +348,114 @@ test.describe('Public upload intake', () => {
     await expect(page.getByRole('heading', { name: 'Send files' })).toBeVisible();
     await expect(page.locator('[data-public-upload-form]')).toBeVisible();
   });
+
+  test('regenerate random code from settings UI does not 400 and rotates upload link', async ({ page, request }) => {
+    const user = await createE2EUser(request, 'public-upload-regenerate-ui');
+    await login(page, user.email, user.password);
+
+    await page.goto('/account/settings');
+    const originalUploadUrl = await uploadUrlFromSettings(page);
+
+    const [postResponse] = await Promise.all([
+      page.waitForResponse((response) =>
+        response.request().method() === 'POST'
+        && response.url().includes('/account/settings?handler=RegenerateUploadLink')),
+      page.getByRole('button', { name: 'Regenerate random code' }).click()
+    ]);
+
+    expect(postResponse.status()).not.toBe(400);
+    expect(postResponse.status()).toBeLessThan(500);
+
+    await page.goto('/account/settings');
+    const updatedUploadUrl = await uploadUrlFromSettings(page);
+    expect(updatedUploadUrl).not.toBe(originalUploadUrl);
+
+    await page.goto(originalUploadUrl);
+    await expect(page.getByText('Upload link unavailable')).toBeVisible();
+  });
+
+  test('custom upload code update rotates link and invalidates previous code', async ({ page, request }) => {
+    const user = await createE2EUser(request, 'public-upload-custom-code');
+    await login(page, user.email, user.password);
+
+    const customCode = `Ab${Date.now().toString(36).slice(-6)}`;
+
+    await page.goto('/account/settings');
+    const originalUploadUrl = await uploadUrlFromSettings(page);
+
+    await expect(page.getByRole('button', { name: 'Save code' })).toBeHidden();
+    await expect(page.getByRole('button', { name: 'Copy URL' })).toBeVisible();
+    await page.locator('#uploadToken').fill(customCode);
+    await expect(page.getByRole('button', { name: 'Save code' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Copy URL' })).toBeHidden();
+    const [saveResponse] = await Promise.all([
+      page.waitForResponse((response) =>
+        response.request().method() === 'POST'
+        && response.url().includes('/account/settings?handler=SetUploadLink')),
+      page.getByRole('button', { name: 'Save code' }).click()
+    ]);
+    expect(saveResponse.status()).toBeLessThan(500);
+    await page.waitForURL(/\/account\/settings\?msg=/);
+
+    const updatedUploadUrl = await uploadUrlFromSettings(page);
+    expect(updatedUploadUrl).toContain(`/u/${customCode}`);
+    expect(updatedUploadUrl).not.toBe(originalUploadUrl);
+    await expect(page.getByRole('button', { name: 'Save code' })).toBeHidden();
+    await expect(page.getByRole('button', { name: 'Copy URL' })).toBeVisible();
+
+    await page.goto(originalUploadUrl);
+    await expect(page.getByText('Upload link unavailable')).toBeVisible();
+
+    await page.goto(updatedUploadUrl);
+    await expect(page.locator('[data-public-upload-form]')).toBeVisible();
+  });
+
+  test('duplicate custom upload code shows a user-facing error and keeps existing link', async ({ browser, request }) => {
+    const first = await createE2EUser(request, 'public-upload-custom-duplicate-a');
+    const second = await createE2EUser(request, 'public-upload-custom-duplicate-b');
+    const code = `Cd${Date.now().toString(36).slice(-6)}`;
+
+    const contextA = await browser.newContext();
+    const pageA = await contextA.newPage();
+    await login(pageA, first.email, first.password);
+    await pageA.goto('/account/settings');
+    await pageA.locator('#uploadToken').fill(code);
+    await pageA.getByRole('button', { name: 'Save code' }).click();
+    await pageA.waitForURL(/\/account\/settings\?msg=/);
+    await contextA.close();
+
+    const contextB = await browser.newContext();
+    const pageB = await contextB.newPage();
+    await login(pageB, second.email, second.password);
+    await pageB.goto('/account/settings');
+    const previousUrl = await uploadUrlFromSettings(pageB);
+
+    await pageB.locator('#uploadToken').fill(code);
+    await pageB.getByRole('button', { name: 'Save code' }).click();
+    await pageB.waitForURL(/\/account\/settings\?msg=/);
+    await expect(pageB.getByText('That upload code is already in use.')).toBeVisible();
+
+    const afterUrl = await uploadUrlFromSettings(pageB);
+    expect(afterUrl).toBe(previousUrl);
+    expect(afterUrl).not.toContain(`/u/${code}`);
+    await contextB.close();
+  });
+
+  test('invalid custom upload code returns a user-facing validation error', async ({ page, request }) => {
+    const user = await createE2EUser(request, 'public-upload-custom-invalid');
+    await login(page, user.email, user.password);
+
+    await page.goto('/account/settings');
+    await page.evaluate(() => {
+      const form = document.querySelector('form[action*="handler=SetUploadLink"]') as HTMLFormElement | null;
+      const input = document.querySelector<HTMLInputElement>('#uploadToken');
+      if (!form || !input) return;
+      input.value = 'bad-token';
+      form.submit();
+    });
+
+    await page.waitForURL(/\/account\/settings\?msg=/);
+    await expect(page.getByText('Upload code must be 2-64 letters or numbers.')).toBeVisible();
+  });
+
 });

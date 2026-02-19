@@ -15,10 +15,14 @@ public sealed class AuthServiceUploadTokenTests
     {
         await using var harness = await TestHarness.CreateAsync();
         var service = new AuthService(harness.Db, new NoopEmailSender());
+        var user = await harness.Db.Users.SingleAsync(x => x.Email == "user@example.com");
+        user.UploadToken = string.Empty;
+        await harness.Db.SaveChangesAsync();
 
         var token = await service.GetOrCreateUploadTokenAsync("user@example.com", CancellationToken.None);
 
         Assert.False(string.IsNullOrWhiteSpace(token));
+        Assert.Matches("^[A-Za-z0-9]{8}$", token!);
         Assert.Equal(token, (await harness.Db.Users.SingleAsync(x => x.Email == "user@example.com")).UploadToken);
     }
 
@@ -32,7 +36,84 @@ public sealed class AuthServiceUploadTokenTests
         var second = await service.RegenerateUploadTokenAsync("user@example.com", CancellationToken.None);
 
         Assert.False(string.IsNullOrWhiteSpace(second));
+        Assert.Matches("^[A-Za-z0-9]{8}$", second!);
         Assert.NotEqual(first, second);
+    }
+
+    [Fact]
+    public async Task SetUploadTokenAsync_AllowsCustomCode()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        var service = new AuthService(harness.Db, new NoopEmailSender());
+
+        var result = await service.SetUploadTokenAsync("user@example.com", "AbC123xY", CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal("AbC123xY", result.UploadToken);
+        Assert.Equal("AbC123xY", (await harness.Db.Users.SingleAsync(x => x.Email == "user@example.com")).UploadToken);
+    }
+
+    [Fact]
+    public async Task SetUploadTokenAsync_RejectsInvalidFormat()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        var service = new AuthService(harness.Db, new NoopEmailSender());
+
+        var result = await service.SetUploadTokenAsync("user@example.com", "invalid-token", CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal("Upload code must be 2-64 letters or numbers.", result.Error);
+    }
+
+    [Fact]
+    public async Task SetUploadTokenAsync_RejectsDuplicateCode()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        var service = new AuthService(harness.Db, new NoopEmailSender());
+
+        var existing = "AbC123xY";
+        harness.Db.Users.Add(new UserAccount
+        {
+            Id = Guid.NewGuid(),
+            Email = "second@example.com",
+            EmailConfirmed = true,
+            PasswordHash = "hash",
+            Role = "user",
+            IsEnabled = true,
+            UploadToken = existing,
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        await harness.Db.SaveChangesAsync();
+
+        var result = await service.SetUploadTokenAsync("user@example.com", existing, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal("That upload code is already in use.", result.Error);
+    }
+
+    [Fact]
+    public async Task SetDisplayNameAsync_UpdatesName()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        var service = new AuthService(harness.Db, new NoopEmailSender());
+
+        var result = await service.SetDisplayNameAsync("user@example.com", "Alex Example", CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal("Alex Example", result.DisplayName);
+        Assert.Equal("Alex Example", (await harness.Db.Users.SingleAsync(x => x.Email == "user@example.com")).DisplayName);
+    }
+
+    [Fact]
+    public async Task SetDisplayNameAsync_RejectsEmptyName()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        var service = new AuthService(harness.Db, new NoopEmailSender());
+
+        var result = await service.SetDisplayNameAsync("user@example.com", "   ", CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal("Name is required.", result.Error);
     }
 
     [Fact]

@@ -14,7 +14,7 @@ public class IndexModel(AuthService authService, ShareManager manager, IOptions<
     public bool IsInvalidToken { get; private set; }
     public string UploadToken { get; private set; } = string.Empty;
     public string DraftShareId { get; private set; } = string.Empty;
-    public string RecipientEmail { get; private set; } = string.Empty;
+    public string RecipientDisplayName { get; private set; } = string.Empty;
     public long MaxFileSizeBytes => _options.MaxFileSizeBytes;
     public long MaxTotalUploadBytes => _options.MaxTotalUploadBytes;
     public int MaxFilesPerShare => _options.MaxFilesPerShare;
@@ -38,7 +38,9 @@ public class IndexModel(AuthService authService, ShareManager manager, IOptions<
         }
 
         UploadToken = uploadToken;
-        RecipientEmail = user.Email;
+        RecipientDisplayName = string.IsNullOrWhiteSpace(user.DisplayName)
+            ? "this recipient"
+            : user.DisplayName.Trim();
         DraftShareId = await manager.EnsureDraftShareAsync(user.Email, null, ct);
         ViewData["Title"] = "Send files";
         ViewData["Message"] = Request.Query["msg"].ToString();

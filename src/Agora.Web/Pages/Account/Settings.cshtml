@@ -8,9 +8,22 @@
 
 <section id="profile-settings" class="mb-10 scroll-mt-24">
   <div class="bg-white rounded-2xl border border-border p-6">
-    <h3 class="font-display text-xl mb-2">Email address</h3>
+    <h3 class="font-display text-xl mb-2">Profile</h3>
+    <p class="text-sm text-ink-muted mb-4">Update how your name appears on upload pages and in your account menu.</p>
+    <form method="post" asp-page-handler="UpdateProfile" class="space-y-4 mb-8">
+      @Html.AntiForgeryToken()
+      <div>
+        <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Display name</label>
+        <input type="text" name="displayName" value="@Model.DisplayName" required maxlength="200" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
+      </div>
+      <div class="flex justify-end">
+        <button type="submit" class="px-5 py-2 bg-ink text-white text-sm font-medium rounded-lg hover:bg-ink/90 transition-colors">Save profile</button>
+      </div>
+    </form>
+    <h4 class="font-display text-lg mb-2">Email address</h4>
     <p class="text-sm text-ink-muted mb-4">Current email: @Model.CurrentEmail</p>
     <form method="post" asp-page-handler="ChangeEmail" class="space-y-4">
+      @Html.AntiForgeryToken()
       <div>
         <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">New email</label>
         <input type="email" name="newEmail" required class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
@@ -31,6 +44,7 @@
     <h3 class="font-display text-xl mb-2">Password</h3>
     <p class="text-sm text-ink-muted mb-4">Use at least 8 characters and avoid reusing old passwords. The change applies after email confirmation.</p>
     <form method="post" asp-page-handler="ChangePassword" class="space-y-4">
+      @Html.AntiForgeryToken()
       <div>
         <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Current password</label>
         <input type="password" name="currentPasswordForPassword" required class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
@@ -56,10 +70,87 @@
     <p class="text-sm text-ink-muted mb-4">Share this link so people can upload files directly to you.</p>
     <div class="rounded-lg border border-border bg-cream p-3">
       <p class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5">Public upload URL</p>
-      <p class="text-sm text-ink-light break-all font-mono">@Model.UploadIntakeUrl</p>
+      <form id="upload-link-set-form" method="post" asp-page-handler="SetUploadLink" class="space-y-3" data-upload-link-form>
+        @Html.AntiForgeryToken()
+        <div class="flex items-center gap-1.5 rounded-lg border border-border bg-white px-3 py-2">
+          <span class="text-sm text-ink-muted font-mono whitespace-nowrap" data-upload-url-prefix>@Model.UploadIntakeUrlPrefix</span>
+          <input id="uploadToken" name="uploadToken" value="@Model.UploadToken" required minlength="2" maxlength="64" pattern="[A-Za-z0-9]{2,64}" class="min-w-0 flex-1 bg-transparent text-sm text-ink-light font-mono focus:outline-none" data-upload-token-input data-original-upload-token="@Model.UploadToken" />
+        </div>
+        <button type="submit" class="hidden px-5 py-2 bg-ink text-white text-sm font-medium rounded-lg hover:bg-ink/90 transition-colors" data-upload-save-button>Save code</button>
+      </form>
+      <p class="text-xs text-ink-muted">Code must be 2-64 letters or numbers (A-Z, a-z, 0-9).</p>
+      <div class="mt-3 flex items-center justify-end gap-2">
+        <div class="flex items-center gap-2">
+          <button type="button" class="px-3 py-1.5 bg-ink text-white text-xs font-medium rounded-md hover:bg-ink/90 transition-colors" data-copy-upload-url>Copy URL</button>
+          <form method="post" asp-page-handler="RegenerateUploadLink" class="m-0">
+            @Html.AntiForgeryToken()
+            <button type="submit" class="px-3 py-1.5 bg-ink text-white text-xs font-medium rounded-md hover:bg-ink/90 transition-colors">Regenerate random code</button>
+          </form>
+        </div>
+      </div>
+      <p class="mt-2 text-xs text-ink-muted" data-copy-upload-url-status aria-live="polite"></p>
     </div>
-    <form method="post" asp-page-handler="RegenerateUploadLink" class="mt-4 flex justify-end">
-      <button type="submit" class="px-5 py-2 bg-ink text-white text-sm font-medium rounded-lg hover:bg-ink/90 transition-colors">Regenerate link</button>
-    </form>
   </div>
 </section>
+
+<script>
+  (() => {
+    const button = document.querySelector('[data-copy-upload-url]');
+    const saveButton = document.querySelector('[data-upload-save-button]');
+    const prefixNode = document.querySelector('[data-upload-url-prefix]');
+    const input = document.querySelector('[data-upload-token-input]');
+    const status = document.querySelector('[data-copy-upload-url-status]');
+    if (!button || !saveButton || !prefixNode || !input || !status) return;
+
+    const originalValue = (input.getAttribute('data-original-upload-token') || input.value || '').trim();
+    const prefix = (prefixNode.textContent || '').trim();
+    if (!prefix) return;
+
+    const syncActions = () => {
+      const currentValue = (input.value || '').trim();
+      const isDirty = currentValue !== originalValue;
+      saveButton.classList.toggle('hidden', !isDirty);
+      button.classList.toggle('hidden', isDirty);
+      if (isDirty) {
+        status.textContent = '';
+      }
+    };
+
+    const fallbackCopy = (text) => {
+      const input = document.createElement('textarea');
+      input.value = text;
+      input.setAttribute('readonly', 'readonly');
+      input.style.position = 'absolute';
+      input.style.left = '-9999px';
+      document.body.appendChild(input);
+      input.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(input);
+      return ok;
+    };
+
+    input.addEventListener('input', syncActions);
+    syncActions();
+
+    button.addEventListener('click', async () => {
+      const currentValue = (input.value || '').trim();
+      if (!currentValue) {
+        status.textContent = 'Enter a code first.';
+        return;
+      }
+
+      const value = `${prefix}${encodeURIComponent(currentValue)}`;
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(value);
+        } else if (!fallbackCopy(value)) {
+          throw new Error('copy failed');
+        }
+
+        status.textContent = 'Copied URL.';
+      } catch {
+        status.textContent = 'Unable to copy automatically. Select the URL and copy it manually.';
+      }
+    });
+  })();
+</script>

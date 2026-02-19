@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Agora.Infrastructure.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
@@ -12,14 +14,20 @@ namespace Agora.Web.Pages.Account;
 public class SettingsModel(AuthService authService, IOptions<AgoraOptions> options) : PageModel
 {
     public string CurrentEmail { get; private set; } = string.Empty;
+    public string DisplayName { get; private set; } = string.Empty;
     public string UploadIntakeUrl { get; private set; } = string.Empty;
+    public string UploadIntakeUrlPrefix { get; private set; } = string.Empty;
+    public string UploadToken { get; private set; } = string.Empty;
 
     public async Task OnGet(CancellationToken ct)
     {
         var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
         CurrentEmail = email;
+        DisplayName = User.FindFirstValue(ClaimTypes.Name) ?? email;
         var token = await authService.GetOrCreateUploadTokenAsync(email, ct);
+        UploadToken = token ?? string.Empty;
         var publicBaseUrl = ResolvePublicBaseUrl(options.Value.PublicBaseUrl, Request);
+        UploadIntakeUrlPrefix = $"{publicBaseUrl}/u/";
         UploadIntakeUrl = string.IsNullOrWhiteSpace(token) ? string.Empty : $"{publicBaseUrl}/u/{Uri.EscapeDataString(token)}";
         ViewData["Title"] = "Account Settings";
         ViewData["Message"] = Request.Query["msg"].ToString();
@@ -40,6 +48,31 @@ public class SettingsModel(AuthService authService, IOptions<AgoraOptions> optio
         }
 
         return RedirectToPage("/Account/Settings", new { msg = "Confirm your new email to complete the change" });
+    }
+
+    public async Task<IActionResult> OnPostUpdateProfileAsync(CancellationToken ct)
+    {
+        var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+        var displayName = Request.Form["displayName"].ToString();
+        var result = await authService.SetDisplayNameAsync(email, displayName, ct);
+        if (!result.Success)
+        {
+            return RedirectToPage("/Account/Settings", new { msg = result.Error });
+        }
+
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty;
+        var role = User.FindFirstValue(ClaimTypes.Role) ?? "user";
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, userId),
+            new(ClaimTypes.Email, email),
+            new(ClaimTypes.Name, result.DisplayName ?? email),
+            new(ClaimTypes.Role, role)
+        };
+        var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
+        await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity));
+
+        return RedirectToPage("/Account/Settings", new { msg = "Profile updated" });
     }
 
     public async Task<IActionResult> OnPostChangePasswordAsync(CancellationToken ct)
@@ -70,6 +103,19 @@ public class SettingsModel(AuthService authService, IOptions<AgoraOptions> optio
         }
 
         return RedirectToPage("/Account/Settings", new { msg = "Upload link regenerated" });
+    }
+
+    public async Task<IActionResult> OnPostSetUploadLinkAsync(CancellationToken ct)
+    {
+        var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+        var requestedToken = Request.Form["uploadToken"].ToString();
+        var result = await authService.SetUploadTokenAsync(email, requestedToken, ct);
+        if (!result.Success)
+        {
+            return RedirectToPage("/Account/Settings", new { msg = result.Error });
+        }
+
+        return RedirectToPage("/Account/Settings", new { msg = "Upload link updated" });
     }
 
     private static string ResolvePublicBaseUrl(string? configuredValue, HttpRequest request)

@@ -3,6 +3,7 @@
     var message = ViewData["Message"]?.ToString();
     var isAuthenticated = User?.Identity?.IsAuthenticated == true;
     var email = User?.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+    var displayName = User?.FindFirstValue(ClaimTypes.Name) ?? email;
     var isAdmin = User?.IsInRole("admin") == true;
 }
 <!doctype html>
@@ -38,7 +39,13 @@
                       <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6.75a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.5 19.125a7.5 7.5 0 0115 0" />
                     </svg>
                   </span>
-                  <span class="text-[11px] text-ink-muted leading-tight">@email</span>
+                  <span class="leading-tight">
+                    <span class="block text-xs text-ink-light">@displayName</span>
+                    @if (!string.Equals(displayName, email, StringComparison.OrdinalIgnoreCase))
+                    {
+                      <span class="block text-[10px] text-ink-muted">@email</span>
+                    }
+                  </span>
                 </span>
               </summary>
               <div class="absolute right-0 mt-2 w-56 rounded-xl border border-border bg-white p-2 shadow-lg z-20" style="z-index: 2100;">

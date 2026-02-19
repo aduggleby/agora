@@ -257,6 +257,13 @@ public static class SchemaUpgradeRunner
                     """ALTER TABLE "Users" ADD COLUMN "UploadTokenUpdatedAtUtc" TEXT NULL""",
                     cancellationToken);
             }
+            var hasDisplayName = await SqliteColumnExistsAsync(db, "Users", "DisplayName", cancellationToken);
+            if (!hasDisplayName)
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    """ALTER TABLE "Users" ADD COLUMN "DisplayName" TEXT NULL""",
+                    cancellationToken);
+            }
 
             await db.Database.ExecuteSqlRawAsync(
                 """
@@ -264,6 +271,21 @@ public static class SchemaUpgradeRunner
                 SET "UploadToken" = lower(hex(randomblob(16))),
                     "UploadTokenUpdatedAtUtc" = CURRENT_TIMESTAMP
                 WHERE trim(coalesce("UploadToken", '')) = '';
+                """,
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE "Users"
+                SET "DisplayName" = substr("Email", 1, instr("Email", '@') - 1)
+                WHERE trim(coalesce("DisplayName", '')) = ''
+                  AND instr(coalesce("Email", ''), '@') > 1;
+                """,
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE "Users"
+                SET "DisplayName" = 'User'
+                WHERE trim(coalesce("DisplayName", '')) = '';
                 """,
                 cancellationToken);
             await db.Database.ExecuteSqlRawAsync(
@@ -540,10 +562,33 @@ public static class SchemaUpgradeRunner
                 cancellationToken);
             await db.Database.ExecuteSqlRawAsync(
                 """
+                IF COL_LENGTH('Users', 'DisplayName') IS NULL
+                BEGIN
+                  ALTER TABLE [Users] ADD [DisplayName] nvarchar(200) NULL
+                END
+                """,
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
                 UPDATE [Users]
                 SET [UploadToken] = REPLACE(CONVERT(nvarchar(36), NEWID()), '-', ''),
                     [UploadTokenUpdatedAtUtc] = SYSUTCDATETIME()
                 WHERE LTRIM(RTRIM(ISNULL([UploadToken], ''))) = '';
+                """,
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE [Users]
+                SET [DisplayName] = LEFT([Email], CHARINDEX('@', [Email] + '@') - 1)
+                WHERE LTRIM(RTRIM(ISNULL([DisplayName], ''))) = ''
+                  AND CHARINDEX('@', ISNULL([Email], '')) > 1;
+                """,
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE [Users]
+                SET [DisplayName] = 'User'
+                WHERE LTRIM(RTRIM(ISNULL([DisplayName], ''))) = '';
                 """,
                 cancellationToken);
             await db.Database.ExecuteSqlRawAsync(

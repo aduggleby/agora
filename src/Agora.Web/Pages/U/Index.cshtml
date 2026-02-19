@@ -23,7 +23,7 @@ else
 {
   <section class="mb-10">
     <h2 class="font-display text-4xl tracking-tight mb-1">Send files</h2>
-    <p class="text-ink-muted text-sm mt-3 max-w-md">Share your files with @Model.RecipientEmail. We email them the link when processing is complete.</p>
+    <p class="text-ink-muted text-sm mt-3 max-w-md">Share your files with @Model.RecipientDisplayName. We email them the link when processing is complete.</p>
   </section>
 
   <section class="mb-10">
@@ -66,7 +66,7 @@ else
         <input type="hidden" name="draftShareId" value="@Model.DraftShareId" data-public-draft-share-id />
 
         <div class="flex justify-end">
-          <button type="submit" class="px-6 py-2.5 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed" data-public-submit disabled title="Upload at least one file first.">Send files</button>
+          <button type="submit" class="hidden px-6 py-2.5 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed" data-public-submit disabled title="Upload at least one file first.">Send files</button>
         </div>
       </form>
     </div>

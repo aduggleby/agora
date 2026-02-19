@@ -307,6 +307,7 @@ using (var scope = app.Services.CreateScope())
 
 app.UseForwardedHeaders();
 app.UseStaticFiles();
+app.UseAuthentication();
 app.Use(async (context, next) =>
 {
     var antiforgery = context.RequestServices.GetRequiredService<IAntiforgery>();
@@ -363,7 +364,6 @@ app.Use(async (context, next) =>
 
     await next();
 });
-app.UseAuthentication();
 app.UseRateLimiter();
 app.UseAuthorization();
 app.MapRazorPages();
@@ -518,7 +518,7 @@ if (isE2E)
             return Results.Conflict(new { error = "User already exists." });
         }
 
-        var uploadToken = TokenCodec.GenerateAlphanumericToken(24);
+        var uploadToken = TokenCodec.GenerateAlphanumericToken(8);
         for (var attempt = 0; attempt < 16; attempt += 1)
         {
             if (!await db.Users.AnyAsync(x => x.UploadToken == uploadToken, ct))
@@ -526,13 +526,14 @@ if (isE2E)
                 break;
             }
 
-            uploadToken = TokenCodec.GenerateAlphanumericToken(24);
+            uploadToken = TokenCodec.GenerateAlphanumericToken(8);
         }
 
         db.Users.Add(new UserAccount
         {
             Id = Guid.NewGuid(),
             Email = email,
+            DisplayName = email.Contains('@', StringComparison.Ordinal) ? email[..email.IndexOf('@', StringComparison.Ordinal)] : email,
             EmailConfirmed = true,
             EmailConfirmedAtUtc = DateTime.UtcNow,
             PasswordHash = PasswordHasher.Hash(password),
@@ -603,7 +604,7 @@ if (isE2E)
             return Results.NotFound(new { error = "User not found." });
         }
 
-        var uploadToken = TokenCodec.GenerateAlphanumericToken(24);
+        var uploadToken = TokenCodec.GenerateAlphanumericToken(8);
         for (var attempt = 0; attempt < 16; attempt += 1)
         {
             if (!await db.Users.AnyAsync(x => x.UploadToken == uploadToken && x.Id != user.Id, ct))
@@ -611,7 +612,7 @@ if (isE2E)
                 break;
             }
 
-            uploadToken = TokenCodec.GenerateAlphanumericToken(24);
+            uploadToken = TokenCodec.GenerateAlphanumericToken(8);
         }
 
         user.UploadToken = uploadToken;
@@ -1647,11 +1648,12 @@ app.Run();
 
 static ClaimsPrincipal CreatePrincipal(UserAccount user)
 {
+    var displayName = string.IsNullOrWhiteSpace(user.DisplayName) ? user.Email : user.DisplayName.Trim();
     var claims = new List<Claim>
     {
         new(ClaimTypes.NameIdentifier, user.Id.ToString()),
         new(ClaimTypes.Email, user.Email),
-        new(ClaimTypes.Name, user.Email),
+        new(ClaimTypes.Name, displayName),
         new(ClaimTypes.Role, user.Role)
     };
 

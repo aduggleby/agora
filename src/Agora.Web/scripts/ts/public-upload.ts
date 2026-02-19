@@ -11,6 +11,8 @@ import { readLimitsFromElement, validateFileSelection, showLimitDialog } from '.
   const uploadList = form.querySelector<HTMLUListElement>('[data-public-upload-list]');
   const hidden = form.querySelector<HTMLElement>('[data-public-upload-hidden]');
   const submit = form.querySelector<HTMLButtonElement>('[data-public-submit]');
+  const senderNameInput = form.querySelector<HTMLInputElement>('input[name="senderName"]');
+  const senderEmailInput = form.querySelector<HTMLInputElement>('input[name="senderEmail"]');
   const uploadToken = form.querySelector<HTMLInputElement>('[data-public-upload-token]')?.value ?? '';
   const draftShareId = form.querySelector<HTMLInputElement>('[data-public-draft-share-id]')?.value ?? '';
 
@@ -19,9 +21,13 @@ import { readLimitsFromElement, validateFileSelection, showLimitDialog } from '.
   }
 
   const limits = readLimitsFromElement(form);
+  const senderNameStorageKey = 'agora:public-upload:sender-name';
+  const senderEmailStorageKey = 'agora:public-upload:sender-email';
   const uploadedIds = new Set<string>();
   const uploadedSizes = new Map<string, number>();
   let activeUploads = 0;
+  const pickPrimaryClass = 'px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors';
+  const pickSecondaryClass = 'px-4 py-2 bg-cream text-ink text-sm font-medium rounded-lg border border-border hover:bg-cream-dark/70 transition-colors';
 
   const formatBytes = (bytes: number): string => {
     if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
@@ -32,11 +38,20 @@ import { readLimitsFromElement, validateFileSelection, showLimitDialog } from '.
   };
 
   const refreshState = (): void => {
-    const reason = activeUploads > 0
-      ? 'Please wait for uploads to finish.'
-      : uploadedIds.size === 0
-        ? 'Upload at least one file first.'
-        : '';
+    const hasUploadedFiles = uploadedIds.size > 0;
+    const senderEmail = (senderEmailInput?.value || '').trim();
+    pickButton.className = hasUploadedFiles ? pickSecondaryClass : pickPrimaryClass;
+    pickButton.textContent = hasUploadedFiles ? 'Add more files' : 'Select files';
+    submit.classList.toggle('hidden', !hasUploadedFiles);
+
+    let reason = '';
+    if (activeUploads > 0) {
+      reason = 'Please wait for uploads to finish.';
+    } else if (uploadedIds.size === 0) {
+      reason = 'Upload at least one file first.';
+    } else if (!senderEmail) {
+      reason = 'Enter your email first.';
+    }
 
     submit.disabled = reason.length > 0;
     submit.title = reason;
@@ -49,6 +64,34 @@ import { readLimitsFromElement, validateFileSelection, showLimitDialog } from '.
     status.textContent = uploadedIds.size > 0
       ? `${uploadedIds.size} file(s) uploaded and ready.`
       : 'No files uploaded yet.';
+  };
+
+  const restoreSenderFields = (): void => {
+    if (!senderNameInput && !senderEmailInput) return;
+    try {
+      if (senderNameInput && !senderNameInput.value) {
+        senderNameInput.value = (localStorage.getItem(senderNameStorageKey) || '').trim();
+      }
+      if (senderEmailInput && !senderEmailInput.value) {
+        senderEmailInput.value = (localStorage.getItem(senderEmailStorageKey) || '').trim();
+      }
+    } catch {
+      // Ignore localStorage access errors.
+    }
+  };
+
+  const persistSenderFields = (): void => {
+    if (!senderNameInput && !senderEmailInput) return;
+    try {
+      if (senderNameInput) {
+        localStorage.setItem(senderNameStorageKey, senderNameInput.value.trim());
+      }
+      if (senderEmailInput) {
+        localStorage.setItem(senderEmailStorageKey, senderEmailInput.value.trim());
+      }
+    } catch {
+      // Ignore localStorage access errors.
+    }
   };
 
   const createRow = (file: File): { row: HTMLLIElement; bar: HTMLDivElement; note: HTMLParagraphElement } => {
@@ -188,6 +231,11 @@ import { readLimitsFromElement, validateFileSelection, showLimitDialog } from '.
     dropzone.classList.remove('ring-2', 'ring-terra/40');
     void queueUploads(event.dataTransfer?.files || []);
   });
+
+  restoreSenderFields();
+  senderNameInput?.addEventListener('input', persistSenderFields);
+  senderEmailInput?.addEventListener('input', persistSenderFields);
+  senderEmailInput?.addEventListener('input', refreshState);
 
   refreshState();
 })();

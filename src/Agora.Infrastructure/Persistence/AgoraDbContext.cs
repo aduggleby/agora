@@ -66,6 +66,7 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
             builder.HasIndex(x => x.Email).IsUnique();
             builder.HasIndex(x => x.UploadToken).IsUnique();
             builder.Property(x => x.Email).HasMaxLength(320);
+            builder.Property(x => x.DisplayName).HasMaxLength(200);
             builder.Property(x => x.UploadToken).HasMaxLength(120);
             builder.Property(x => x.PasswordHash).HasMaxLength(1000);
             builder.Property(x => x.Role).HasMaxLength(20);
