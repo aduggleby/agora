@@ -12,11 +12,15 @@ namespace Agora.Web.Pages.Account;
 public class SettingsModel(AuthService authService, IOptions<AgoraOptions> options) : PageModel
 {
     public string CurrentEmail { get; private set; } = string.Empty;
+    public string UploadIntakeUrl { get; private set; } = string.Empty;
 
     public async Task OnGet(CancellationToken ct)
     {
         var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
         CurrentEmail = email;
+        var token = await authService.GetOrCreateUploadTokenAsync(email, ct);
+        var publicBaseUrl = ResolvePublicBaseUrl(options.Value.PublicBaseUrl, Request);
+        UploadIntakeUrl = string.IsNullOrWhiteSpace(token) ? string.Empty : $"{publicBaseUrl}/u/{Uri.EscapeDataString(token)}";
         ViewData["Title"] = "Account Settings";
         ViewData["Message"] = Request.Query["msg"].ToString();
     }
@@ -54,6 +58,18 @@ public class SettingsModel(AuthService authService, IOptions<AgoraOptions> optio
         var confirmationUrlBase = $"{publicBaseUrl}/auth/confirm-password-change";
         var result = await authService.RequestPasswordChangeAsync(email, currentPassword, newPassword, confirmationUrlBase, ct);
         return RedirectToPage("/Account/Settings", new { msg = result.Success ? "Check your email to confirm the password change" : result.Error });
+    }
+
+    public async Task<IActionResult> OnPostRegenerateUploadLinkAsync(CancellationToken ct)
+    {
+        var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+        var token = await authService.RegenerateUploadTokenAsync(email, ct);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return RedirectToPage("/Account/Settings", new { msg = "Unable to regenerate upload link" });
+        }
+
+        return RedirectToPage("/Account/Settings", new { msg = "Upload link regenerated" });
     }
 
     private static string ResolvePublicBaseUrl(string? configuredValue, HttpRequest request)

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: complete
 priority: p3
 issue_id: "005"
 tags: [code-review, hygiene]
@@ -52,6 +52,8 @@ A build output directory appears as an untracked path with a Windows-style separ
 
 ## Recommended Action
 
+Remove stray artifact paths when present and rely on existing `**/bin/` + `**/obj/` ignore patterns. No additional ignore rule needed right now.
+
 
 ## Technical Details
 
@@ -64,8 +66,8 @@ A build output directory appears as an untracked path with a Windows-style separ
 
 ## Acceptance Criteria
 
-- [ ] Build artifacts are not present in tracked changes.
-- [ ] Ignore patterns prevent recurrence.
+- [x] Build artifacts are not present in tracked changes.
+- [x] Ignore patterns prevent recurrence.
 
 ## Work Log
 
@@ -82,3 +84,15 @@ A build output directory appears as an untracked path with a Windows-style separ
 ## Notes
 
 - Nice-to-have housekeeping.
+
+
+### 2026-02-19 - Resolution
+
+**By:** Codex
+
+**Actions:**
+- Verified `.gitignore` contains `**/bin/` and `**/obj/`.
+- Verified current working tree no longer includes `src/Agora.Web/bin\\Debug/` as untracked content.
+
+**Learnings:**
+- Existing ignore rules are sufficient; no platform-specific ignore entry required.

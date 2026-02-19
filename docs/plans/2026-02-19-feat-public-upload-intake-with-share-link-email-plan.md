@@ -179,66 +179,66 @@ Update:
 
 ### Phase 1: Public intake foundation
 
-- [ ] Add tokenized public intake Razor page and page model:
+- [x] Add tokenized public intake Razor page and page model:
   - `src/Agora.Web/Pages/U/Index.cshtml`
   - `src/Agora.Web/Pages/U/Index.cshtml.cs`
-- [ ] Reuse uploader component structure from `src/Agora.Web/Pages/Shares/New.cshtml` with sender section above uploader.
-- [ ] Add anonymous intake staging/create endpoints in `src/Agora.Web/Program.cs`.
-- [ ] Add anti-forgery + request validation for new public POST endpoints.
-- [ ] Add token lookup guards and invalid/revoked token responses.
+- [x] Reuse uploader component structure from `src/Agora.Web/Pages/Shares/New.cshtml` with sender section above uploader.
+- [x] Add anonymous intake staging/create endpoints in `src/Agora.Web/Program.cs`.
+- [x] Add anti-forgery + request validation for new public POST endpoints.
+- [x] Add token lookup guards and invalid/revoked token responses.
 
 ### Phase 2: Data and queue integration
 
-- [ ] Add sender fields to `Share` entity and EF mapping:
+- [x] Add sender fields to `Share` entity and EF mapping:
   - `src/Agora.Domain/Entities/Share.cs`
   - `src/Agora.Infrastructure/Persistence/AgoraDbContext.cs`
-- [ ] Add upload token fields/index to user entity and mapping:
+- [x] Add upload token fields/index to user entity and mapping:
   - `src/Agora.Domain/Entities/UserAccount.cs`
   - `src/Agora.Infrastructure/Persistence/AgoraDbContext.cs`
-- [ ] Add migration for sender fields.
-- [ ] Extend queue payload and share creation mapping:
+- [x] Add migration for sender fields.
+- [x] Extend queue payload and share creation mapping:
   - `src/Agora.Web/Services/QueuedShareCreationJob.cs`
   - `src/Agora.Application/Models/CreateShareCommand.cs`
   - `src/Agora.Infrastructure/Services/ShareManager.cs`
 
 ### Phase 3: Recipient email + UI completion
 
-- [ ] Update ready-link email content in queued job to include sender metadata.
-- [ ] Add sender-facing completion/status page or pending state.
-- [ ] Ensure disabled buttons include tooltip text explaining why disabled.
-- [ ] Add Account Settings UI to display and regenerate `/u/<token>` link.
+- [x] Update ready-link email content in queued job to include sender metadata.
+- [x] Add sender-facing completion/status page or pending state.
+- [x] Ensure disabled buttons include tooltip text explaining why disabled.
+- [x] Add Account Settings UI to display and regenerate `/u/<token>` link.
 
 ### Phase 4: Frontend behavior and build outputs
 
-- [ ] Add upload page TS module under `src/Agora.Web/scripts/ts/` reusing limit helpers.
-- [ ] Generate corresponding `wwwroot/js` outputs.
-- [ ] Run Tailwind build if HTML/class changes require CSS regeneration.
+- [x] Add upload page TS module under `src/Agora.Web/scripts/ts/` reusing limit helpers.
+- [x] Generate corresponding `wwwroot/js` outputs.
+- [x] Run Tailwind build if HTML/class changes require CSS regeneration.
 
 ## Acceptance Criteria
 
-- [ ] Visiting `/u/<token>` with a valid token anonymously shows sender name/email/message fields and uploader below.
-- [ ] Visiting `/u/<token>` with invalid/revoked token shows non-upload error state.
-- [ ] Upload limits match `/shares/new` (max files, max file size, max total size).
-- [ ] Sender can submit staged files without authentication.
-- [ ] Submission queues share creation and produces a valid `/s/{token}` share.
-- [ ] Token owner receives email when ready containing sender name, sender email, sender message, and share link.
-- [ ] Existing authenticated `/shares/new` behavior remains unchanged.
-- [ ] Anonymous abuse controls are applied to public upload endpoints.
-- [ ] Added/updated tests cover happy path + core validation failures.
-- [ ] Account Settings shows each user’s upload link and supports token regeneration.
+- [x] Visiting `/u/<token>` with a valid token anonymously shows sender name/email/message fields and uploader below.
+- [x] Visiting `/u/<token>` with invalid/revoked token shows non-upload error state.
+- [x] Upload limits match `/shares/new` (max files, max file size, max total size).
+- [x] Sender can submit staged files without authentication.
+- [x] Submission queues share creation and produces a valid `/s/{token}` share.
+- [x] Token owner receives email when ready containing sender name, sender email, sender message, and share link.
+- [x] Existing authenticated `/shares/new` behavior remains unchanged.
+- [x] Anonymous abuse controls are applied to public upload endpoints.
+- [x] Added/updated tests cover happy path + core validation failures.
+- [x] Account Settings shows each user’s upload link and supports token regeneration.
 
 ## Testing Plan
 
-- [ ] Backend build: `dotnet build Agora.slnx`
-- [ ] Unit tests (targeted + existing): `dotnet test tests/Agora.Application.Tests/Agora.Application.Tests.csproj`
+- [x] Backend build: `dotnet build Agora.slnx`
+- [x] Unit tests (targeted + existing): `dotnet test tests/Agora.Application.Tests/Agora.Application.Tests.csproj`
 - [ ] E2E additions in `tests/e2e/specs/`:
-  - public `/u/<token>` happy path to recipient email artifact
-  - invalid `/u/<token>` behavior
-  - invalid sender email
-  - limit exceed cases
-  - unauthenticated stage/create lifecycle
-  - token regeneration invalidates previous link
-- [ ] If TypeScript changes, rebuild generated JS artifacts.
+  - [x] public `/u/<token>` happy path to recipient email artifact
+  - [x] invalid `/u/<token>` behavior
+  - [x] invalid sender email
+  - [x] limit exceed cases
+  - [x] unauthenticated stage/create lifecycle
+  - [x] token regeneration invalidates previous link
+- [x] If TypeScript changes, rebuild generated JS artifacts.
 
 ## Risks & Mitigations
 

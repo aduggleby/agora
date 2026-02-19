@@ -30,6 +30,7 @@ using Microsoft.Extensions.Options;
 using Serilog;
 using System.Data;
 using System.Globalization;
+using System.Net.Mail;
 using System.Security.Cryptography;
 using System.Threading.RateLimiting;
 
@@ -154,6 +155,21 @@ builder.Services.AddRateLimiter(options =>
             factory: _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = 20,
+                Window = TimeSpan.FromMinutes(1),
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                QueueLimit = 0,
+                AutoReplenishment = true
+            });
+    });
+
+    options.AddPolicy("PublicUploadEndpoints", httpContext =>
+    {
+        var ip = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: $"public-upload:{ip}",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 25,
                 Window = TimeSpan.FromMinutes(1),
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                 QueueLimit = 0,
@@ -502,6 +518,17 @@ if (isE2E)
             return Results.Conflict(new { error = "User already exists." });
         }
 
+        var uploadToken = TokenCodec.GenerateAlphanumericToken(24);
+        for (var attempt = 0; attempt < 16; attempt += 1)
+        {
+            if (!await db.Users.AnyAsync(x => x.UploadToken == uploadToken, ct))
+            {
+                break;
+            }
+
+            uploadToken = TokenCodec.GenerateAlphanumericToken(24);
+        }
+
         db.Users.Add(new UserAccount
         {
             Id = Guid.NewGuid(),
@@ -513,7 +540,9 @@ if (isE2E)
             IsEnabled = true,
             CreatedAtUtc = DateTime.UtcNow,
             DefaultNotifyMode = string.IsNullOrWhiteSpace(defaultNotifyMode) ? "once" : defaultNotifyMode.Trim(),
-            DefaultExpiryMode = string.IsNullOrWhiteSpace(defaultExpiryMode) ? "7_days" : defaultExpiryMode.Trim()
+            DefaultExpiryMode = string.IsNullOrWhiteSpace(defaultExpiryMode) ? "7_days" : defaultExpiryMode.Trim(),
+            UploadToken = uploadToken,
+            UploadTokenUpdatedAtUtc = DateTime.UtcNow
         });
         db.AccountTemplates.Add(new AccountTemplate
         {
@@ -552,6 +581,44 @@ if (isE2E)
         share.ExpiresAtUtc = DateTime.UtcNow.AddSeconds(seconds);
         await db.SaveChangesAsync(ct);
         return Results.Ok(new { share.Id, share.ExpiresAtUtc });
+    });
+
+    app.MapPost("/api/e2e/users/regenerate-upload-token", async (AgoraDbContext db, HttpRequest request, CancellationToken ct) =>
+    {
+        if (!request.HasFormContentType)
+        {
+            return Results.BadRequest(new { error = "Expected form data." });
+        }
+
+        var form = await request.ReadFormAsync(ct);
+        var email = form["email"].ToString().Trim();
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return Results.BadRequest(new { error = "email is required." });
+        }
+
+        var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, ct);
+        if (user is null)
+        {
+            return Results.NotFound(new { error = "User not found." });
+        }
+
+        var uploadToken = TokenCodec.GenerateAlphanumericToken(24);
+        for (var attempt = 0; attempt < 16; attempt += 1)
+        {
+            if (!await db.Users.AnyAsync(x => x.UploadToken == uploadToken && x.Id != user.Id, ct))
+            {
+                break;
+            }
+
+            uploadToken = TokenCodec.GenerateAlphanumericToken(24);
+        }
+
+        user.UploadToken = uploadToken;
+        user.UploadTokenUpdatedAtUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+
+        return Results.Ok(new { user.Email, uploadToken });
     });
 }
 
@@ -978,6 +1045,206 @@ app.MapPost("/api/uploads/stage", async (
     });
 }).RequireAuthorization();
 
+app.MapPost("/api/public-uploads/stage", async (
+    AuthService authService,
+    ShareManager manager,
+    IOptions<AgoraOptions> options,
+    HttpRequest request,
+    CancellationToken ct) =>
+{
+    if (!request.HasFormContentType)
+    {
+        return Results.BadRequest(new { error = "Expected multipart/form-data." });
+    }
+
+    var form = await request.ReadFormAsync(ct);
+    var uploadToken = form["uploadToken"].ToString().Trim();
+    var draftShareId = form["draftShareId"].ToString().Trim();
+    if (string.IsNullOrWhiteSpace(uploadToken) || string.IsNullOrWhiteSpace(draftShareId))
+    {
+        return Results.BadRequest(new { error = "uploadToken and draftShareId are required." });
+    }
+
+    var user = await authService.FindByUploadTokenAsync(uploadToken, ct);
+    if (user is null)
+    {
+        return Results.NotFound(new { error = "Upload link not found." });
+    }
+
+    try
+    {
+        draftShareId = await manager.EnsureDraftShareAsync(user.Email, draftShareId, ct);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+
+    var file = form.Files["file"];
+    if (file is null || file.Length <= 0)
+    {
+        return Results.BadRequest(new { error = "A file is required." });
+    }
+
+    var cfg = options.Value;
+    if (file.Length > cfg.MaxFileSizeBytes)
+    {
+        return Results.BadRequest(new { error = $"File '{file.FileName}' exceeds max size." });
+    }
+
+    await using var stream = file.OpenReadStream();
+    var staged = await manager.StageUploadAsync(
+        user.Email,
+        draftShareId,
+        file.FileName,
+        file.Length,
+        file.ContentType,
+        stream,
+        ct,
+        ShareManager.UploadPurposeShareFile);
+
+    return Results.Ok(new
+    {
+        uploadId = staged.UploadId,
+        fileName = staged.OriginalFileName,
+        sizeBytes = staged.OriginalSizeBytes
+    });
+}).RequireRateLimiting("PublicUploadEndpoints");
+
+app.MapPost("/api/public-uploads/create-share", async (
+    AuthService authService,
+    ShareManager manager,
+    IOptions<AgoraOptions> options,
+    QueuedShareCreationJob queuedShareCreationJob,
+    HttpRequest request,
+    CancellationToken ct) =>
+{
+    if (!request.HasFormContentType)
+    {
+        return Results.BadRequest("Expected form data.");
+    }
+
+    var form = await request.ReadFormAsync(ct);
+    var uploadToken = form["uploadToken"].ToString().Trim();
+    var draftShareId = form["draftShareId"].ToString().Trim();
+    var senderName = form["senderName"].ToString().Trim();
+    var senderEmail = form["senderEmail"].ToString().Trim();
+    var senderMessage = form["senderMessage"].ToString().Trim();
+    if (string.IsNullOrWhiteSpace(uploadToken) || string.IsNullOrWhiteSpace(draftShareId))
+    {
+        return Results.BadRequest("uploadToken and draftShareId are required.");
+    }
+
+    if (string.IsNullOrWhiteSpace(senderName))
+    {
+        return Results.BadRequest("senderName is required.");
+    }
+
+    if (!IsValidEmailAddress(senderEmail))
+    {
+        return Results.BadRequest("senderEmail must be a valid email address.");
+    }
+
+    var user = await authService.FindByUploadTokenAsync(uploadToken, ct);
+    if (user is null)
+    {
+        return Results.NotFound("Upload link not found.");
+    }
+
+    try
+    {
+        draftShareId = await manager.EnsureDraftShareAsync(user.Email, draftShareId, ct);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+
+    var uploadedFileIds = form["uploadedFileIds"]
+        .Select(x => x?.Trim())
+        .Where(x => !string.IsNullOrWhiteSpace(x))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Cast<string>()
+        .ToArray();
+
+    IReadOnlyList<ShareManager.StagedUploadFile> stagedUploads;
+    try
+    {
+        stagedUploads = await manager.ResolveStagedUploadsAsync(user.Email, uploadedFileIds, draftShareId, ct);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+
+    if (stagedUploads.Count == 0)
+    {
+        return Results.BadRequest("At least one file is required.");
+    }
+
+    var cfg = options.Value;
+    if (stagedUploads.Count > cfg.MaxFilesPerShare)
+    {
+        return Results.BadRequest($"Too many files. Max {cfg.MaxFilesPerShare}.");
+    }
+
+    var total = 0L;
+    foreach (var staged in stagedUploads)
+    {
+        if (staged.OriginalSizeBytes > cfg.MaxFileSizeBytes)
+        {
+            return Results.BadRequest($"File '{staged.OriginalFileName}' exceeds max size.");
+        }
+
+        total += staged.OriginalSizeBytes;
+    }
+
+    if (total > cfg.MaxTotalUploadBytes)
+    {
+        return Results.BadRequest("Total upload size exceeds limit.");
+    }
+
+    var shareToken = await manager.GenerateUniqueShareTokenAsync(8, ct);
+    var expiryModeRaw = await authService.GetDefaultExpiryModeAsync(user.Email, ct);
+    if (!TryResolveExpiryUtc(expiryModeRaw, DateTime.UtcNow, out var expiresAtUtc))
+    {
+        expiresAtUtc = DateTime.UtcNow.AddDays(7);
+        expiryModeRaw = "7_days";
+    }
+
+    var notifyMode = await authService.GetDefaultNotifyModeAsync(user.Email, ct);
+    if (notifyMode is not ("none" or "once" or "every_time"))
+    {
+        notifyMode = "once";
+    }
+
+    var queued = new QueuedShareCreationJob.Payload(
+        UploaderEmail: user.Email,
+        DraftShareId: draftShareId,
+        ShareToken: shareToken,
+        Message: null,
+        SenderName: senderName,
+        SenderEmail: senderEmail,
+        SenderMessage: string.IsNullOrWhiteSpace(senderMessage) ? null : senderMessage,
+        DownloadPassword: null,
+        ShowPreviews: false,
+        ZipFileName: null,
+        NotifyMode: notifyMode,
+        ExpiryMode: expiryModeRaw,
+        ExpiresAtUtc: expiresAtUtc,
+        TemplateMode: "account_default",
+        TemplateTitle: null,
+        TemplateH1: null,
+        TemplateDescription: null,
+        TemplateBackgroundColorHex: null,
+        TemplateContainerPosition: null,
+        TemplateBackgroundUploadId: null,
+        UploadedFileIds: uploadedFileIds);
+
+    queuedShareCreationJob.Queue(queued);
+    return Results.Redirect($"/u/{Uri.EscapeDataString(uploadToken)}?msg=Thanks%2C%20your%20files%20are%20being%20processed.");
+}).RequireRateLimiting("PublicUploadEndpoints");
+
 app.MapPost("/api/uploads/stage-template-background", async (
     HttpContext context,
     ShareManager manager,
@@ -1314,6 +1581,9 @@ app.MapPost("/api/shares", async (
         DraftShareId: draftShareId,
         ShareToken: shareToken,
         Message: form["message"].ToString(),
+        SenderName: null,
+        SenderEmail: null,
+        SenderMessage: null,
         DownloadPassword: downloadPassword,
         ShowPreviews: showPreviews,
         ZipFileName: form["zipFileName"].ToString(),
@@ -1419,6 +1689,37 @@ static bool IsTruthy(string? raw)
 {
     var value = (raw ?? string.Empty).Trim().ToLowerInvariant();
     return value is "1" or "true" or "on" or "yes";
+}
+
+static bool IsValidEmailAddress(string? value)
+{
+    try
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        var parsed = new MailAddress(normalized);
+        return string.Equals(parsed.Address, normalized, StringComparison.OrdinalIgnoreCase);
+    }
+    catch
+    {
+        return false;
+    }
+}
+
+static bool TryResolveExpiryUtc(string expiryModeRaw, DateTime nowUtc, out DateTime? expiresAtUtc)
+{
+    var mode = (expiryModeRaw ?? string.Empty).Trim().ToLowerInvariant();
+    expiresAtUtc = mode switch
+    {
+        "1_hour" => nowUtc.AddHours(1),
+        "24_hours" => nowUtc.AddHours(24),
+        "7_days" => nowUtc.AddDays(7),
+        "30_days" => nowUtc.AddDays(30),
+        "1_year" => nowUtc.AddYears(1),
+        "indefinite" => null,
+        _ => null
+    };
+
+    return mode is "1_hour" or "24_hours" or "7_days" or "30_days" or "1_year" or "indefinite";
 }
 
 static bool TryNormalizeOptionalSharePassword(string? raw, out string? password)

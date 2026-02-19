@@ -49,3 +49,17 @@
     </form>
   </div>
 </section>
+
+<section id="upload-link-settings" class="mb-10 scroll-mt-24">
+  <div class="bg-white rounded-2xl border border-border p-6">
+    <h3 class="font-display text-xl mb-2">Upload link</h3>
+    <p class="text-sm text-ink-muted mb-4">Share this link so people can upload files directly to you.</p>
+    <div class="rounded-lg border border-border bg-cream p-3">
+      <p class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5">Public upload URL</p>
+      <p class="text-sm text-ink-light break-all font-mono">@Model.UploadIntakeUrl</p>
+    </div>
+    <form method="post" asp-page-handler="RegenerateUploadLink" class="mt-4 flex justify-end">
+      <button type="submit" class="px-5 py-2 bg-ink text-white text-sm font-medium rounded-lg hover:bg-ink/90 transition-colors">Regenerate link</button>
+    </form>
+  </div>
+</section>

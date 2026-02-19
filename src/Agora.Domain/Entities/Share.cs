@@ -22,6 +22,9 @@ public sealed class Share
     /// </summary>
     public string? DownloadPasswordHash { get; set; }
     public string? UploaderMessage { get; set; }
+    public string? SenderName { get; set; }
+    public string? SenderEmail { get; set; }
+    public string? SenderMessage { get; set; }
     public string NotifyMode { get; set; } = "none";
     public DateTime? ExpiresAtUtc { get; set; }
     public DateTime? FirstDownloadedAtUtc { get; set; }

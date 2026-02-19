@@ -25,6 +25,9 @@ public sealed class QueuedShareCreationJob(
         string DraftShareId,
         string ShareToken,
         string? Message,
+        string? SenderName,
+        string? SenderEmail,
+        string? SenderMessage,
         string? DownloadPassword,
         bool ShowPreviews,
         string? ZipFileName,
@@ -148,6 +151,9 @@ public sealed class QueuedShareCreationJob(
                 UploaderEmail = payload.UploaderEmail,
                 ShareToken = payload.ShareToken,
                 Message = payload.Message,
+                SenderName = payload.SenderName,
+                SenderEmail = payload.SenderEmail,
+                SenderMessage = payload.SenderMessage,
                 DownloadPassword = payload.DownloadPassword,
                 ShareExperienceType = shareExperienceType,
                 AccessMode = accessMode,
@@ -217,7 +223,7 @@ public sealed class QueuedShareCreationJob(
                     Preheader: "Your files finished processing and the share link is ready.",
                     Headline: "Your share link is ready",
                     IntroText: "Your upload has completed in the background.",
-                    DetailText: null,
+                    DetailText: BuildSenderDetails(payload),
                     ActionLabel: "Open share link",
                     ActionUrl: shareUrl,
                     SecondaryText: null),
@@ -275,5 +281,26 @@ public sealed class QueuedShareCreationJob(
         }
 
         return $"/s/{token}";
+    }
+
+    private static string? BuildSenderDetails(Payload payload)
+    {
+        var lines = new List<string>();
+        if (!string.IsNullOrWhiteSpace(payload.SenderName))
+        {
+            lines.Add($"Sender name: {payload.SenderName.Trim()}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(payload.SenderEmail))
+        {
+            lines.Add($"Sender email: {payload.SenderEmail.Trim()}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(payload.SenderMessage))
+        {
+            lines.Add($"Message: {payload.SenderMessage.Trim()}");
+        }
+
+        return lines.Count == 0 ? null : string.Join('\n', lines);
     }
 }

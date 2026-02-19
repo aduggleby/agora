@@ -21,6 +21,8 @@ public sealed class UserAccount
     public string DefaultNotifyMode { get; set; } = "once";
     public string DefaultExpiryMode { get; set; } = "7_days";
     public bool IsEnabled { get; set; } = true;
+    public string UploadToken { get; set; } = string.Empty;
+    public DateTime? UploadTokenUpdatedAtUtc { get; set; }
     public int FailedLoginCount { get; set; }
     public DateTime? LastFailedLoginAtUtc { get; set; }
     public DateTime? LockoutEndUtc { get; set; }

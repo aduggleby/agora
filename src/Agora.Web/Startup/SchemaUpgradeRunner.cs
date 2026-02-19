@@ -217,6 +217,60 @@ public static class SchemaUpgradeRunner
                     """ALTER TABLE "Shares" ADD COLUMN "ContentRootPath" TEXT NULL""",
                     cancellationToken);
             }
+
+            var hasSenderName = await SqliteColumnExistsAsync(db, "Shares", "SenderName", cancellationToken);
+            if (!hasSenderName)
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    """ALTER TABLE "Shares" ADD COLUMN "SenderName" TEXT NULL""",
+                    cancellationToken);
+            }
+
+            var hasSenderEmail = await SqliteColumnExistsAsync(db, "Shares", "SenderEmail", cancellationToken);
+            if (!hasSenderEmail)
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    """ALTER TABLE "Shares" ADD COLUMN "SenderEmail" TEXT NULL""",
+                    cancellationToken);
+            }
+
+            var hasSenderMessage = await SqliteColumnExistsAsync(db, "Shares", "SenderMessage", cancellationToken);
+            if (!hasSenderMessage)
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    """ALTER TABLE "Shares" ADD COLUMN "SenderMessage" TEXT NULL""",
+                    cancellationToken);
+            }
+
+            var hasUploadToken = await SqliteColumnExistsAsync(db, "Users", "UploadToken", cancellationToken);
+            if (!hasUploadToken)
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    """ALTER TABLE "Users" ADD COLUMN "UploadToken" TEXT NOT NULL DEFAULT ''""",
+                    cancellationToken);
+            }
+
+            var hasUploadTokenUpdatedAt = await SqliteColumnExistsAsync(db, "Users", "UploadTokenUpdatedAtUtc", cancellationToken);
+            if (!hasUploadTokenUpdatedAt)
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    """ALTER TABLE "Users" ADD COLUMN "UploadTokenUpdatedAtUtc" TEXT NULL""",
+                    cancellationToken);
+            }
+
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE "Users"
+                SET "UploadToken" = lower(hex(randomblob(16))),
+                    "UploadTokenUpdatedAtUtc" = CURRENT_TIMESTAMP
+                WHERE trim(coalesce("UploadToken", '')) = '';
+                """,
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS "IX_Users_UploadToken" ON "Users" ("UploadToken");
+                """,
+                cancellationToken);
     
             var hasShareFileStoredRelativePath = await SqliteColumnExistsAsync(db, "ShareFiles", "StoredRelativePath", cancellationToken);
             if (!hasShareFileStoredRelativePath)
@@ -441,6 +495,62 @@ public static class SchemaUpgradeRunner
                 IF COL_LENGTH('Shares', 'ContentRootPath') IS NULL
                 BEGIN
                   ALTER TABLE [Shares] ADD [ContentRootPath] nvarchar(400) NULL
+                END
+                """,
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                IF COL_LENGTH('Shares', 'SenderName') IS NULL
+                BEGIN
+                  ALTER TABLE [Shares] ADD [SenderName] nvarchar(200) NULL
+                END
+                """,
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                IF COL_LENGTH('Shares', 'SenderEmail') IS NULL
+                BEGIN
+                  ALTER TABLE [Shares] ADD [SenderEmail] nvarchar(320) NULL
+                END
+                """,
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                IF COL_LENGTH('Shares', 'SenderMessage') IS NULL
+                BEGIN
+                  ALTER TABLE [Shares] ADD [SenderMessage] nvarchar(max) NULL
+                END
+                """,
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                IF COL_LENGTH('Users', 'UploadToken') IS NULL
+                BEGIN
+                  ALTER TABLE [Users] ADD [UploadToken] nvarchar(120) NOT NULL CONSTRAINT [DF_Users_UploadToken] DEFAULT ''
+                END
+                """,
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                IF COL_LENGTH('Users', 'UploadTokenUpdatedAtUtc') IS NULL
+                BEGIN
+                  ALTER TABLE [Users] ADD [UploadTokenUpdatedAtUtc] datetime2 NULL
+                END
+                """,
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE [Users]
+                SET [UploadToken] = REPLACE(CONVERT(nvarchar(36), NEWID()), '-', ''),
+                    [UploadTokenUpdatedAtUtc] = SYSUTCDATETIME()
+                WHERE LTRIM(RTRIM(ISNULL([UploadToken], ''))) = '';
+                """,
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'[Users]') AND name = N'IX_Users_UploadToken')
+                BEGIN
+                  CREATE UNIQUE INDEX [IX_Users_UploadToken] ON [Users]([UploadToken]);
                 END
                 """,
                 cancellationToken);

@@ -25,6 +25,8 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
             builder.Property(x => x.UploaderEmail).HasMaxLength(320);
             builder.Property(x => x.ShareToken).HasMaxLength(120);
             builder.Property(x => x.NotifyMode).HasMaxLength(20);
+            builder.Property(x => x.SenderName).HasMaxLength(200);
+            builder.Property(x => x.SenderEmail).HasMaxLength(320);
             builder.Property(x => x.ZipDisplayName).HasMaxLength(255);
             builder.Property(x => x.ShareExperienceType).HasMaxLength(32);
             builder.Property(x => x.AccessMode).HasMaxLength(32);
@@ -62,7 +64,9 @@ public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : D
         {
             builder.HasKey(x => x.Id);
             builder.HasIndex(x => x.Email).IsUnique();
+            builder.HasIndex(x => x.UploadToken).IsUnique();
             builder.Property(x => x.Email).HasMaxLength(320);
+            builder.Property(x => x.UploadToken).HasMaxLength(120);
             builder.Property(x => x.PasswordHash).HasMaxLength(1000);
             builder.Property(x => x.Role).HasMaxLength(20);
             builder.Property(x => x.DefaultNotifyMode).HasMaxLength(20);

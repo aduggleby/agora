@@ -5,6 +5,9 @@ public sealed class CreateShareCommand
     public required string UploaderEmail { get; init; }
     public string? ShareToken { get; init; }
     public string? Message { get; init; }
+    public string? SenderName { get; init; }
+    public string? SenderEmail { get; init; }
+    public string? SenderMessage { get; init; }
     public string? DownloadPassword { get; init; }
     public string ShareExperienceType { get; init; } = "archive";
     public string AccessMode { get; init; } = "download_only";

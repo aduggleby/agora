@@ -62,6 +62,11 @@ public sealed class AuthService(
             user = existing;
             user.PasswordHash = PasswordHasher.Hash(password);
             user.IsEnabled = true;
+            if (string.IsNullOrWhiteSpace(user.UploadToken))
+            {
+                user.UploadToken = await GenerateUniqueUploadTokenAsync(cancellationToken);
+                user.UploadTokenUpdatedAtUtc = DateTime.UtcNow;
+            }
         }
         else
         {
@@ -76,6 +81,8 @@ public sealed class AuthService(
                 DefaultNotifyMode = "once",
                 DefaultExpiryMode = "7_days",
                 IsEnabled = true,
+                UploadToken = await GenerateUniqueUploadTokenAsync(cancellationToken),
+                UploadTokenUpdatedAtUtc = DateTime.UtcNow,
                 CreatedAtUtc = DateTime.UtcNow
             };
 
@@ -243,6 +250,12 @@ public sealed class AuthService(
                 existing.LockoutEndUtc = null;
                 changed = true;
             }
+            if (string.IsNullOrWhiteSpace(existing.UploadToken))
+            {
+                existing.UploadToken = await GenerateUniqueUploadTokenAsync(cancellationToken);
+                existing.UploadTokenUpdatedAtUtc = DateTime.UtcNow;
+                changed = true;
+            }
 
             if (changed)
             {
@@ -264,6 +277,8 @@ public sealed class AuthService(
             DefaultNotifyMode = "once",
             DefaultExpiryMode = "7_days",
             IsEnabled = true,
+            UploadToken = await GenerateUniqueUploadTokenAsync(cancellationToken),
+            UploadTokenUpdatedAtUtc = DateTime.UtcNow,
             CreatedAtUtc = DateTime.UtcNow
         };
 
@@ -356,6 +371,64 @@ public sealed class AuthService(
         db.Users.Remove(user);
         await db.SaveChangesAsync(cancellationToken);
         return true;
+    }
+
+    public async Task<UserAccount?> FindByUploadTokenAsync(string uploadToken, CancellationToken cancellationToken)
+    {
+        var normalizedToken = NormalizeUploadToken(uploadToken);
+        if (string.IsNullOrWhiteSpace(normalizedToken))
+        {
+            return null;
+        }
+
+        return await db.Users.SingleOrDefaultAsync(
+            x => x.UploadToken == normalizedToken && x.IsEnabled,
+            cancellationToken);
+    }
+
+    public async Task<string?> GetOrCreateUploadTokenAsync(string email, CancellationToken cancellationToken)
+    {
+        email = NormalizeEmail(email);
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return null;
+        }
+
+        var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
+        if (user is null)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(user.UploadToken))
+        {
+            return user.UploadToken;
+        }
+
+        user.UploadToken = await GenerateUniqueUploadTokenAsync(cancellationToken);
+        user.UploadTokenUpdatedAtUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+        return user.UploadToken;
+    }
+
+    public async Task<string?> RegenerateUploadTokenAsync(string email, CancellationToken cancellationToken)
+    {
+        email = NormalizeEmail(email);
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return null;
+        }
+
+        var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
+        if (user is null)
+        {
+            return null;
+        }
+
+        user.UploadToken = await GenerateUniqueUploadTokenAsync(cancellationToken);
+        user.UploadTokenUpdatedAtUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+        return user.UploadToken;
     }
 
     public async Task<bool> GetAllowRegistrationAsync(CancellationToken cancellationToken)
@@ -803,6 +876,11 @@ public sealed class AuthService(
         return (value ?? string.Empty).Trim().ToLowerInvariant();
     }
 
+    private static string NormalizeUploadToken(string value)
+    {
+        return (value ?? string.Empty).Trim();
+    }
+
     private Task QueueAuthEmailAsync(AuthEmailMessage message, CancellationToken cancellationToken)
     {
         if (backgroundJobs is null)
@@ -874,6 +952,21 @@ public sealed class AuthService(
     {
         var separator = baseUrl.Contains('?', StringComparison.Ordinal) ? "&" : "?";
         return $"{baseUrl}{separator}email={Uri.EscapeDataString(email)}&token={Uri.EscapeDataString(token)}";
+    }
+
+    private async Task<string> GenerateUniqueUploadTokenAsync(CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 32; attempt += 1)
+        {
+            var candidate = TokenCodec.GenerateAlphanumericToken(24);
+            var exists = await db.Users.AnyAsync(x => x.UploadToken == candidate, cancellationToken);
+            if (!exists)
+            {
+                return candidate;
+            }
+        }
+
+        throw new InvalidOperationException("Unable to generate a unique upload token right now.");
     }
 
     private static string IssueEmailConfirmationToken(UserAccount user, DateTime nowUtc)

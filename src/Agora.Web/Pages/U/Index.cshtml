@@ -1,0 +1,76 @@
+@page "/u/{token?}"
+@model Agora.Web.Pages.U.IndexModel
+@{
+  string FormatFileSize(long bytes)
+  {
+    if (bytes >= 1024L * 1024L * 1024L) return $"{bytes / (1024.0 * 1024.0 * 1024.0):F2} GB";
+    if (bytes >= 1024L * 1024L) return $"{bytes / (1024.0 * 1024.0):F2} MB";
+    if (bytes >= 1024L) return $"{bytes / 1024.0:F2} KB";
+    return $"{bytes} B";
+  }
+}
+
+@if (Model.IsInvalidToken)
+{
+  <section class="mb-10">
+    <div class="bg-white rounded-2xl border border-border p-6">
+      <h2 class="font-display text-3xl tracking-tight">Upload link unavailable</h2>
+      <p class="text-ink-muted text-sm mt-2">This upload link is invalid or no longer active.</p>
+    </div>
+  </section>
+}
+else
+{
+  <section class="mb-10">
+    <h2 class="font-display text-4xl tracking-tight mb-1">Send files</h2>
+    <p class="text-ink-muted text-sm mt-3 max-w-md">Share your files with @Model.RecipientEmail. We email them the link when processing is complete.</p>
+  </section>
+
+  <section class="mb-10">
+    <div class="bg-white rounded-2xl border border-border p-6">
+      <form action="/api/public-uploads/create-share" method="post" class="space-y-5" data-public-upload-form data-max-file-size-bytes="@Model.MaxFileSizeBytes" data-max-total-upload-bytes="@Model.MaxTotalUploadBytes" data-max-files-per-share="@Model.MaxFilesPerShare">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Your name</label>
+            <input name="senderName" required maxlength="200" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
+          </div>
+          <div>
+            <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Your email</label>
+            <input type="email" name="senderEmail" required maxlength="320" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
+          </div>
+        </div>
+
+        <div>
+          <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Message</label>
+          <textarea name="senderMessage" rows="4" maxlength="4000" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra resize-y" placeholder="Add context for your upload"></textarea>
+        </div>
+
+        <div>
+          <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Files</label>
+          <input type="file" name="files" multiple accept="*/*" class="sr-only" data-public-file-input />
+          <div class="rounded-lg border border-dashed border-border bg-cream p-5" data-public-dropzone>
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p class="text-sm text-ink-light">Select files and they upload immediately in the background.</p>
+                <p class="text-xs text-ink-muted mt-1">Max @Model.MaxFilesPerShare files, @FormatFileSize(Model.MaxFileSizeBytes) per file, @FormatFileSize(Model.MaxTotalUploadBytes) total.</p>
+              </div>
+              <button type="button" class="px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors" data-public-pick-files>Select files</button>
+            </div>
+            <p class="text-xs text-ink-muted mt-3" data-public-upload-status>No files uploaded yet.</p>
+            <div class="mt-4 hidden" data-public-upload-hidden></div>
+            <ul class="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2" data-public-upload-list></ul>
+          </div>
+        </div>
+
+        <input type="hidden" name="uploadToken" value="@Model.UploadToken" data-public-upload-token />
+        <input type="hidden" name="draftShareId" value="@Model.DraftShareId" data-public-draft-share-id />
+
+        <div class="flex justify-end">
+          <button type="submit" class="px-6 py-2.5 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed" data-public-submit disabled title="Upload at least one file first.">Send files</button>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <script src="/js/public-upload.js"></script>
+}
