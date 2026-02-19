@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.4] - 2026-02-19
+
+### Changed
+- Updated README and AGENTS documentation.
+
+## [0.9.3] - 2026-02-19
+
+### Added
+- Quick-share upload cancellation with immediate background cleanup of in-flight uploads.
+- Image lightbox on share pages with keyboard navigation, per-file download, and prev/next browsing.
+- Upload limits validation UI with per-file and total size enforcement.
+- OG image generation for share links (1200x630 social preview images).
+- PDF first-page image preview generation.
+- Preview generation runs as dedicated Hangfire jobs on a `previews` queue.
+- Adaptive share preview mode: image mosaic for image-only shares, file-by-file previews for mixed uploads.
+- Pending previews return a temporary placeholder image with retry-friendly UI.
+- Optional per-share download password with encrypted-at-rest ZIP storage.
+- Download notification emails include IP geolocation (`City, Country`) via `ipwho.is`.
+- Email templates include dark-mode-aware styling for `prefers-color-scheme`.
+- Auth emails are queued and sent asynchronously via Hangfire.
+- Share creation is queued in Hangfire with live SignalR progress streaming.
+- Share-created success screen supports reopening the Share Ready link.
+- Previous shares Details modal lists archived filenames and sizes.
+
+### Changed
+- Frontend scripts migrated from inline JS to TypeScript bundles (`src/Agora.Web/scripts/ts`).
+- Share delivery and storage architecture modularized (`IShareContentStore`, `IShareExperienceRenderer`).
+- Removed hosted single-page share experience in favor of adaptive preview rendering.
+- Removed security review artifacts (`SECURITY.md`, `SECURITY_CLAUDE.md`, `SECURITY_CODEX.md`) after issues were resolved.
+
+### Fixed
+- Serilog console sink added for development logging.
+
 ## [0.9.2] - 2026-02-17
 
 ### Changed

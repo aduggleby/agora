@@ -45,6 +45,7 @@ Open `http://127.0.0.1:18080`.
 - Optional `Show previews` mode auto-adapts recipient view: image mosaic for image-only uploads, and file-by-file preview for mixed uploads
 - Image lightbox on share pages with keyboard navigation, per-file download, and prev/next browsing
 - PDF files render a first-page image preview automatically
+- Share links include auto-generated OG images (1200x630) for social media and messaging previews
 - Download page designer supports configurable download card position (corners, edges, centered)
 - Pending previews return a temporary placeholder image and retry-friendly UI behavior
 
