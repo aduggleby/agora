@@ -111,7 +111,7 @@ Immutable-ish audit/event stream for downloads.
 
 ### `UserAccount`
 
-Authentication, confirmation, lockout, account defaults, and public upload token (`UploadToken`).
+Authentication, confirmation, lockout, account defaults, display name (`DisplayName`), and public upload token (`UploadToken`, customizable 2-64 character alphanumeric code).
 
 ### `AccountTemplate`
 
@@ -127,7 +127,7 @@ Mutable system-level configuration flags stored in DB (for example registration 
 
 Anonymous users can send files to a registered user through a personal upload link (`/u/{token}`).
 
-1. Each account has an `UploadToken` (generated at registration, regenerable from Settings).
+1. Each account has an `UploadToken` (generated at registration, customizable to a 2-64 character alphanumeric code from Settings).
 2. Visitor opens `/u/{token}`, which resolves the token to a `UserAccount`.
 3. Page renders an upload form with sender name, email, optional message, and file picker.
 4. Files are staged individually via `POST /api/public-uploads/stage` (same staging pipeline as authenticated uploads).
@@ -197,6 +197,8 @@ Gate checks consistently enforce:
 - login with lockout protection after repeated failures
 - forgot/reset password
 - email/password change confirmation workflows
+- display name management
+- upload token customization (user-chosen or auto-generated codes)
 - role and enable/disable admin operations
 
 Auth email delivery is queued through `AuthEmailJob` and `IEmailSender` implementation.
