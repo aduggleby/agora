@@ -8,6 +8,10 @@ Agora is an ASP.NET Core 10 file sharing service. Upload one or more files, gene
 | --- | --- | --- |
 | [![New share page](docs/screenshots/new-share-page.png)](docs/screenshots/new-share-page.png) | [![Download page](docs/screenshots/download-page.png)](docs/screenshots/download-page.png) | [![Download page editor](docs/screenshots/landing-page-editor.png)](docs/screenshots/landing-page-editor.png) |
 
+| Password Option | Account Password Settings | Gallery Option |
+| --- | --- | --- |
+| [![New share password option](docs/screenshots/new-share-password-option.png)](docs/screenshots/new-share-password-option.png) | [![Account password settings](docs/screenshots/account-password-settings.png)](docs/screenshots/account-password-settings.png) | [![New share gallery option](docs/screenshots/new-share-gallery-option.png)](docs/screenshots/new-share-gallery-option.png) |
+
 ## Quick Start (60s)
 
 ```bash
