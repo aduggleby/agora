@@ -57,6 +57,8 @@ public sealed class QueuedShareCreationJob(
     {
         var token = payload.ShareToken;
         performContext?.WriteLine($"Starting queued share creation for token '{token}'.");
+        performContext?.WriteLine(
+            $"Payload summary: uploader='{payload.UploaderEmail}', draftShareId='{payload.DraftShareId}', files={payload.UploadedFileIds.Count}, showPreviews={payload.ShowPreviews}, notifyMode='{payload.NotifyMode}', expiryMode='{payload.ExpiryMode}'.");
         var processing = statusStore.MarkProcessing(token);
         await broadcaster.BroadcastAsync(processing, ct);
 
@@ -71,6 +73,7 @@ public sealed class QueuedShareCreationJob(
                 payload.UploadedFileIds,
                 payload.DraftShareId,
                 ct);
+            performContext?.WriteLine($"Resolved {stagedUploads.Count} staged upload(s).");
 
             var validateDone = statusStore.UpdateStep(token, "validate", "completed");
             await broadcaster.BroadcastAsync(validateDone, ct);
@@ -95,6 +98,7 @@ public sealed class QueuedShareCreationJob(
 
                 totalBytes += staged.OriginalSizeBytes;
             }
+            performContext?.WriteLine($"Validated staged upload size. totalBytes={totalBytes} maxTotal={_options.MaxTotalUploadBytes}.");
 
             if (totalBytes > _options.MaxTotalUploadBytes)
             {
@@ -240,6 +244,11 @@ public sealed class QueuedShareCreationJob(
         {
             logger.LogError(ex, "Queued share creation failed for token {Token}", token);
             performContext?.WriteLine($"Queued share creation failed: {ex.Message}");
+            performContext?.WriteLine($"Exception type: {ex.GetType().FullName}");
+            if (ex.InnerException is not null)
+            {
+                performContext?.WriteLine($"Inner exception: {ex.InnerException.GetType().FullName}: {ex.InnerException.Message}");
+            }
             var failed = statusStore.MarkFailed(token, ex.Message);
             await broadcaster.BroadcastAsync(failed, ct);
         }
@@ -304,8 +313,18 @@ public sealed class QueuedShareCreationJob(
 
         for (var attempt = 0; attempt < 4; attempt += 1)
         {
+            var attemptNo = attempt + 1;
+            var attemptToken = requestedToken ?? "<auto>";
+            performContext?.WriteLine($"Create-share attempt {attemptNo}/4 using token '{attemptToken}'.");
             try
             {
+                if (requestedToken is not null)
+                {
+                    var before = await manager.GetShareTokenDiagnosticsAsync(requestedToken, ct);
+                    performContext?.WriteLine(
+                        $"Pre-attempt token diagnostics: exists={before.Exists} caseSensitiveMatches={before.CaseSensitiveMatchCount} caseInsensitiveMatches={before.CaseInsensitiveMatchCount} provider='{before.DatabaseProvider}' existingShareId='{before.ExistingShareId}' existingUploader='{before.ExistingShareUploader}'.");
+                }
+
                 return await manager.CreateShareAsync(new CreateShareCommand
                 {
                     UploaderEmail = payload.UploaderEmail,
@@ -337,13 +356,30 @@ public sealed class QueuedShareCreationJob(
                 ex.Message.Contains("already in use", StringComparison.OrdinalIgnoreCase) &&
                 attempt < 3)
             {
+                var collidedToken = requestedToken;
+                var conflict = await manager.GetShareTokenDiagnosticsAsync(collidedToken, ct);
                 requestedToken = await manager.GenerateUniqueShareTokenAsync(8, ct);
+                var replacement = await manager.GetShareTokenDiagnosticsAsync(requestedToken, ct);
                 performContext?.WriteLine($"Share token collision detected; retrying with token '{requestedToken}'.");
+                performContext?.WriteLine(
+                    $"Collision diagnostics for '{collidedToken}': exists={conflict.Exists} caseSensitiveMatches={conflict.CaseSensitiveMatchCount} caseInsensitiveMatches={conflict.CaseInsensitiveMatchCount} existingShareId='{conflict.ExistingShareId}' existingUploader='{conflict.ExistingShareUploader}' createdAtUtc='{conflict.ExistingShareCreatedAtUtc}'.");
+                performContext?.WriteLine(
+                    $"Replacement token diagnostics for '{requestedToken}': exists={replacement.Exists} caseSensitiveMatches={replacement.CaseSensitiveMatchCount} caseInsensitiveMatches={replacement.CaseInsensitiveMatchCount} provider='{replacement.DatabaseProvider}'.");
                 logger.LogWarning(
                     ex,
                     "Share token collision for queued token {Token}; retrying with {ReplacementToken}",
                     payload.ShareToken,
                     requestedToken);
+            }
+            catch (Exception ex)
+            {
+                performContext?.WriteLine($"Create-share attempt {attemptNo}/4 failed with non-collision error: {ex.GetType().FullName}: {ex.Message}");
+                if (ex.InnerException is not null)
+                {
+                    performContext?.WriteLine($"Inner exception: {ex.InnerException.GetType().FullName}: {ex.InnerException.Message}");
+                }
+
+                throw;
             }
         }
 

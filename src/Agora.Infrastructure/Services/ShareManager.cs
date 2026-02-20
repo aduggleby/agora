@@ -6,6 +6,8 @@ using Agora.Application.Utilities;
 using Agora.Domain.Entities;
 using Agora.Infrastructure.Persistence;
 using Hangfire;
+using Microsoft.Data.SqlClient;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
@@ -83,6 +85,16 @@ public sealed class ShareManager(
         string? ContainerPosition);
 
     private readonly AgoraOptions _options = options.Value;
+
+    public sealed record ShareTokenDiagnostics(
+        string Token,
+        bool Exists,
+        int CaseSensitiveMatchCount,
+        int CaseInsensitiveMatchCount,
+        Guid? ExistingShareId,
+        string? ExistingShareUploader,
+        DateTime? ExistingShareCreatedAtUtc,
+        string DatabaseProvider);
 
     public async Task<CreateShareResult> CreateShareAsync(CreateShareCommand command, CancellationToken cancellationToken)
     {
@@ -214,6 +226,14 @@ public sealed class ShareManager(
             }
             catch (DbUpdateException ex) when (IsShareTokenConflict(ex))
             {
+                logger.LogWarning(
+                    ex,
+                    "Share token conflict while creating share. token={Token} uploader={Uploader} requestedToken={RequestedToken} hasRequestedToken={HasRequestedToken} provider={Provider}",
+                    token,
+                    command.UploaderEmail,
+                    requestedToken ?? "<none>",
+                    hasRequestedToken,
+                    db.Database.ProviderName ?? "<unknown>");
                 db.Entry(share).State = EntityState.Detached;
                 if (hasRequestedToken)
                 {
@@ -354,6 +374,31 @@ public sealed class ShareManager(
         }
 
         throw new InvalidOperationException("Unable to generate a unique share token right now.");
+    }
+
+    public async Task<ShareTokenDiagnostics> GetShareTokenDiagnosticsAsync(string token, CancellationToken cancellationToken)
+    {
+        var normalized = (token ?? string.Empty).Trim();
+        var caseSensitiveMatchCount = await db.Shares.AsNoTracking()
+            .CountAsync(x => x.ShareToken == normalized, cancellationToken);
+        var lower = normalized.ToLowerInvariant();
+        var caseInsensitiveMatchCount = await db.Shares.AsNoTracking()
+            .CountAsync(x => x.ShareToken.ToLower() == lower, cancellationToken);
+        var first = await db.Shares.AsNoTracking()
+            .Where(x => x.ShareToken.ToLower() == lower)
+            .OrderBy(x => x.CreatedAtUtc)
+            .Select(x => new { x.Id, x.UploaderEmail, x.CreatedAtUtc })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return new ShareTokenDiagnostics(
+            Token: normalized,
+            Exists: caseSensitiveMatchCount > 0 || caseInsensitiveMatchCount > 0,
+            CaseSensitiveMatchCount: caseSensitiveMatchCount,
+            CaseInsensitiveMatchCount: caseInsensitiveMatchCount,
+            ExistingShareId: first?.Id,
+            ExistingShareUploader: first?.UploaderEmail,
+            ExistingShareCreatedAtUtc: first?.CreatedAtUtc,
+            DatabaseProvider: db.Database.ProviderName ?? "<unknown>");
     }
 
     public async Task DeleteShareFilesAsync(Guid shareId, CancellationToken cancellationToken)
@@ -1222,8 +1267,23 @@ public sealed class ShareManager(
     private static bool IsShareTokenConflict(DbUpdateException ex)
     {
         var text = ex.ToString();
-        return text.Contains("ShareToken", StringComparison.OrdinalIgnoreCase) ||
-               text.Contains("IX_Shares_ShareToken", StringComparison.OrdinalIgnoreCase);
+        if (ex.InnerException is SqlException sqlEx &&
+            (sqlEx.Number == 2601 || sqlEx.Number == 2627) &&
+            text.Contains("IX_Shares_ShareToken", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (ex.InnerException is SqliteException sqliteEx &&
+            sqliteEx.SqliteErrorCode == 19 &&
+            (text.Contains("IX_Shares_ShareToken", StringComparison.OrdinalIgnoreCase) ||
+             text.Contains("UNIQUE constraint failed: Shares.ShareToken", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        return text.Contains("IX_Shares_ShareToken", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("UNIQUE constraint failed: Shares.ShareToken", StringComparison.OrdinalIgnoreCase);
     }
 
     private string CopyTemplateBackgroundToShareDirectory(UploadSourceFile backgroundFile, string zipRelativePath)
