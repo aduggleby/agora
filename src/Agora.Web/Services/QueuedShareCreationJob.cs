@@ -206,17 +206,8 @@ public sealed class QueuedShareCreationJob(
             try
             {
                 var shareUrl = BuildShareUrl(result.Token);
-                await emailSender.SendAuthEmailAsync(new AuthEmailMessage(
-                    To: payload.UploaderEmail,
-                    Subject: "Your share link is ready",
-                    Preheader: "Your files finished processing and the share link is ready.",
-                    Headline: "Your share link is ready",
-                    IntroText: "Your upload has completed in the background.",
-                    DetailText: BuildSenderDetails(payload),
-                    ActionLabel: "Open share link",
-                    ActionUrl: shareUrl,
-                    SecondaryText: null),
-                    ct);
+                var email = BuildCompletionEmail(payload, shareUrl);
+                await emailSender.SendAuthEmailAsync(email, ct);
 
                 var notifyDone = statusStore.UpdateStep(token, "notify_uploader", "completed");
                 performContext?.WriteLine("Ready-link email sent.");
@@ -296,6 +287,66 @@ public sealed class QueuedShareCreationJob(
         }
 
         return lines.Count == 0 ? null : string.Join('\n', lines);
+    }
+
+    private static AuthEmailMessage BuildCompletionEmail(Payload payload, string shareUrl)
+    {
+        var senderIdentity = BuildSenderIdentity(payload);
+        var senderMessage = (payload.SenderMessage ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(senderIdentity))
+        {
+            var onBehalfOf = $"Agora on behalf of {senderIdentity}";
+            var intro = !string.IsNullOrWhiteSpace(senderMessage)
+                ? "The sender included this message:"
+                : "The upload was processed and the files are ready to open.";
+            var detail = !string.IsNullOrWhiteSpace(senderMessage)
+                ? senderMessage
+                : "No message was included.";
+            return new AuthEmailMessage(
+                To: payload.UploaderEmail,
+                Subject: "Files were sent to you and processed",
+                Preheader: "A sender uploaded files for you and processing is complete.",
+                Headline: "New files were sent to you",
+                IntroText: intro,
+                DetailText: detail,
+                ActionLabel: "Open share link",
+                ActionUrl: shareUrl,
+                SecondaryText: $"{onBehalfOf}. The upload has completed successfully.",
+                FromDisplayNameOverride: onBehalfOf);
+        }
+
+        return new AuthEmailMessage(
+            To: payload.UploaderEmail,
+            Subject: "Your share link is ready",
+            Preheader: "Your files finished processing and the share link is ready.",
+            Headline: "Your share link is ready",
+            IntroText: "Your upload has completed in the background.",
+            DetailText: BuildSenderDetails(payload),
+            ActionLabel: "Open share link",
+            ActionUrl: shareUrl,
+            SecondaryText: null);
+    }
+
+    private static string BuildSenderIdentity(Payload payload)
+    {
+        var senderName = (payload.SenderName ?? string.Empty).Trim();
+        var senderEmail = (payload.SenderEmail ?? string.Empty).Trim();
+        if (senderName.Length > 0 && senderEmail.Length > 0)
+        {
+            return $"{senderName} ({senderEmail})";
+        }
+
+        if (senderName.Length > 0)
+        {
+            return senderName;
+        }
+
+        if (senderEmail.Length > 0)
+        {
+            return senderEmail;
+        }
+
+        return string.Empty;
     }
 
     private async Task<CreateShareResult> CreateShareWithRetryAsync(

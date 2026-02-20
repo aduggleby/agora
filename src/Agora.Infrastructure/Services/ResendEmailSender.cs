@@ -25,10 +25,15 @@ public sealed class ResendEmailSender(
     public async Task SendAuthEmailAsync(AuthEmailMessage message, CancellationToken cancellationToken)
     {
         var html = await templateRenderer.RenderAuthEmailHtmlAsync(message, cancellationToken);
-        await SendHtmlEmailAsync(message.To, message.Subject, html, cancellationToken);
+        await SendHtmlEmailAsync(message.To, message.Subject, html, cancellationToken, message.FromDisplayNameOverride);
     }
 
-    private async Task SendHtmlEmailAsync(string to, string subject, string html, CancellationToken cancellationToken)
+    private async Task SendHtmlEmailAsync(
+        string to,
+        string subject,
+        string html,
+        CancellationToken cancellationToken,
+        string? fromDisplayNameOverride = null)
     {
         if (string.IsNullOrWhiteSpace(_options.ApiToken))
         {
@@ -41,7 +46,7 @@ public sealed class ResendEmailSender(
 
         var body = new
         {
-            from = BuildFromValue(),
+            from = BuildFromValue(fromDisplayNameOverride),
             to = new[] { to },
             subject,
             html
@@ -56,7 +61,7 @@ public sealed class ResendEmailSender(
         }
     }
 
-    private string BuildFromValue()
+    private string BuildFromValue(string? fromDisplayNameOverride)
     {
         var address = (_options.FromAddress ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(address))
@@ -64,7 +69,7 @@ public sealed class ResendEmailSender(
             return "no-reply@example.com";
         }
 
-        var displayName = (_options.FromDisplayName ?? string.Empty).Trim();
+        var displayName = (fromDisplayNameOverride ?? _options.FromDisplayName ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(displayName))
         {
             return address;

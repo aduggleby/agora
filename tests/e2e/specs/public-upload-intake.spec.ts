@@ -116,7 +116,7 @@ async function waitForReadyEmail(to: string, startedAt: number): Promise<FileSys
       .sort((a, b) => b.stats.mtimeMs - a.stats.mtimeMs)
       .find((entry) =>
         entry.payload.to === to
-        && entry.payload.subject === 'Your share link is ready'
+        && entry.payload.subject === 'Files were sent to you and processed'
         && entry.payload.kind === 'auth');
 
     if (match) {
@@ -224,7 +224,7 @@ test.describe('Public upload intake', () => {
 
     await anonPage.locator('[data-public-submit]').click();
     await anonPage.waitForURL(/\/u\/[A-Za-z0-9]{2,64}\?submitted=1/);
-    await expect(anonPage.getByRole('heading', { name: 'Upload scheduled successfully' })).toBeVisible();
+    await expect(anonPage.getByRole('heading', { name: 'Upload is being processed' })).toBeVisible();
     await expect(anonPage.locator('[data-public-upload-confetti-canvas]')).toBeVisible();
     await expect(anonPage.locator('[data-public-pick-files]')).toHaveCount(0);
     await expect(anonPage.locator('[data-public-submit]')).toHaveCount(0);
@@ -233,9 +233,8 @@ test.describe('Public upload intake', () => {
     const html = readyEmail.html || '';
     const actionUrl = readyEmail.metadata?.ActionUrl || '';
 
-    expect(html).toContain(`Sender name: ${senderName}`);
-    expect(html).toContain(`Sender email: ${senderEmail}`);
-    expect(html).toContain(`Message: ${senderMessage}`);
+    expect(html).toContain(senderMessage);
+    expect(html).toContain(`Agora on behalf of ${senderName} (${senderEmail})`);
     expect(actionUrl).toContain('/s/');
 
     const resolvedActionUrl = new URL(actionUrl, anonPage.url()).toString();
@@ -328,9 +327,8 @@ test.describe('Public upload intake', () => {
     const html = readyEmail.html || '';
     const actionUrl = readyEmail.metadata?.ActionUrl || '';
 
-    expect(html).toContain(`Sender name: ${senderName}`);
-    expect(html).toContain(`Sender email: ${senderEmail}`);
-    expect(html).toContain(`Message: ${senderMessage}`);
+    expect(html).toContain(senderMessage);
+    expect(html).toContain(`Agora on behalf of ${senderName} (${senderEmail})`);
     expect(actionUrl).toContain('/s/');
 
     const shareToken = extractShareTokenFromActionUrl(actionUrl);

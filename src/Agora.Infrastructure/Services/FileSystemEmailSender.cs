@@ -47,7 +47,8 @@ public sealed class FileSystemEmailSender(
                 message.Preheader,
                 message.Headline,
                 message.ActionLabel,
-                message.ActionUrl
+                message.ActionUrl,
+                message.FromDisplayNameOverride
             },
             html: html,
             cancellationToken: cancellationToken);

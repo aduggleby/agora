@@ -25,7 +25,8 @@ public sealed record AuthEmailMessage(
     string? DetailText,
     string? ActionLabel,
     string? ActionUrl,
-    string? SecondaryText);
+    string? SecondaryText,
+    string? FromDisplayNameOverride = null);
 
 public sealed class EmailSenderOptions
 {

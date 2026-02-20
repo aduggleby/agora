@@ -11,6 +11,7 @@ Agora is an ASP.NET Core 10 file sharing app for sending files with branded down
 - Expiring or indefinite share links
 - Download notifications (`none`, `once`, `every_time`)
 - Public upload links: let anyone send files to your account via a tokenized URL with a customizable 2-64 character alphanumeric code, with a dedicated success screen after submit
+- Public-upload completion emails use a dedicated "files were sent to you" template and include an on-behalf-of sender identity plus the sender message
 - Account display name settings for upload pages and account menu
 - Share history for signed-in uploaders
 - Email confirmation, password reset, and account security flows
