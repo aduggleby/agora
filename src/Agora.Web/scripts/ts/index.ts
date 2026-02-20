@@ -82,7 +82,16 @@ type ShareFileLike = Record<string, unknown>;
       const shareName = button.getAttribute('data-share-name') ?? '';
       const senderName = (button.getAttribute('data-share-sender-name') ?? '').trim();
       const senderEmail = (button.getAttribute('data-share-sender-email') ?? '').trim();
-      const senderMessage = (button.getAttribute('data-share-sender-message') ?? '').trim();
+      const senderMessageRaw = button.getAttribute('data-share-sender-message') ?? '';
+      let senderMessage = '';
+      if (senderMessageRaw.length > 0) {
+        try {
+          const parsed = JSON.parse(senderMessageRaw) as unknown;
+          senderMessage = typeof parsed === 'string' ? parsed : '';
+        } catch {
+          senderMessage = senderMessageRaw;
+        }
+      }
       const raw = button.getAttribute('data-share-files') ?? '[]';
 
       let files: ShareFileLike[] = [];
@@ -135,7 +144,7 @@ type ShareFileLike = Record<string, unknown>;
         senderEmailNode.textContent = senderEmail.length > 0 ? `Sender email: ${senderEmail}` : '';
       }
       if (senderMessageNode) {
-        senderMessageNode.textContent = senderMessage.length > 0 ? `Message:\n${senderMessage}` : '';
+        senderMessageNode.textContent = senderMessage.trim().length > 0 ? `Message:\n${senderMessage}` : '';
       }
       dialog.showModal();
     });

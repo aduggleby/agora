@@ -146,7 +146,7 @@
                         data-share-files='@filesJson'
                         data-share-sender-name="@share.SenderName"
                         data-share-sender-email="@share.SenderEmail"
-                        data-share-sender-message="@share.SenderMessage">@share.FileCount file(s) - @size</button>
+                        data-share-sender-message='@JsonSerializer.Serialize(share.SenderMessage ?? string.Empty)'>@share.FileCount file(s) - @size</button>
               </td>
               <td class="px-4 py-3"><span class="text-xs text-ink-muted" data-local-datetime="@share.CreatedAtUtc.ToString("O")"></span></td>
               <td class="px-4 py-3 text-right space-x-2">
