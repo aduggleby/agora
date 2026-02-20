@@ -15,6 +15,8 @@ Agora is an ASP.NET Core 10 file sharing app for sending files with branded down
 - Share history for signed-in uploaders
 - Email confirmation, password reset, and account security flows
 - Admin controls for system defaults
+- Quick-share drag-and-drop from the dashboard with cancel support and inline limit display
+- Image lightbox viewer on gallery pages with keyboard navigation
 - Mobile-friendly public share pages
 
 ## Screenshots
