@@ -41,7 +41,7 @@ Application contracts, value models, and cross-layer utilities.
 Persistence and external-integration implementations.
 
 - `Persistence/AgoraDbContext.cs`: EF Core model and mappings.
-- `Persistence/Migrations/*`: schema history and migration steps.
+- `Migrations/*`: schema history and migration steps.
 - `Services/ShareManager.cs`: core share domain workflow orchestrator.
 - `Services/ShareContentStore.cs`: file storage persistence/path safety.
 - `Services/*Email*`: notification and auth email delivery adapters.
