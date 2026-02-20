@@ -310,6 +310,7 @@ Frontend behavior of note:
 - share creation status polling + SignalR updates
 - preview availability polling/retry logic
 - progressive enhancement for file browser/gallery experiences
+- dashboard splits shares into "Own" and "Received" sections; received shares (identified by non-empty `SenderEmail`) display sender name, email, and message
 - quick-share drag-and-drop on dashboard (`quick-share-dropzone.ts`): stages files, enforces client-side limits (max files, per-file size, total size), supports cancel mid-upload
 - upload limits display: dropzone shows configured limits inline from server-rendered `data-*` attributes (`upload-limits.ts`)
 - image lightbox (`lightbox.ts`): full-screen overlay for gallery images with keyboard navigation (Escape to close, arrow keys to navigate), per-image download link
