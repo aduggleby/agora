@@ -150,7 +150,7 @@ Anonymous users can send files to a registered user through a personal upload li
    - copies template background to share-specific location when needed
    - creates `Share` row + `ShareFile` rows, enforcing unique token
 5. Job updates status (`ShareCreationStatusStore`) and broadcasts over SignalR (`ShareProgressBroadcaster`).
-6. Job optionally queues preview generation and sends “share ready” email. For public-upload shares, the email uses a “files were sent to you” template with a from-name override (“Agora on behalf of {sender}”) and includes the sender's message.
+6. Job optionally queues preview generation and sends “share ready” email. For public-upload shares, the email uses a “files were sent to you” template with a from-name override (“{configured display name} on behalf of {sender}”) and includes the sender's message. The display name comes from the email provider's `FromDisplayName` setting.
 
 ## 5.2 Public Recipient Access Flow
 
