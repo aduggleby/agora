@@ -750,6 +750,45 @@ app.MapPost("/shares/{id:guid}/delete", async (Guid id, HttpContext context, Sha
     return Results.Redirect(ok ? "/?msg=Share%20deleted" : "/?msg=Unable%20to%20delete%20share");
 }).RequireAuthorization();
 
+app.MapPost("/shares/delete-batch", async (HttpContext context, ShareManager manager, HttpRequest request, CancellationToken ct) =>
+{
+    var email = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+    if (string.IsNullOrWhiteSpace(email))
+    {
+        return Results.Unauthorized();
+    }
+
+    if (!request.HasFormContentType)
+    {
+        return Results.Redirect("/?msg=No%20shares%20selected");
+    }
+
+    var form = await request.ReadFormAsync(ct);
+    var shareIds = form["shareIds"]
+        .Select(value => value?.Trim())
+        .Where(value => !string.IsNullOrWhiteSpace(value))
+        .Select(value => Guid.TryParse(value, out var parsed) ? parsed : Guid.Empty)
+        .Where(value => value != Guid.Empty)
+        .Distinct()
+        .ToArray();
+
+    if (shareIds.Length == 0)
+    {
+        return Results.Redirect("/?msg=No%20shares%20selected");
+    }
+
+    var deleted = 0;
+    foreach (var shareId in shareIds)
+    {
+        if (await manager.DeleteShareAsync(shareId, email, ct))
+        {
+            deleted += 1;
+        }
+    }
+
+    return Results.Redirect($"/?msg={Uri.EscapeDataString($"Deleted {deleted} share(s)")}");
+}).RequireAuthorization();
+
 app.MapPost("/shares/{id:guid}/reenable", async (Guid id, HttpContext context, ShareManager manager, CancellationToken ct) =>
 {
     var email = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
@@ -1259,12 +1298,8 @@ app.MapPost("/api/public-uploads/create-share", async (
             shareToken = e2eShareTokenOverride;
         }
     }
-    var expiryModeRaw = await authService.GetDefaultExpiryModeAsync(user.Email, ct);
-    if (!TryResolveExpiryUtc(expiryModeRaw, DateTime.UtcNow, out var expiresAtUtc))
-    {
-        expiresAtUtc = DateTime.UtcNow.AddDays(7);
-        expiryModeRaw = "7_days";
-    }
+    var expiryModeRaw = "indefinite";
+    DateTime? expiresAtUtc = null;
 
     var notifyMode = await authService.GetDefaultNotifyModeAsync(user.Email, ct);
     if (notifyMode is not ("none" or "once" or "every_time"))
@@ -1761,23 +1796,6 @@ static bool IsValidEmailAddress(string? value)
     {
         return false;
     }
-}
-
-static bool TryResolveExpiryUtc(string expiryModeRaw, DateTime nowUtc, out DateTime? expiresAtUtc)
-{
-    var mode = (expiryModeRaw ?? string.Empty).Trim().ToLowerInvariant();
-    expiresAtUtc = mode switch
-    {
-        "1_hour" => nowUtc.AddHours(1),
-        "24_hours" => nowUtc.AddHours(24),
-        "7_days" => nowUtc.AddDays(7),
-        "30_days" => nowUtc.AddDays(30),
-        "1_year" => nowUtc.AddYears(1),
-        "indefinite" => null,
-        _ => null
-    };
-
-    return mode is "1_hour" or "24_hours" or "7_days" or "30_days" or "1_year" or "indefinite";
 }
 
 static bool TryNormalizeOptionalSharePassword(string? raw, out string? password)

@@ -48,6 +48,9 @@ type ShareFileLike = Record<string, unknown>;
   if (!dialog) return;
 
   const nameNode = dialog.querySelector<HTMLElement>('[data-share-details-name]');
+  const senderNameNode = dialog.querySelector<HTMLElement>('[data-share-details-sender-name]');
+  const senderEmailNode = dialog.querySelector<HTMLElement>('[data-share-details-sender-email]');
+  const senderMessageNode = dialog.querySelector<HTMLElement>('[data-share-details-sender-message]');
   const listNode = dialog.querySelector<HTMLElement>('[data-share-details-list]');
   const closeButton = dialog.querySelector<HTMLButtonElement>('[data-share-details-close]');
   if (!listNode) return;
@@ -77,6 +80,9 @@ type ShareFileLike = Record<string, unknown>;
   document.querySelectorAll<HTMLElement>('[data-share-details-trigger]').forEach((button) => {
     button.addEventListener('click', () => {
       const shareName = button.getAttribute('data-share-name') ?? '';
+      const senderName = (button.getAttribute('data-share-sender-name') ?? '').trim();
+      const senderEmail = (button.getAttribute('data-share-sender-email') ?? '').trim();
+      const senderMessage = (button.getAttribute('data-share-sender-message') ?? '').trim();
       const raw = button.getAttribute('data-share-files') ?? '[]';
 
       let files: ShareFileLike[] = [];
@@ -122,11 +128,51 @@ type ShareFileLike = Record<string, unknown>;
       if (nameNode) {
         nameNode.textContent = shareName;
       }
+      if (senderNameNode) {
+        senderNameNode.textContent = senderName.length > 0 ? `Sender name: ${senderName}` : '';
+      }
+      if (senderEmailNode) {
+        senderEmailNode.textContent = senderEmail.length > 0 ? `Sender email: ${senderEmail}` : '';
+      }
+      if (senderMessageNode) {
+        senderMessageNode.textContent = senderMessage.length > 0 ? `Message:\n${senderMessage}` : '';
+      }
       dialog.showModal();
     });
   });
 
   closeButton?.addEventListener('click', () => dialog.close());
+})();
+
+(() => {
+  const selectAll = document.querySelector<HTMLInputElement>('[data-received-select-all]');
+  if (!selectAll) return;
+
+  const rowCheckboxes = () => Array.from(document.querySelectorAll<HTMLInputElement>('[data-received-select]'));
+  const syncSelectAllState = (): void => {
+    const checkboxes = rowCheckboxes();
+    if (checkboxes.length === 0) {
+      selectAll.checked = false;
+      selectAll.indeterminate = false;
+      return;
+    }
+
+    const checkedCount = checkboxes.filter((checkbox) => checkbox.checked).length;
+    selectAll.checked = checkedCount === checkboxes.length;
+    selectAll.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
+  };
+
+  selectAll.addEventListener('change', () => {
+    const shouldCheck = selectAll.checked;
+    rowCheckboxes().forEach((checkbox) => {
+      checkbox.checked = shouldCheck;
+    });
+    syncSelectAllState();
+  });
+
+  rowCheckboxes().forEach((checkbox) => {
+    checkbox.addEventListener('change', syncSelectAllState);
+  });
 })();
 
 (() => {

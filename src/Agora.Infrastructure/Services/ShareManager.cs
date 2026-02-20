@@ -40,6 +40,9 @@ public sealed class ShareManager(
         DateTime CreatedAtUtc,
         DateTime? ExpiresAtUtc,
         DateTime? DeletedAtUtc,
+        string? SenderName,
+        string? SenderEmail,
+        string? SenderMessage,
         IReadOnlyList<ShareArchiveFileSummary> Files);
 
     public sealed record DraftTemplateState(
@@ -279,6 +282,9 @@ public sealed class ShareManager(
                 x.CreatedAtUtc,
                 x.ExpiresAtUtc,
                 x.DeletedAtUtc,
+                x.SenderName,
+                x.SenderEmail,
+                x.SenderMessage,
                 x.Files
                     .Select(file => new ShareArchiveFileSummary(
                         file.OriginalFilename,

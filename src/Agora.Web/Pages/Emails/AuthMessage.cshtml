@@ -8,6 +8,21 @@
         ViewData["EmailBrand"] = actionUri.Host;
     }
 }
+@functions {
+    private static string RenderMultiline(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        var encoded = System.Net.WebUtility.HtmlEncode(value);
+        return encoded
+            .Replace("\r\n", "<br />", StringComparison.Ordinal)
+            .Replace("\n", "<br />", StringComparison.Ordinal)
+            .Replace("\r", "<br />", StringComparison.Ordinal);
+    }
+}
 
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
   <tr><td style="height:30px;font-size:1px;line-height:1px;">&nbsp;</td></tr>
@@ -34,7 +49,7 @@
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
   <tr>
     <td class="email-value email-surface email-border" style="padding:20px 22px;font-size:14px;line-height:1.65;color:#1a1614;background-color:#F7F4EE;border:1px solid #E8E2D8;border-radius:10px;white-space:pre-wrap;word-break:break-word;">
-      @Model.DetailText
+      @Html.Raw(RenderMultiline(Model.DetailText))
     </td>
   </tr>
 </table>

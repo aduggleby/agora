@@ -12,7 +12,8 @@ public class IndexModel(ShareManager manager, IOptions<AgoraOptions> options) : 
 {
     private readonly AgoraOptions _options = options.Value;
 
-    public List<ShareManager.UserShareSummary> Shares { get; private set; } = [];
+    public List<ShareManager.UserShareSummary> OwnShares { get; private set; } = [];
+    public List<ShareManager.UserShareSummary> ReceivedShares { get; private set; } = [];
     public bool IsAdmin { get; private set; }
     public string QuickDraftShareId { get; private set; } = string.Empty;
     public long MaxFileSizeBytes => _options.MaxFileSizeBytes;
@@ -23,8 +24,14 @@ public class IndexModel(ShareManager manager, IOptions<AgoraOptions> options) : 
     {
         var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
         IsAdmin = User.IsInRole("admin");
-        Shares = (await manager.ListRecentSharesForUploaderAsync(email, 20, ct))
+        var shares = (await manager.ListRecentSharesForUploaderAsync(email, 100, ct))
             .OrderByDescending(x => x.CreatedAtUtc)
+            .ToList();
+        ReceivedShares = shares
+            .Where(x => !string.IsNullOrWhiteSpace(x.SenderEmail))
+            .ToList();
+        OwnShares = shares
+            .Where(x => string.IsNullOrWhiteSpace(x.SenderEmail))
             .ToList();
         QuickDraftShareId = await manager.EnsureDraftShareAsync(email, null, ct);
 

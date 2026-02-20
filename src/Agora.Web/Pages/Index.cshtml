@@ -30,13 +30,15 @@
   </div>
 </section>
 
-@if (Model.Shares.Count > 0)
+@if (Model.OwnShares.Count > 0 || Model.ReceivedShares.Count > 0)
 {
-<section>
+@if (Model.OwnShares.Count > 0)
+{
+<section class="mb-8">
   <div class="bg-white rounded-2xl border border-border overflow-hidden">
     <div class="px-5 py-3 border-b border-border bg-cream-dark/50 flex items-center justify-between">
       <h2 class="font-display text-xl">Previous shares</h2>
-      <span class="text-xs text-ink-muted">@Model.Shares.Count shown</span>
+      <span class="text-xs text-ink-muted">@Model.OwnShares.Count shown</span>
     </div>
     <table class="w-full">
       <thead>
@@ -51,7 +53,7 @@
         </tr>
       </thead>
       <tbody>
-        @foreach (var share in Model.Shares)
+        @foreach (var share in Model.OwnShares)
         {
           var isExpired = share.ExpiresAtUtc is not null && share.ExpiresAtUtc <= nowUtc;
           var state = share.DeletedAtUtc is not null ? "Deleted" : isExpired ? "Expired" : "Active";
@@ -97,6 +99,73 @@
   </div>
 </section>
 }
+
+@if (Model.ReceivedShares.Count > 0)
+{
+<section>
+  <div class="bg-white rounded-2xl border border-border overflow-hidden">
+    <form method="post" action="/shares/delete-batch">
+      <div class="px-5 py-3 border-b border-border bg-cream-dark/50 flex items-center justify-between gap-4">
+        <div>
+          <h2 class="font-display text-xl">Files sent to me</h2>
+          <p class="text-xs text-ink-muted mt-1">These uploads do not expire automatically. Delete when you no longer need them.</p>
+        </div>
+        <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded-md border border-danger/50 text-danger hover:bg-danger-wash" title="Select at least one row to delete.">Delete selected</button>
+      </div>
+      <table class="w-full">
+        <thead>
+          <tr class="text-xs font-medium text-ink-muted uppercase tracking-wider border-b border-border">
+            <th class="text-left px-4 py-2 w-10">
+              <input type="checkbox" data-received-select-all aria-label="Select all received files" />
+            </th>
+            <th class="text-left px-4 py-2">Archive</th>
+            <th class="text-left px-4 py-2">Sender</th>
+            <th class="text-left px-4 py-2">Email</th>
+            <th class="text-left px-4 py-2">Details</th>
+            <th class="text-left px-4 py-2">Created</th>
+            <th class="text-right px-4 py-2">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          @foreach (var share in Model.ReceivedShares)
+          {
+            var size = share.ZipSizeBytes >= 1024 * 1024 ? $"{share.ZipSizeBytes / (1024.0 * 1024.0):F1} MB" : $"{share.ZipSizeBytes / 1024.0:F0} KB";
+            var filesJson = JsonSerializer.Serialize(share.Files);
+            <tr class="border-b border-border/60 hover:bg-cream-dark/40 transition-colors">
+              <td class="px-4 py-3">
+                <input type="checkbox" name="shareIds" value="@share.ShareId" data-received-select />
+              </td>
+              <td class="px-4 py-3 text-sm">@share.ZipDisplayName</td>
+              <td class="px-4 py-3 text-xs text-ink-muted">@(string.IsNullOrWhiteSpace(share.SenderName) ? "-" : share.SenderName)</td>
+              <td class="px-4 py-3 text-xs text-ink-muted">@(string.IsNullOrWhiteSpace(share.SenderEmail) ? "-" : share.SenderEmail)</td>
+              <td class="px-4 py-3 text-xs text-ink-muted">
+                <button type="button"
+                        class="text-xs text-terra hover:underline"
+                        data-share-details-trigger
+                        data-share-name="@share.ZipDisplayName"
+                        data-share-files='@filesJson'
+                        data-share-sender-name="@share.SenderName"
+                        data-share-sender-email="@share.SenderEmail"
+                        data-share-sender-message="@share.SenderMessage">@share.FileCount file(s) - @size</button>
+              </td>
+              <td class="px-4 py-3"><span class="text-xs text-ink-muted" data-local-datetime="@share.CreatedAtUtc.ToString("O")"></span></td>
+              <td class="px-4 py-3 text-right space-x-2">
+                <form method="post" action="/shares/@share.ShareId/show-link" class="inline">
+                  <button type="submit" class="text-xs text-terra hover:underline">Show link</button>
+                </form>
+                <form method="post" action="/shares/@share.ShareId/delete" class="inline" data-share-delete-form data-share-name="@share.ZipDisplayName">
+                  <button type="button" class="text-xs text-danger hover:underline" data-share-delete-trigger>Delete</button>
+                </form>
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </form>
+  </div>
+</section>
+}
+}
 else
 {
 <section class="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -139,6 +208,11 @@ else
   <form method="dialog" class="p-5">
     <h3 class="font-display text-2xl tracking-tight">Share details</h3>
     <p class="text-sm text-ink-light mt-2" data-share-details-name></p>
+    <div class="mt-2 space-y-1 text-xs text-ink-muted">
+      <p data-share-details-sender-name></p>
+      <p data-share-details-sender-email></p>
+      <p class="whitespace-pre-wrap" data-share-details-sender-message></p>
+    </div>
     <div class="mt-4 rounded-lg border border-border overflow-hidden">
       <table class="w-full">
         <thead>
