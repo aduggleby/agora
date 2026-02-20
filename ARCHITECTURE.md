@@ -26,7 +26,7 @@ Presentation and runtime composition layer.
 - `Endpoints/PublicShareEndpoints.cs`: public recipient API surface (`/s/{token}/...`).
 - `Services/*`: UI/runtime services (preview generation orchestration, rendering strategies, progress broadcast, OG image generation).
 - `Hubs/ShareProgressHub.cs`: SignalR hub for real-time queued share status.
-- `Startup/SchemaUpgradeRunner.cs`: post-migration compatibility upgrades.
+- `Startup/SchemaUpgradeRunner.cs`: legacy schema compatibility upgrades (no longer called at startup; kept for reference).
 
 ### `src/Agora.Application`
 
@@ -41,7 +41,8 @@ Application contracts, value models, and cross-layer utilities.
 Persistence and external-integration implementations.
 
 - `Persistence/AgoraDbContext.cs`: EF Core model and mappings.
-- `Migrations/*`: schema history and migration steps.
+- `Migrations/*`: current EF Core migration history (SQL Server baseline).
+- `Persistence/Migrations/*`: legacy migration files from earlier schema versions.
 - `Services/ShareManager.cs`: core share domain workflow orchestrator.
 - `Services/ShareContentStore.cs`: file storage persistence/path safety.
 - `Services/*Email*`: notification and auth email delivery adapters.
@@ -149,7 +150,7 @@ Anonymous users can send files to a registered user through a personal upload li
    - copies template background to share-specific location when needed
    - creates `Share` row + `ShareFile` rows, enforcing unique token
 5. Job updates status (`ShareCreationStatusStore`) and broadcasts over SignalR (`ShareProgressBroadcaster`).
-6. Job optionally queues preview generation and sends “share ready” email.
+6. Job optionally queues preview generation and sends “share ready” email. For public-upload shares, the email uses a “files were sent to you” template with a from-name override (“Agora on behalf of {sender}”) and includes the sender's message.
 
 ## 5.2 Public Recipient Access Flow
 
@@ -321,7 +322,7 @@ Primary seams for additive change:
 - `IEmailSender` for delivery provider changes
 - `IShareExperienceRenderer` strategy set for recipient UX modes
 - `IDownloaderGeoLookup` for IP geolocation provider swaps
-- `SchemaUpgradeRunner` for non-breaking runtime schema compatibility upgrades
+- EF Core migrations for schema evolution (applied automatically at startup; failure stops the app)
 
 ## 13. Constraints and Invariants
 
