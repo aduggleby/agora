@@ -137,6 +137,7 @@
       if (value >= 1024) return `${Math.round(value / 1024)} KB`;
       return `${Math.round(value)} B`;
     };
+    const escapeHtml = (value) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
     const getText = (item, key) => {
       const alt = key.charAt(0).toUpperCase() + key.slice(1);
       const value = item[key] ?? item[alt];
@@ -206,8 +207,12 @@
           senderEmailNode.textContent = senderEmail.length > 0 ? `Sender email: ${senderEmail}` : "";
         }
         if (senderMessageNode) {
-          senderMessageNode.textContent = senderMessage.trim().length > 0 ? `Message:
-${senderMessage}` : "";
+          if (senderMessage.trim().length > 0) {
+            const renderedMessage = escapeHtml(senderMessage).replace(/\r\n|\r|\n/g, "<br />");
+            senderMessageNode.innerHTML = `Message:<br />${renderedMessage}`;
+          } else {
+            senderMessageNode.textContent = "";
+          }
         }
         dialog.showModal();
       });

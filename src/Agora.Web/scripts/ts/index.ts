@@ -64,6 +64,14 @@ type ShareFileLike = Record<string, unknown>;
     return `${Math.round(value)} B`;
   };
 
+  const escapeHtml = (value: string): string =>
+    value
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+
   const getText = (item: ShareFileLike, key: string): string => {
     const alt = key.charAt(0).toUpperCase() + key.slice(1);
     const value = item[key] ?? item[alt];
@@ -144,7 +152,12 @@ type ShareFileLike = Record<string, unknown>;
         senderEmailNode.textContent = senderEmail.length > 0 ? `Sender email: ${senderEmail}` : '';
       }
       if (senderMessageNode) {
-        senderMessageNode.textContent = senderMessage.trim().length > 0 ? `Message:\n${senderMessage}` : '';
+        if (senderMessage.trim().length > 0) {
+          const renderedMessage = escapeHtml(senderMessage).replace(/\r\n|\r|\n/g, '<br />');
+          senderMessageNode.innerHTML = `Message:<br />${renderedMessage}`;
+        } else {
+          senderMessageNode.textContent = '';
+        }
       }
       dialog.showModal();
     });
