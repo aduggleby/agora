@@ -133,7 +133,8 @@ Anonymous users can send files to a registered user through a personal upload li
 4. Files are staged individually via `POST /api/public-uploads/stage` (same staging pipeline as authenticated uploads).
 5. On submit, `POST /api/public-uploads/create-share` validates inputs, resolves staged files, and queues share creation using the account owner's default expiry/notify settings and template.
 6. The created `Share` stores `SenderName`, `SenderEmail`, and `SenderMessage` for attribution.
-7. Both endpoints are rate-limited under the `PublicUploadEndpoints` policy.
+7. After submission, the user is redirected back to `/u/{token}?submitted=1`, which renders a dedicated success screen (skipping draft creation and the upload form).
+8. Both endpoints are rate-limited under the `PublicUploadEndpoints` policy.
 
 ## 5.1 Share Creation Flow
 
