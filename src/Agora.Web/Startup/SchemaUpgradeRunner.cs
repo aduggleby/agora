@@ -490,6 +490,60 @@ public static class SchemaUpgradeRunner
                 cancellationToken);
             await db.Database.ExecuteSqlRawAsync(
                 """
+                IF COL_LENGTH('Shares', 'ShareTokenHash') IS NOT NULL
+                BEGIN
+                  UPDATE [Shares]
+                  SET [ShareTokenHash] = CASE
+                    WHEN LTRIM(RTRIM(ISNULL([ShareToken], ''))) <> '' THEN [ShareToken]
+                    ELSE REPLACE(CONVERT(nvarchar(36), NEWID()), '-', '')
+                  END
+                  WHERE [ShareTokenHash] IS NULL OR LTRIM(RTRIM(ISNULL([ShareTokenHash], ''))) = '';
+
+                  IF NOT EXISTS (
+                    SELECT 1
+                    FROM sys.default_constraints dc
+                    JOIN sys.columns c
+                      ON c.object_id = dc.parent_object_id
+                     AND c.column_id = dc.parent_column_id
+                    WHERE dc.parent_object_id = OBJECT_ID(N'[Shares]')
+                      AND c.name = N'ShareTokenHash')
+                  BEGIN
+                    ALTER TABLE [Shares]
+                    ADD CONSTRAINT [DF_Shares_ShareTokenHash_Legacy]
+                    DEFAULT (REPLACE(CONVERT(nvarchar(36), NEWID()), '-', '')) FOR [ShareTokenHash];
+                  END
+                END
+                """,
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                IF COL_LENGTH('Shares', 'ShareTokenPrefix') IS NOT NULL
+                BEGIN
+                  UPDATE [Shares]
+                  SET [ShareTokenPrefix] = CASE
+                    WHEN LTRIM(RTRIM(ISNULL([ShareToken], ''))) <> '' THEN LEFT([ShareToken], 16)
+                    ELSE LEFT(REPLACE(CONVERT(nvarchar(36), NEWID()), '-', ''), 16)
+                  END
+                  WHERE [ShareTokenPrefix] IS NULL OR LTRIM(RTRIM(ISNULL([ShareTokenPrefix], ''))) = '';
+
+                  IF NOT EXISTS (
+                    SELECT 1
+                    FROM sys.default_constraints dc
+                    JOIN sys.columns c
+                      ON c.object_id = dc.parent_object_id
+                     AND c.column_id = dc.parent_column_id
+                    WHERE dc.parent_object_id = OBJECT_ID(N'[Shares]')
+                      AND c.name = N'ShareTokenPrefix')
+                  BEGIN
+                    ALTER TABLE [Shares]
+                    ADD CONSTRAINT [DF_Shares_ShareTokenPrefix_Legacy]
+                    DEFAULT (LEFT(REPLACE(CONVERT(nvarchar(36), NEWID()), '-', ''), 16)) FOR [ShareTokenPrefix];
+                  END
+                END
+                """,
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
                 IF COL_LENGTH('Shares', 'DownloadPasswordHash') IS NULL
                 BEGIN
                   ALTER TABLE [Shares] ADD [DownloadPasswordHash] nvarchar(1000) NULL

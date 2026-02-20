@@ -67,6 +67,39 @@ docker run -d \
   agora:latest
 ```
 
+### Create Database and User
+
+Connect to SQL Server using your preferred client (Azure Data Studio, SSMS, `sqlcmd`, etc.):
+
+```bash
+# Example using sqlcmd
+sqlcmd -S YOUR_SERVER_IP,1433 -U sa -P 'YOUR_SA_PASSWORD' -C
+```
+
+Run these SQL commands to create the Agora database and dedicated login:
+
+```sql
+-- Create database
+CREATE DATABASE Agora;
+GO
+
+-- Create login with a strong password
+CREATE LOGIN agora WITH PASSWORD = 'YourSecurePassword123!';
+GO
+
+-- Create user and grant permissions
+USE Agora;
+GO
+
+CREATE USER agora FOR LOGIN agora;
+GO
+
+ALTER ROLE db_owner ADD MEMBER agora;
+GO
+```
+
+Type `exit` to quit `sqlcmd`.
+
 ### Reverse proxy headers
 
 If running behind Caddy/Nginx/Traefik, forward:
@@ -102,6 +135,10 @@ services:
 ```
 
 ## Configuration
+
+Startup behavior:
+- The app applies EF Core migrations on startup.
+- If migrations fail for any reason, startup logs a fatal error and the server stops.
 
 ### Core settings
 

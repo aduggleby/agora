@@ -10,7 +10,6 @@ using Agora.Web.Auth;
 using Agora.Web.Endpoints;
 using Agora.Web.Hubs;
 using Agora.Web.Services;
-using Agora.Web.Startup;
 using Agora.Web.Hangfire;
 using Hangfire.Console;
 using Hangfire;
@@ -268,14 +267,13 @@ using (var scope = app.Services.CreateScope())
     try
     {
         await db.Database.MigrateAsync();
+        app.Logger.LogInformation("Applied EF Core migrations successfully.");
     }
     catch (Exception ex)
     {
-        app.Logger.LogWarning(ex, "Automatic EF migration failed. Falling back to EnsureCreated for compatibility.");
-        db.Database.EnsureCreated();
+        app.Logger.LogCritical(ex, "EF Core migration failed during startup. Stopping application.");
+        throw;
     }
-
-    await SchemaUpgradeRunner.EnsureSchemaUpgradesAsync(db, CancellationToken.None);
 }
 
 if (isDevelopment)
