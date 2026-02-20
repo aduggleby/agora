@@ -18,6 +18,7 @@ import { readLimitsFromElement, validateFileSelection, showLimitDialog } from '.
   const submit = form.querySelector<HTMLButtonElement>('[data-public-submit]');
   const senderNameInput = form.querySelector<HTMLInputElement>('input[name="senderName"]');
   const senderEmailInput = form.querySelector<HTMLInputElement>('input[name="senderEmail"]');
+  const senderMessageInput = form.querySelector<HTMLTextAreaElement>('textarea[name="senderMessage"]');
   const uploadToken = form.querySelector<HTMLInputElement>('[data-public-upload-token]')?.value ?? '';
   const draftShareId = form.querySelector<HTMLInputElement>('[data-public-draft-share-id]')?.value ?? '';
 
@@ -97,6 +98,12 @@ import { readLimitsFromElement, validateFileSelection, showLimitDialog } from '.
     } catch {
       // Ignore localStorage access errors.
     }
+  };
+
+  const autoSizeSenderMessage = (): void => {
+    if (!senderMessageInput) return;
+    senderMessageInput.style.height = 'auto';
+    senderMessageInput.style.height = `${Math.max(senderMessageInput.scrollHeight, 96)}px`;
   };
 
   const createRow = (file: File): { row: HTMLLIElement; bar: HTMLDivElement; note: HTMLParagraphElement } => {
@@ -241,6 +248,8 @@ import { readLimitsFromElement, validateFileSelection, showLimitDialog } from '.
   senderNameInput?.addEventListener('input', persistSenderFields);
   senderEmailInput?.addEventListener('input', persistSenderFields);
   senderEmailInput?.addEventListener('input', refreshState);
+  senderMessageInput?.addEventListener('input', autoSizeSenderMessage);
+  autoSizeSenderMessage();
 
   refreshState();
 })();

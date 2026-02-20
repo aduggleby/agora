@@ -99,6 +99,7 @@
     const submit = form.querySelector("[data-public-submit]");
     const senderNameInput = form.querySelector('input[name="senderName"]');
     const senderEmailInput = form.querySelector('input[name="senderEmail"]');
+    const senderMessageInput = form.querySelector('textarea[name="senderMessage"]');
     const uploadToken = form.querySelector("[data-public-upload-token]")?.value ?? "";
     const draftShareId = form.querySelector("[data-public-draft-share-id]")?.value ?? "";
     if (!fileInput || !pickButton || !dropzone || !status || !uploadList || !hidden || !submit || !uploadToken || !draftShareId) {
@@ -164,6 +165,11 @@
         }
       } catch {
       }
+    };
+    const autoSizeSenderMessage = () => {
+      if (!senderMessageInput) return;
+      senderMessageInput.style.height = "auto";
+      senderMessageInput.style.height = `${Math.max(senderMessageInput.scrollHeight, 96)}px`;
     };
     const createRow = (file) => {
       const row = document.createElement("li");
@@ -283,6 +289,8 @@
     senderNameInput?.addEventListener("input", persistSenderFields);
     senderEmailInput?.addEventListener("input", persistSenderFields);
     senderEmailInput?.addEventListener("input", refreshState);
+    senderMessageInput?.addEventListener("input", autoSizeSenderMessage);
+    autoSizeSenderMessage();
     refreshState();
   })();
   function runConfetti() {
