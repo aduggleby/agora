@@ -205,7 +205,7 @@ test.describe('Public upload intake', () => {
 
     const senderName = 'External Sender';
     const senderEmail = 'sender@example.test';
-    const senderMessage = 'Please review this upload.';
+    const senderMessage = 'Please review this upload.\nThis is line two.';
 
     const startMs = Date.now();
     const anonPage = await browser.newPage();
@@ -233,13 +233,17 @@ test.describe('Public upload intake', () => {
     const html = readyEmail.html || '';
     const actionUrl = readyEmail.metadata?.ActionUrl || '';
 
-    expect(html).toContain(senderMessage);
+    expect(html).toContain('Please review this upload.');
+    expect(html).toContain('This is line two.');
     expect(html).toContain(`Agora on behalf of ${senderName} (${senderEmail})`);
     expect(actionUrl).toContain('/s/');
 
     const resolvedActionUrl = new URL(actionUrl, anonPage.url()).toString();
     await anonPage.goto(resolvedActionUrl, { waitUntil: 'domcontentloaded' });
-    await expect(anonPage.getByRole('button', { name: 'Download' }).or(anonPage.getByRole('link', { name: 'Download' }))).toBeVisible();
+    await expect(anonPage.getByText(`by ${senderName} (${senderEmail})`)).toBeVisible();
+    await expect(anonPage.locator('.preview-description').first()).toContainText('Please review this upload.');
+    await expect(anonPage.locator('.preview-description').first()).toContainText('This is line two.');
+    await expect(anonPage.getByRole('button', { name: 'Download file' })).toBeVisible();
     await anonPage.close();
   });
 
@@ -341,6 +345,8 @@ test.describe('Public upload intake', () => {
 
     const resolvedActionUrl = new URL(actionUrl, anonPage.url()).toString();
     await anonPage.goto(resolvedActionUrl, { waitUntil: 'domcontentloaded' });
+    await expect(anonPage.getByText(`by ${senderName} (${senderEmail})`)).toBeVisible();
+    await expect(anonPage.locator('.preview-description').first()).toContainText(senderMessage);
     const downloadButton = anonPage.getByRole('button', { name: 'Download' });
     await expect(downloadButton).toBeVisible();
 

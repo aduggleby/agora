@@ -18,6 +18,7 @@ public sealed class QueuedShareCreationJob(
     ShareCreationStatusStore statusStore,
     ShareProgressBroadcaster broadcaster,
     IOptions<AgoraOptions> options,
+    IOptions<EmailSenderOptions> emailSenderOptions,
     ILogger<QueuedShareCreationJob> logger)
 {
     public sealed record Payload(
@@ -44,6 +45,7 @@ public sealed class QueuedShareCreationJob(
         IReadOnlyList<string> UploadedFileIds);
 
     private readonly AgoraOptions _options = options.Value;
+    private readonly EmailSenderOptions _emailSenderOptions = emailSenderOptions.Value;
 
     public string Queue(Payload payload)
     {
@@ -289,13 +291,16 @@ public sealed class QueuedShareCreationJob(
         return lines.Count == 0 ? null : string.Join('\n', lines);
     }
 
-    private static AuthEmailMessage BuildCompletionEmail(Payload payload, string shareUrl)
+    private static AuthEmailMessage BuildCompletionEmailCore(Payload payload, string shareUrl, string configuredSenderDisplayName)
     {
         var senderIdentity = BuildSenderIdentity(payload);
         var senderMessage = (payload.SenderMessage ?? string.Empty).Trim();
         if (!string.IsNullOrWhiteSpace(senderIdentity))
         {
-            var onBehalfOf = $"Agora on behalf of {senderIdentity}";
+            var normalizedDisplayName = string.IsNullOrWhiteSpace(configuredSenderDisplayName)
+                ? "Agora"
+                : configuredSenderDisplayName.Trim();
+            var onBehalfOf = $"{normalizedDisplayName} on behalf of {senderIdentity}";
             var intro = !string.IsNullOrWhiteSpace(senderMessage)
                 ? "The sender included this message:"
                 : "The upload was processed and the files are ready to open.";
@@ -325,6 +330,12 @@ public sealed class QueuedShareCreationJob(
             ActionLabel: "Open share link",
             ActionUrl: shareUrl,
             SecondaryText: null);
+    }
+
+    private AuthEmailMessage BuildCompletionEmail(Payload payload, string shareUrl)
+    {
+        var configuredSenderDisplayName = (_emailSenderOptions.FromDisplayName ?? string.Empty).Trim();
+        return BuildCompletionEmailCore(payload, shareUrl, configuredSenderDisplayName);
     }
 
     private static string BuildSenderIdentity(Payload payload)

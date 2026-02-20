@@ -3,7 +3,7 @@
 <div data-share-preview-card style="background:white;border-radius:1rem;padding:2.5rem;max-width:480px;width:100%;box-shadow:0 8px 30px rgba(26,22,20,0.08);">
   <h1 class="font-display" data-share-preview-h1 style="font-size:1.75rem;letter-spacing:-0.01em;">@Model.Title</h1>
   <p class="font-display" data-share-preview-subtitle style="color:#5C534A;font-size:1.1rem;line-height:1.35;margin-top:0.35rem;@((string.IsNullOrWhiteSpace(Model.Subtitle) ? "display:none;" : string.Empty))">@Model.Subtitle</p>
-  <p data-share-preview-description style="color:#5C534A;font-size:0.875rem;margin-top:0.75rem;">@Model.Description</p>
+  <p data-share-preview-description style="color:#5C534A;font-size:0.875rem;margin-top:0.75rem;white-space:pre-wrap;">@Model.Description</p>
   <div style="margin-top:1.5rem;padding:1rem;background:#FAF7F2;border-radius:0.75rem;border:1px solid #E5DFD7;">
     <p style="font-weight:500;font-size:0.875rem;">@Model.ZipDisplayName</p>
     <p style="color:#9B9189;font-size:0.75rem;">@Model.FileCount @(Model.FileCount == 1 ? "file" : "files") &middot; @Model.SizeDisplay</p>

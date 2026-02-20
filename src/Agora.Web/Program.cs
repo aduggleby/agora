@@ -1272,6 +1272,9 @@ app.MapPost("/api/public-uploads/create-share", async (
         notifyMode = "once";
     }
 
+    var publicUploadSubtitle = $"by {senderName} ({senderEmail})";
+    var publicUploadDescription = string.IsNullOrWhiteSpace(senderMessage) ? null : senderMessage;
+
     var queued = new QueuedShareCreationJob.Payload(
         UploaderEmail: user.Email,
         DraftShareId: draftShareId,
@@ -1281,15 +1284,15 @@ app.MapPost("/api/public-uploads/create-share", async (
         SenderEmail: senderEmail,
         SenderMessage: string.IsNullOrWhiteSpace(senderMessage) ? null : senderMessage,
         DownloadPassword: null,
-        ShowPreviews: false,
+        ShowPreviews: true,
         ZipFileName: null,
         NotifyMode: notifyMode,
         ExpiryMode: expiryModeRaw,
         ExpiresAtUtc: expiresAtUtc,
-        TemplateMode: "account_default",
-        TemplateTitle: null,
+        TemplateMode: "per_upload",
+        TemplateTitle: publicUploadSubtitle,
         TemplateH1: null,
-        TemplateDescription: null,
+        TemplateDescription: publicUploadDescription,
         TemplateBackgroundColorHex: null,
         TemplateContainerPosition: null,
         TemplateBackgroundUploadId: null,
