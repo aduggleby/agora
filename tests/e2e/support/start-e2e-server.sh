@@ -34,4 +34,4 @@ if [[ "${ready}" -ne 1 ]]; then
 fi
 
 mkdir -p "${PLAYWRIGHT_E2E_DATA_ROOT}/storage" "${PLAYWRIGHT_E2E_DATA_ROOT}/emails" "${PLAYWRIGHT_E2E_DATA_ROOT}/logs"
-dotnet run --project src/Agora.Web/Agora.Web.csproj --urls http://127.0.0.1:18090
+dotnet run --no-launch-profile --project src/Agora.Web/Agora.Web.csproj --urls http://127.0.0.1:18090

@@ -15,6 +15,49 @@ type FileSystemEmailRecord = {
   };
 };
 
+function listZipEntries(archiveBytes: Buffer): string[] {
+  const eocdSignature = 0x06054b50;
+  const centralHeaderSignature = 0x02014b50;
+
+  let eocdOffset = -1;
+  for (let i = archiveBytes.length - 22; i >= 0; i -= 1) {
+    if (archiveBytes.readUInt32LE(i) === eocdSignature) {
+      eocdOffset = i;
+      break;
+    }
+  }
+
+  if (eocdOffset < 0) {
+    throw new Error('ZIP EOCD record not found.');
+  }
+
+  const centralDirectorySize = archiveBytes.readUInt32LE(eocdOffset + 12);
+  const centralDirectoryOffset = archiveBytes.readUInt32LE(eocdOffset + 16);
+  const centralDirectoryEnd = centralDirectoryOffset + centralDirectorySize;
+  const names: string[] = [];
+
+  let cursor = centralDirectoryOffset;
+  while (cursor + 46 <= centralDirectoryEnd && cursor + 46 <= archiveBytes.length) {
+    if (archiveBytes.readUInt32LE(cursor) !== centralHeaderSignature) {
+      break;
+    }
+
+    const nameLength = archiveBytes.readUInt16LE(cursor + 28);
+    const extraLength = archiveBytes.readUInt16LE(cursor + 30);
+    const commentLength = archiveBytes.readUInt16LE(cursor + 32);
+    const nameStart = cursor + 46;
+    const nameEnd = nameStart + nameLength;
+    if (nameEnd > archiveBytes.length) {
+      break;
+    }
+
+    names.push(archiveBytes.subarray(nameStart, nameEnd).toString('utf8'));
+    cursor = nameEnd + extraLength + commentLength;
+  }
+
+  return names;
+}
+
 async function uploadUrlFromSettings(page: Page): Promise<string> {
   const prefix = (await page.locator('[data-upload-url-prefix]').innerText()).trim();
   const token = (await page.locator('#uploadToken').inputValue()).trim();
@@ -84,6 +127,16 @@ async function waitForReadyEmail(to: string, startedAt: number): Promise<FileSys
   }
 
   throw new Error(`Timed out waiting for ready email for ${to}.`);
+}
+
+function extractShareTokenFromActionUrl(actionUrl: string): string {
+  const parsed = new URL(actionUrl, 'http://127.0.0.1:18090');
+  const segments = parsed.pathname.split('/').filter(Boolean);
+  if (segments.length < 2 || segments[0] !== 's' || !segments[1]) {
+    throw new Error(`Could not extract share token from action URL: ${actionUrl}`);
+  }
+
+  return decodeURIComponent(segments[1]);
 }
 
 test.describe('Public upload intake', () => {
@@ -170,8 +223,11 @@ test.describe('Public upload intake', () => {
     await expect(anonPage.locator('[data-public-submit]')).toBeEnabled();
 
     await anonPage.locator('[data-public-submit]').click();
-    await anonPage.waitForURL(/\/u\/[A-Za-z0-9]{2,64}\?msg=/);
-    await expect(anonPage.getByText('Thanks, your files are being processed.')).toBeVisible();
+    await anonPage.waitForURL(/\/u\/[A-Za-z0-9]{2,64}\?submitted=1/);
+    await expect(anonPage.getByRole('heading', { name: 'Upload scheduled successfully' })).toBeVisible();
+    await expect(anonPage.locator('[data-public-upload-confetti-canvas]')).toBeVisible();
+    await expect(anonPage.locator('[data-public-pick-files]')).toHaveCount(0);
+    await expect(anonPage.locator('[data-public-submit]')).toHaveCount(0);
 
     const readyEmail = await waitForReadyEmail(user.email, startMs);
     const html = readyEmail.html || '';
@@ -185,6 +241,122 @@ test.describe('Public upload intake', () => {
     const resolvedActionUrl = new URL(actionUrl, anonPage.url()).toString();
     await anonPage.goto(resolvedActionUrl, { waitUntil: 'domcontentloaded' });
     await expect(anonPage.getByRole('button', { name: 'Download' }).or(anonPage.getByRole('link', { name: 'Download' }))).toBeVisible();
+    await anonPage.close();
+  });
+
+  test('queued public upload retries token collisions and still sends ready email for uploaded files', async ({ browser, page, request }, testInfo) => {
+    const user = await createE2EUser(request, 'public-upload-token-collision');
+    await login(page, user.email, user.password);
+
+    await page.goto('/account/settings');
+    const uploadUrl = await uploadUrlFromSettings(page);
+
+    const collisionToken = `Cl${Date.now().toString(36).slice(-8)}`.replace(/[^A-Za-z0-9]/g, 'A');
+    const reserveResponse = await request.post('/api/e2e/shares/reserve-token', {
+      form: {
+        token: collisionToken,
+        uploaderEmail: user.email
+      }
+    });
+    expect(reserveResponse.ok()).toBeTruthy();
+
+    const files = await createTempFiles(testInfo.outputPath('public-intake-collision-files'), [
+      { name: 'collision-first.txt', content: 'first file' },
+      { name: 'collision-second.txt', content: 'second file' },
+    ]);
+
+    const senderName = 'Collision Sender';
+    const senderEmail = 'collision.sender@example.test';
+    const senderMessage = 'Ensure queued processing still succeeds.';
+
+    const startMs = Date.now();
+    const anonPage = await browser.newPage();
+    await anonPage.goto(uploadUrl);
+
+    const uploadToken = await anonPage.locator('[data-public-upload-token]').inputValue();
+    const draftShareId = await anonPage.locator('[data-public-draft-share-id]').inputValue();
+    const csrfToken = await anonPage.evaluate(() => {
+      const tokenCookie = document.cookie
+        .split(';')
+        .map((part) => part.trim())
+        .find((part) => part.startsWith('agora.csrf.request='));
+      return tokenCookie ? decodeURIComponent(tokenCookie.slice('agora.csrf.request='.length)) : '';
+    });
+    expect(csrfToken).not.toBe('');
+
+    const uploadedIds: string[] = [];
+    for (const filePath of files) {
+      const stageResponse = await anonPage.request.post('/api/public-uploads/stage', {
+        multipart: {
+          __RequestVerificationToken: csrfToken,
+          uploadToken,
+          draftShareId,
+          file: {
+            name: path.basename(filePath),
+            mimeType: 'text/plain',
+            buffer: await fs.readFile(filePath),
+          },
+        },
+      });
+      expect(stageResponse.ok()).toBeTruthy();
+      const staged = await stageResponse.json() as { uploadId?: string };
+      expect(staged.uploadId).toBeTruthy();
+      uploadedIds.push(staged.uploadId || '');
+    }
+
+    const form = new URLSearchParams();
+    form.set('__RequestVerificationToken', csrfToken);
+    form.set('uploadToken', uploadToken);
+    form.set('draftShareId', draftShareId);
+    form.set('senderName', senderName);
+    form.set('senderEmail', senderEmail);
+    form.set('senderMessage', senderMessage);
+    form.set('e2eShareTokenOverride', collisionToken);
+    for (const uploadId of uploadedIds) {
+      form.append('uploadedFileIds', uploadId);
+    }
+
+    const createResponse = await anonPage.request.post('/api/public-uploads/create-share', {
+      data: form.toString(),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+    expect(createResponse.status()).toBeLessThan(500);
+
+    const readyEmail = await waitForReadyEmail(user.email, startMs);
+    const html = readyEmail.html || '';
+    const actionUrl = readyEmail.metadata?.ActionUrl || '';
+
+    expect(html).toContain(`Sender name: ${senderName}`);
+    expect(html).toContain(`Sender email: ${senderEmail}`);
+    expect(html).toContain(`Message: ${senderMessage}`);
+    expect(actionUrl).toContain('/s/');
+
+    const shareToken = extractShareTokenFromActionUrl(actionUrl);
+    expect(shareToken).not.toBe(collisionToken);
+
+    const shareResponse = await request.get(`/api/shares/${encodeURIComponent(shareToken)}`);
+    expect(shareResponse.ok()).toBeTruthy();
+    const sharePayload = await shareResponse.json() as { fileCount?: number };
+    expect(sharePayload.fileCount).toBe(2);
+
+    const resolvedActionUrl = new URL(actionUrl, anonPage.url()).toString();
+    await anonPage.goto(resolvedActionUrl, { waitUntil: 'domcontentloaded' });
+    const downloadButton = anonPage.getByRole('button', { name: 'Download' });
+    await expect(downloadButton).toBeVisible();
+
+    const [download] = await Promise.all([
+      anonPage.waitForEvent('download'),
+      downloadButton.click(),
+    ]);
+    const downloadPath = await download.path();
+    expect(downloadPath).toBeTruthy();
+
+    const archiveBytes = await fs.readFile(downloadPath || '');
+    const archivedFiles = listZipEntries(archiveBytes);
+    expect(archivedFiles.some((name) => name.endsWith('collision-first.txt'))).toBeTruthy();
+    expect(archivedFiles.some((name) => name.endsWith('collision-second.txt'))).toBeTruthy();
     await anonPage.close();
   });
 

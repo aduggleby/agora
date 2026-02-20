@@ -84,6 +84,10 @@
 
   // scripts/ts/public-upload.ts
   (() => {
+    const successScreen = document.querySelector("[data-public-upload-success]");
+    if (successScreen) {
+      runConfetti();
+    }
     const form = document.querySelector("[data-public-upload-form]");
     if (!form) return;
     const fileInput = form.querySelector("[data-public-file-input]");
@@ -281,5 +285,76 @@
     senderEmailInput?.addEventListener("input", refreshState);
     refreshState();
   })();
+  function runConfetti() {
+    const canvas = document.querySelector("[data-public-upload-confetti-canvas]");
+    if (!canvas) return;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const colors = ["#C4663A", "#E8A17D", "#5B7A5E", "#1A1614", "#F0EBE3"];
+    const pieceCount = 160;
+    const gravity = 0.18;
+    const durationMs = 4200;
+    const pieces = [];
+    let width = 0;
+    let height = 0;
+    let start = 0;
+    const resize = () => {
+      width = window.innerWidth;
+      height = window.innerHeight;
+      canvas.width = Math.floor(width * window.devicePixelRatio);
+      canvas.height = Math.floor(height * window.devicePixelRatio);
+      context.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+    };
+    const resetPiece = (piece, fromTop) => {
+      piece.x = Math.random() * width;
+      piece.y = fromTop ? -20 - Math.random() * height * 0.4 : Math.random() * -height;
+      piece.vx = (Math.random() - 0.5) * 2.6;
+      piece.vy = 2.2 + Math.random() * 2.8;
+      piece.size = 5 + Math.random() * 7;
+      piece.rotation = Math.random() * Math.PI * 2;
+      piece.spin = (Math.random() - 0.5) * 0.25;
+      piece.color = colors[Math.floor(Math.random() * colors.length)];
+    };
+    const init = () => {
+      pieces.length = 0;
+      for (let i = 0; i < pieceCount; i += 1) {
+        const piece = {};
+        resetPiece(piece, false);
+        pieces.push(piece);
+      }
+    };
+    const draw = () => {
+      context.clearRect(0, 0, width, height);
+      for (const piece of pieces) {
+        piece.x += piece.vx;
+        piece.y += piece.vy;
+        piece.vy += gravity * 0.02;
+        piece.rotation += piece.spin;
+        if (piece.y > height + 24 || piece.x < -24 || piece.x > width + 24) {
+          resetPiece(piece, true);
+        }
+        context.save();
+        context.translate(piece.x, piece.y);
+        context.rotate(piece.rotation);
+        context.fillStyle = piece.color;
+        context.fillRect(-piece.size / 2, -piece.size / 2, piece.size, piece.size * 0.66);
+        context.restore();
+      }
+    };
+    const tick = (timestamp) => {
+      if (!start) start = timestamp;
+      draw();
+      if (timestamp - start <= durationMs) {
+        requestAnimationFrame(tick);
+        return;
+      }
+      context.clearRect(0, 0, width, height);
+      canvas.remove();
+    };
+    resize();
+    init();
+    window.addEventListener("resize", resize, { passive: true });
+    requestAnimationFrame(tick);
+  }
 })();
 //# sourceMappingURL=public-upload.js.map

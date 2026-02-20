@@ -621,6 +621,53 @@ if (isE2E)
 
         return Results.Ok(new { user.Email, uploadToken });
     });
+
+    app.MapPost("/api/e2e/shares/reserve-token", async (AgoraDbContext db, HttpRequest request, CancellationToken ct) =>
+    {
+        if (!request.HasFormContentType)
+        {
+            return Results.BadRequest(new { error = "Expected form data." });
+        }
+
+        var form = await request.ReadFormAsync(ct);
+        var token = form["token"].ToString().Trim();
+        var uploaderEmail = form["uploaderEmail"].ToString().Trim();
+        if (!IsValidShareToken(token))
+        {
+            return Results.BadRequest(new { error = "token must be 3-64 letters, numbers, hyphens, or underscores." });
+        }
+
+        if (string.IsNullOrWhiteSpace(uploaderEmail))
+        {
+            uploaderEmail = "e2e-reserved-token@example.test";
+        }
+
+        var exists = await db.Shares.AnyAsync(x => x.ShareToken == token, ct);
+        if (exists)
+        {
+            return Results.Conflict(new { error = "Share token already exists." });
+        }
+
+        db.Shares.Add(new Share
+        {
+            Id = Guid.NewGuid(),
+            UploaderEmail = uploaderEmail,
+            ShareToken = token,
+            ZipDisplayName = "reserved-token.zip",
+            ZipDiskPath = "zips/e2e/reserved-token.zip",
+            ZipSizeBytes = 0,
+            ShareExperienceType = "archive",
+            AccessMode = "download_only",
+            NotifyMode = "none",
+            CreatedAtUtc = DateTime.UtcNow,
+            PageTitle = "Reserved share token",
+            PageH1 = "Reserved share token",
+            PageDescription = "Reserved for e2e collision tests.",
+            PageContainerPosition = "center"
+        });
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(new { token, uploaderEmail });
+    });
 }
 
 
@@ -1206,6 +1253,14 @@ app.MapPost("/api/public-uploads/create-share", async (
     }
 
     var shareToken = await manager.GenerateUniqueShareTokenAsync(8, ct);
+    if (isE2E)
+    {
+        var e2eShareTokenOverride = form["e2eShareTokenOverride"].ToString().Trim();
+        if (IsValidShareToken(e2eShareTokenOverride))
+        {
+            shareToken = e2eShareTokenOverride;
+        }
+    }
     var expiryModeRaw = await authService.GetDefaultExpiryModeAsync(user.Email, ct);
     if (!TryResolveExpiryUtc(expiryModeRaw, DateTime.UtcNow, out var expiresAtUtc))
     {
@@ -1243,7 +1298,7 @@ app.MapPost("/api/public-uploads/create-share", async (
         UploadedFileIds: uploadedFileIds);
 
     queuedShareCreationJob.Queue(queued);
-    return Results.Redirect($"/u/{Uri.EscapeDataString(uploadToken)}?msg=Thanks%2C%20your%20files%20are%20being%20processed.");
+    return Results.Redirect($"/u/{Uri.EscapeDataString(uploadToken)}?submitted=1");
 }).RequireRateLimiting("PublicUploadEndpoints");
 
 app.MapPost("/api/uploads/stage-template-background", async (

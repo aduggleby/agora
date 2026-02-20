@@ -12,6 +12,7 @@ public class IndexModel(AuthService authService, ShareManager manager, IOptions<
     private readonly AgoraOptions _options = options.Value;
 
     public bool IsInvalidToken { get; private set; }
+    public bool IsSubmissionSuccess { get; private set; }
     public string UploadToken { get; private set; } = string.Empty;
     public string DraftShareId { get; private set; } = string.Empty;
     public string RecipientDisplayName { get; private set; } = string.Empty;
@@ -41,9 +42,17 @@ public class IndexModel(AuthService authService, ShareManager manager, IOptions<
         RecipientDisplayName = string.IsNullOrWhiteSpace(user.DisplayName)
             ? "this recipient"
             : user.DisplayName.Trim();
-        DraftShareId = await manager.EnsureDraftShareAsync(user.Email, null, ct);
-        ViewData["Title"] = "Send files";
-        ViewData["Message"] = Request.Query["msg"].ToString();
+        var submitted = Request.Query["submitted"].ToString().Trim();
+        var legacyMessage = Request.Query["msg"].ToString().Trim();
+        IsSubmissionSuccess = string.Equals(submitted, "1", StringComparison.Ordinal) ||
+                              string.Equals(legacyMessage, "Thanks, your files are being processed.", StringComparison.Ordinal);
+
+        if (!IsSubmissionSuccess)
+        {
+            DraftShareId = await manager.EnsureDraftShareAsync(user.Email, null, ct);
+        }
+
+        ViewData["Title"] = IsSubmissionSuccess ? "Upload scheduled" : "Send files";
         return Page();
     }
 }

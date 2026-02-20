@@ -146,31 +146,16 @@ public sealed class QueuedShareCreationJob(
             performContext?.WriteLine("Building archive and creating share...");
             await broadcaster.BroadcastAsync(createActive, ct);
 
-            var result = await manager.CreateShareAsync(new CreateShareCommand
-            {
-                UploaderEmail = payload.UploaderEmail,
-                ShareToken = payload.ShareToken,
-                Message = payload.Message,
-                SenderName = payload.SenderName,
-                SenderEmail = payload.SenderEmail,
-                SenderMessage = payload.SenderMessage,
-                DownloadPassword = payload.DownloadPassword,
-                ShareExperienceType = shareExperienceType,
-                AccessMode = accessMode,
-                ZipFileName = payload.ZipFileName,
-                ExpiryMode = expiryMode,
-                ExpiresAtUtc = payload.ExpiresAtUtc,
-                NotifyMode = payload.NotifyMode,
-                TemplateMode = templateMode,
-                TemplateTitle = payload.TemplateTitle,
-                TemplateH1 = payload.TemplateH1,
-                TemplateDescription = payload.TemplateDescription,
-                TemplateBackgroundImageUrl = string.Empty,
-                TemplateBackgroundColorHex = payload.TemplateBackgroundColorHex,
-                TemplateContainerPosition = payload.TemplateContainerPosition,
-                TemplateBackgroundFile = templateBackgroundFile,
-                Files = uploadFiles
-            }, ct);
+            var result = await CreateShareWithRetryAsync(
+                payload,
+                templateBackgroundFile,
+                uploadFiles,
+                shareExperienceType,
+                accessMode,
+                expiryMode,
+                templateMode,
+                performContext,
+                ct);
 
             var createDone = statusStore.UpdateStep(token, "create_share", "completed");
             await broadcaster.BroadcastAsync(createDone, ct);
@@ -216,7 +201,7 @@ public sealed class QueuedShareCreationJob(
 
             try
             {
-                var shareUrl = BuildShareUrl(payload.ShareToken);
+                var shareUrl = BuildShareUrl(result.Token);
                 await emailSender.SendAuthEmailAsync(new AuthEmailMessage(
                     To: payload.UploaderEmail,
                     Subject: "Your share link is ready",
@@ -302,5 +287,66 @@ public sealed class QueuedShareCreationJob(
         }
 
         return lines.Count == 0 ? null : string.Join('\n', lines);
+    }
+
+    private async Task<CreateShareResult> CreateShareWithRetryAsync(
+        Payload payload,
+        UploadSourceFile? templateBackgroundFile,
+        IReadOnlyList<UploadSourceFile> uploadFiles,
+        string shareExperienceType,
+        string accessMode,
+        ExpiryMode expiryMode,
+        TemplateMode templateMode,
+        PerformContext? performContext,
+        CancellationToken ct)
+    {
+        var requestedToken = payload.ShareToken;
+
+        for (var attempt = 0; attempt < 4; attempt += 1)
+        {
+            try
+            {
+                return await manager.CreateShareAsync(new CreateShareCommand
+                {
+                    UploaderEmail = payload.UploaderEmail,
+                    ShareToken = requestedToken,
+                    Message = payload.Message,
+                    SenderName = payload.SenderName,
+                    SenderEmail = payload.SenderEmail,
+                    SenderMessage = payload.SenderMessage,
+                    DownloadPassword = payload.DownloadPassword,
+                    ShareExperienceType = shareExperienceType,
+                    AccessMode = accessMode,
+                    ZipFileName = payload.ZipFileName,
+                    ExpiryMode = expiryMode,
+                    ExpiresAtUtc = payload.ExpiresAtUtc,
+                    NotifyMode = payload.NotifyMode,
+                    TemplateMode = templateMode,
+                    TemplateTitle = payload.TemplateTitle,
+                    TemplateH1 = payload.TemplateH1,
+                    TemplateDescription = payload.TemplateDescription,
+                    TemplateBackgroundImageUrl = string.Empty,
+                    TemplateBackgroundColorHex = payload.TemplateBackgroundColorHex,
+                    TemplateContainerPosition = payload.TemplateContainerPosition,
+                    TemplateBackgroundFile = templateBackgroundFile,
+                    Files = uploadFiles
+                }, ct);
+            }
+            catch (InvalidOperationException ex) when (
+                requestedToken is not null &&
+                ex.Message.Contains("already in use", StringComparison.OrdinalIgnoreCase) &&
+                attempt < 3)
+            {
+                requestedToken = await manager.GenerateUniqueShareTokenAsync(8, ct);
+                performContext?.WriteLine($"Share token collision detected; retrying with token '{requestedToken}'.");
+                logger.LogWarning(
+                    ex,
+                    "Share token collision for queued token {Token}; retrying with {ReplacementToken}",
+                    payload.ShareToken,
+                    requestedToken);
+            }
+        }
+
+        throw new InvalidOperationException("Unable to generate a unique share token right now.");
     }
 }

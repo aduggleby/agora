@@ -21,56 +21,72 @@
 }
 else
 {
-  <section class="mb-10">
-    <h2 class="font-display text-4xl tracking-tight mb-1">Send files</h2>
-    <p class="text-ink-muted text-sm mt-3 max-w-md">Share your files with @Model.RecipientDisplayName. We email them the link when processing is complete.</p>
-  </section>
-
-  <section class="mb-10">
-    <div class="bg-white rounded-2xl border border-border p-6">
-      <form action="/api/public-uploads/create-share" method="post" class="space-y-5" data-public-upload-form data-max-file-size-bytes="@Model.MaxFileSizeBytes" data-max-total-upload-bytes="@Model.MaxTotalUploadBytes" data-max-files-per-share="@Model.MaxFilesPerShare">
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Your name</label>
-            <input name="senderName" required maxlength="200" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
-          </div>
-          <div>
-            <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Your email</label>
-            <input type="email" name="senderEmail" required maxlength="320" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
-          </div>
+  @if (Model.IsSubmissionSuccess)
+  {
+    <canvas class="fixed inset-0 pointer-events-none z-0" data-public-upload-confetti-canvas></canvas>
+    <section class="relative z-10" data-public-upload-success>
+      <div class="max-w-3xl mx-auto  ">
+        <div class="rounded-2xl border border-border bg-white/95 backdrop-blur-sm shadow-sm p-8 sm:p-10">
+          <p class="text-xs font-medium text-terra uppercase tracking-[0.18em]">Files received</p>
+          <h1 class="font-display text-5xl tracking-tight mt-3">Upload is being processed</h1>
+          <p class="text-sm text-ink-muted mt-3">Thanks for sending files to @Model.RecipientDisplayName. They will receive the ready link by email when processing finishes.</p>
         </div>
+      </div>
+    </section>
+  }
+  else
+  {
+    <section class="mb-10">
+      <h2 class="font-display text-4xl tracking-tight mb-1">Send files</h2>
+      <p class="text-ink-muted text-sm mt-3 max-w-md">Share your files with @Model.RecipientDisplayName. We email them the link when processing is complete.</p>
+    </section>
 
-        <div>
-          <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Message</label>
-          <textarea name="senderMessage" rows="4" maxlength="4000" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra resize-y" placeholder="Add context for your upload"></textarea>
-        </div>
-
-        <div>
-          <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Files</label>
-          <input type="file" name="files" multiple accept="*/*" class="sr-only" data-public-file-input />
-          <div class="rounded-lg border border-dashed border-border bg-cream p-5" data-public-dropzone>
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p class="text-sm text-ink-light">Select files and they upload immediately in the background.</p>
-                <p class="text-xs text-ink-muted mt-1">Max @Model.MaxFilesPerShare files, @FormatFileSize(Model.MaxFileSizeBytes) per file, @FormatFileSize(Model.MaxTotalUploadBytes) total.</p>
-              </div>
-              <button type="button" class="px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors" data-public-pick-files>Select files</button>
+    <section class="mb-10">
+      <div class="bg-white rounded-2xl border border-border p-6">
+        <form action="/api/public-uploads/create-share" method="post" class="space-y-5" data-public-upload-form data-max-file-size-bytes="@Model.MaxFileSizeBytes" data-max-total-upload-bytes="@Model.MaxTotalUploadBytes" data-max-files-per-share="@Model.MaxFilesPerShare">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Your name</label>
+              <input name="senderName" required maxlength="200" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
             </div>
-            <p class="text-xs text-ink-muted mt-3" data-public-upload-status>No files uploaded yet.</p>
-            <div class="mt-4 hidden" data-public-upload-hidden></div>
-            <ul class="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2" data-public-upload-list></ul>
+            <div>
+              <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Your email</label>
+              <input type="email" name="senderEmail" required maxlength="320" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
+            </div>
           </div>
-        </div>
 
-        <input type="hidden" name="uploadToken" value="@Model.UploadToken" data-public-upload-token />
-        <input type="hidden" name="draftShareId" value="@Model.DraftShareId" data-public-draft-share-id />
+          <div>
+            <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Message</label>
+            <textarea name="senderMessage" rows="4" maxlength="4000" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra resize-y" placeholder="Add context for your upload"></textarea>
+          </div>
 
-        <div class="flex justify-end">
-          <button type="submit" class="hidden px-6 py-2.5 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed" data-public-submit disabled title="Upload at least one file first.">Send files</button>
-        </div>
-      </form>
-    </div>
-  </section>
+          <div>
+            <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Files</label>
+            <input type="file" name="files" multiple accept="*/*" class="sr-only" data-public-file-input />
+            <div class="rounded-lg border border-dashed border-border bg-cream p-5" data-public-dropzone>
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p class="text-sm text-ink-light">Select files and they upload immediately in the background.</p>
+                  <p class="text-xs text-ink-muted mt-1">Max @Model.MaxFilesPerShare files, @FormatFileSize(Model.MaxFileSizeBytes) per file, @FormatFileSize(Model.MaxTotalUploadBytes) total.</p>
+                </div>
+                <button type="button" class="px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors" data-public-pick-files>Select files</button>
+              </div>
+              <p class="text-xs text-ink-muted mt-3" data-public-upload-status>No files uploaded yet.</p>
+              <div class="mt-4 hidden" data-public-upload-hidden></div>
+              <ul class="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2" data-public-upload-list></ul>
+            </div>
+          </div>
+
+          <input type="hidden" name="uploadToken" value="@Model.UploadToken" data-public-upload-token />
+          <input type="hidden" name="draftShareId" value="@Model.DraftShareId" data-public-draft-share-id />
+
+          <div class="flex justify-end">
+            <button type="submit" class="hidden px-6 py-2.5 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed" data-public-submit disabled title="Upload at least one file first.">Send files</button>
+          </div>
+        </form>
+      </div>
+    </section>
+  }
 
   <script src="/js/public-upload.js"></script>
 }
