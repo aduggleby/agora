@@ -302,6 +302,10 @@ Switching providers does not move existing content. To move a FileSystem install
 
 ### Upgrade notes
 
+**0.9.22:** the container runs as the `app` user (UID 1654): `chown -R 1654:1654` existing bind mounts for `/app/data`
+before upgrading. Ownership of shares and templates moves to the account id (backfilled once from the address). Confirmation
+links now open a page with a confirm button. Custom share tokens need 8 characters and upload codes 8 (generated: 12).
+
 **0.9.20:** `Agora__PublicBaseUrl` is required (startup fails without it outside `Development`), and `X-Forwarded-*`
 headers are honoured only from loopback and the proxies in `Agora__TrustedProxies`; set it to your reverse proxy's
 address or every visitor shares one rate-limit bucket. Cookies are `Secure` in `Production` (set

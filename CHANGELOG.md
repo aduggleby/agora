@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.22] - 2026-10-13
+
+### Added
+- Temporary direct links: with exactly one inline-safe file staged, "Create temporary direct link" creates a share instantly whose `/s/{token}` URL returns the file itself (no download page), expiring after 30 minutes, 6 hours, 1 day or 7 days. The link is shown and copied to the clipboard; direct links appear in My shares with a badge, count every view, never send notifications and are purged right after expiry.
+- Security headers are set by the app (`nosniff`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, HSTS over https; `Agora__SecurityHeaders__Enabled`), plus a report-only Content-Security-Policy with a per-request script nonce.
+- Password hashes use a versioned PBKDF2 format with 600,000 iterations and are upgraded transparently at sign-in; new passwords must be 8 to 128 characters.
+
+### Changed
+- Shares, templates, drafts and staged uploads belong to the account id (backfilled once from the address at startup); authenticated account operations use the session's account id. Deleting an account removes its template and shares.
+- Registration, sign-in, forgot-password and confirmation links answer uniformly; an unconfirmed address can be claimed by whoever registers it again and confirms the mailbox; lockout is per account and client IP; all credential changes rotate the session stamp and clear pending tokens; email changes notify the old address and re-address the user's shares.
+- Confirmation links open a page and act only on the confirm button (POST), so mail scanners cannot consume them.
+- Deleted shares answer 404 and expired ones 410 on every public route; the link-preview image is cached per share and gated like the rest; preview generation is claimed once per retention window; the anonymous share summary reveals nothing for password-protected shares; custom share tokens need 8 characters, upload codes 8 (generated: 12).
+- The created page uses `/shares/created/{token}` (old links redirect); share pages send `Referrer-Policy: same-origin`; tokens no longer appear in logs.
+- Public-upload sender names are bounded and sanitised; the notification From display name is quoted safely.
+- The container image runs as the `app` user (UID 1654): existing bind mounts must be owned by that user (see README).
+- Sealed drafts hold a processing lease so the scratch sweep never removes in-flight uploads.
+
 ## [0.9.21] - 2026-10-13
 
 ### Changed
