@@ -1,17 +1,16 @@
 using Agora.Web.Services;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using SkiaSharp;
 
 namespace Agora.Application.Tests;
 
 /// <summary>
 /// Runtime smoke of the link-preview (OG) image drawing, plus the background budget: backgrounds are decoded with the
-/// restricted decoder set, extreme aspect ratios are skipped, and accepted ones are cropped to the canvas in one step.
+/// restricted format set, extreme aspect ratios are skipped, and accepted ones are cropped to the canvas in one step.
 /// </summary>
 public sealed class OgImageGeneratorTests
 {
     private static readonly string FontsDirectory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "Fonts"));
-    private static readonly Rgba32 Navy = new(30, 60, 90);
+    private static readonly SKColor Navy = new(30, 60, 90);
 
     [Fact]
     public async Task Default_og_image_renders()
@@ -20,9 +19,7 @@ public sealed class OgImageGeneratorTests
 
         var png = await generator.GenerateDefaultOgImageAsync("Agora", "Self hosted secure file transfer");
 
-        using var image = Image.Load<Rgba32>(png);
-        Assert.Equal(1200, image.Width);
-        Assert.Equal(630, image.Height);
+        Assert.Equal((1200, 630), ImageCrafting.Dimensions(png));
     }
 
     [Fact]
@@ -36,8 +33,8 @@ public sealed class OgImageGeneratorTests
         // (20, 20) lies outside the card: cream gradient without a background, blurred navy under a dark overlay with one.
         var plain = CornerPixel(withoutBackground);
         var dark = CornerPixel(withBackground);
-        Assert.True(plain.R > 200, $"expected cream corner, got {plain}");
-        Assert.True(dark.R < 100 && dark.B > dark.R, $"expected darkened navy corner, got {dark}");
+        Assert.True(plain.Red > 200, $"expected cream corner, got {plain}");
+        Assert.True(dark.Red < 100 && dark.Blue > dark.Red, $"expected darkened navy corner, got {dark}");
     }
 
     [Theory]
@@ -50,7 +47,7 @@ public sealed class OgImageGeneratorTests
         var withoutBackground = await RenderAsync(generator, null);
         var skipped = await RenderAsync(generator, await PngAsync(width, height));
 
-        // Skipped at Identify time: the output is byte-identical to rendering with no background at all.
+        // Skipped from the header: the output is byte-identical to rendering with no background at all.
         Assert.Equal(withoutBackground, skipped);
     }
 
@@ -70,33 +67,36 @@ public sealed class OgImageGeneratorTests
     {
         var generator = new OgImageGenerator(FontsDirectory);
 
-        // 10:1 is the limit: this goes through the single ResizeMode.Crop operation (no cover-sized intermediate).
+        // 10:1 is the limit: this goes through the single cover-crop draw (no cover-sized intermediate).
         var png = await RenderAsync(generator, await PngAsync(4000, 400));
 
-        using var image = Image.Load<Rgba32>(png);
-        Assert.Equal(1200, image.Width);
-        Assert.Equal(630, image.Height);
+        Assert.Equal((1200, 630), ImageCrafting.Dimensions(png));
         var corner = CornerPixel(png);
-        Assert.True(corner.R < 100 && corner.B > corner.R, $"expected darkened navy corner, got {corner}");
+        Assert.True(corner.Red < 100 && corner.Blue > corner.Red, $"expected darkened navy corner, got {corner}");
+    }
+
+    [Fact]
+    public async Task Animated_webp_background_shows_the_first_frame()
+    {
+        var generator = new OgImageGenerator(FontsDirectory);
+        var webp = ImageCrafting.AnimatedWebp(64, 48, new SKColor(220, 30, 30), new SKColor(30, 30, 220));
+
+        var png = await RenderAsync(generator, new MemoryStream(webp));
+
+        // Blurred red under the dark overlay: still clearly red rather than the blue second frame.
+        var corner = CornerPixel(png);
+        Assert.True(corner.Red > 60 && corner.Red > corner.Blue * 2, $"expected darkened red corner, got {corner}");
     }
 
     private static Task<byte[]> RenderAsync(OgImageGenerator generator, Stream? background) =>
         generator.GenerateShareOgImageAsync(background, null, "Quarterly report", "From Alex", "report.pdf", 3, "12.4 MB", isExpired: false);
 
-    private static Rgba32 CornerPixel(byte[] png)
+    private static SKColor CornerPixel(byte[] png)
     {
-        using var image = Image.Load<Rgba32>(png);
-        Assert.Equal(1200, image.Width);
-        Assert.Equal(630, image.Height);
-        return image[20, 20];
+        Assert.Equal((1200, 630), ImageCrafting.Dimensions(png));
+        return ImageCrafting.Pixel(png, 20, 20);
     }
 
-    private static async Task<MemoryStream> PngAsync(int width, int height)
-    {
-        using var source = new Image<Rgba32>(width, height, Navy);
-        var output = new MemoryStream();
-        await source.SaveAsPngAsync(output);
-        output.Position = 0;
-        return output;
-    }
+    private static Task<MemoryStream> PngAsync(int width, int height) =>
+        Task.FromResult(new MemoryStream(ImageCrafting.Solid(width, height, Navy)));
 }

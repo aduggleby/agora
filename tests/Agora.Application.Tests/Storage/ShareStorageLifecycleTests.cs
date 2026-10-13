@@ -20,8 +20,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using SkiaSharp;
 
 namespace Agora.Application.Tests.Storage;
 
@@ -495,16 +494,10 @@ public sealed class ShareStorageLifecycleTests : IAsyncLifetime
         UploadSourceFile file;
         if (imageFile)
         {
-            using var image = new Image<Rgba32>(40, 30, new Rgba32(200, 100, 50));
             var isGif = imageName.EndsWith(".gif", StringComparison.OrdinalIgnoreCase);
-            if (isGif)
-            {
-                await image.SaveAsGifAsync(filePath);
-            }
-            else
-            {
-                await image.SaveAsPngAsync(filePath);
-            }
+            await File.WriteAllBytesAsync(filePath, isGif
+                ? ImageCrafting.Gif(40, 30)
+                : ImageCrafting.Solid(40, 30, new SKColor(200, 100, 50)));
 
             file = new UploadSourceFile(filePath, imageName, new FileInfo(filePath).Length, isGif ? "image/gif" : "image/png");
         }

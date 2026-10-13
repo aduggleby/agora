@@ -353,12 +353,17 @@ over a budget is not decoded at all; the share shows the "preview unavailable" i
 | `Agora__Previews__MaxSourcePixels` | `50000000` | Largest image (width x height, 50 megapixels) that is decoded; checked from the file header before decoding |
 | `Agora__Previews__TimeoutSeconds` | `30` | Wall-clock budget for generating one preview or thumbnail |
 
-Not configurable: only one frame of an animated image is decoded, images are scaled down during decoding where the
-format allows it, only PNG, JPEG, WEBP and BMP decoders are enabled regardless of the file's extension (GIF uploads are
-served inline but get no generated preview), PNG headers are checked before decoding, PDF pages
-are rasterized with the longer side at 1200 pixels (pages larger than 14400 points on a side, the PDF maximum, are
-rejected) with at most two PDF renders running at once, and a preview job is retried at most once on infrastructure
-errors (never on a decoder failure).
+Not configurable: images are decoded with SkiaSharp, which has no allocator cap of its own, so the pixel budget on the
+header dimensions is the memory bound. The decoded raster costs 4 bytes per pixel of the decoded size: a PNG or BMP
+always decodes at full size (200 MB at the default budget), while JPEG and WEBP are scaled down during decoding towards
+the preview size. On top of that come bounded copies: the 960x720 preview canvas or the thumbnail canvas, and the
+encoder's output buffer. At most two raster decodes and two PDF renders run at once; a decode that outlives the time
+budget keeps its slot until it returns. Only the first frame of an animated image is decoded, and only PNG, JPEG, WEBP
+and BMP are accepted, decided from the file's magic bytes rather than its extension (GIF uploads are served inline but
+get no generated preview). PNGs are pre-scanned before any native decoder sees them: compressed text chunks, a second
+colour profile, more than 64 KB of ancillary chunk data, or a malformed chunk layout rejects the file. PDF pages are
+rasterized with the longer side at 1200 pixels (pages larger than 14400 points on a side, the PDF maximum, are
+rejected), and a preview job is retried at most once on infrastructure errors (never on a decoder failure).
 
 How uploaded content is served (not configurable):
 

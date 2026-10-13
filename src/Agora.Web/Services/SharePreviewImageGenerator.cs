@@ -6,13 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using PDFtoImage;
 using PDFtoImage.Exceptions;
-using SixLabors.Fonts;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Drawing.Processing;
-using SixLabors.ImageSharp.Formats;
-using SixLabors.ImageSharp.Formats.Jpeg;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
+using SkiaSharp;
 using IOPath = System.IO.Path;
 
 namespace Agora.Web.Services;
@@ -36,27 +30,35 @@ public sealed class SharePreviewImageGenerator
     public const int PdfMaxPagePoints = 14400;
 
     // PDFium is native, synchronous and cannot be cancelled: cap how many renders run at once so renders abandoned
-    // after a timeout occupy a slot (and block the next one) instead of piling up.
+    // after a timeout occupy a slot (and block the next one) instead of piling up. Raster decodes get the same
+    // treatment: Skia decodes synchronously and a decode abandoned after a timeout holds up to the pixel budget x 4
+    // bytes until it returns. Internal so tests can hold the slots.
     private static readonly SemaphoreSlim PdfRenderSlots = new(2, 2);
+    internal static readonly SemaphoreSlim RasterDecodeSlots = new(2, 2);
+    private static long _rasterDecodesStarted;
 
-    private static readonly Color White = Color.ParseHex("#FFFFFF");
-    private static readonly Color Ink = Color.ParseHex("#1A1614");
-    private static readonly Color InkLight = Color.ParseHex("#5C534A");
-    private static readonly Color Border = Color.ParseHex("#E5DFD7");
-    private static readonly Color Terra = Color.ParseHex("#C4663A");
+    /// <summary>Number of raster decode workers that have started (for tests).</summary>
+    internal static long RasterDecodesStarted => Interlocked.Read(ref _rasterDecodesStarted);
+
+    private static readonly SKSamplingOptions Resampling = new(SKCubicResampler.Mitchell);
+
+    private static readonly SKColor White = SKColors.White;
+    private static readonly SKColor InkLight = SKColor.Parse("#5C534A");
+    private static readonly SKColor Border = SKColor.Parse("#E5DFD7");
+    private static readonly SKColor Terra = SKColor.Parse("#C4663A");
     private static readonly object GenericPreviewSync = new();
     private static byte[]? _pendingPreviewBytes;
     private static byte[]? _unavailablePreviewBytes;
 
     private readonly AgoraPreviewOptions _limits;
-    private readonly Configuration _decoderConfiguration;
+    private readonly BrandTypefaces _typefaces;
     private readonly ILogger<SharePreviewImageGenerator> _logger;
 
-    public SharePreviewImageGenerator(IOptions<AgoraOptions> options, ILogger<SharePreviewImageGenerator>? logger = null)
+    public SharePreviewImageGenerator(IOptions<AgoraOptions> options, ILogger<SharePreviewImageGenerator>? logger = null, string? fontsDirectory = null)
     {
         _limits = options.Value.Previews;
         _logger = logger ?? NullLogger<SharePreviewImageGenerator>.Instance;
-        _decoderConfiguration = UntrustedImageDecoding.CreateConfiguration(_limits.MaxSourcePixels);
+        _typefaces = new BrandTypefaces(fontsDirectory ?? BrandTypefaces.DefaultDirectory);
     }
 
     public Task<byte[]> GenerateForFileAsync(ShareFile file, string absolutePath, CancellationToken ct) =>
@@ -69,8 +71,11 @@ public sealed class SharePreviewImageGenerator
         // The decoder is picked from the extension only (ContentTypePolicy), never from a stored or declared type.
         if (ContentTypePolicy.IsRasterImage(file.OriginalFilename))
         {
-            using var source = await LoadBoundedImageAsync(absolutePath, new Size(ContentMaxWidth, ContentMaxHeight), ct);
-            return await RenderContainedImageAsync(source, ct);
+            return await RunBoundedAsync(() =>
+            {
+                using var source = LoadBoundedImage(absolutePath, new SKSizeI(ContentMaxWidth, ContentMaxHeight));
+                return RenderContainedImage(source);
+            }, ct);
         }
 
         if (ContentTypePolicy.FromFileName(file.OriginalFilename) == "application/pdf")
@@ -85,7 +90,7 @@ public sealed class SharePreviewImageGenerator
         if (renderType == "text" || LooksLikeTextFile(file.OriginalFilename))
         {
             var snippet = await ReadTextSnippetAsync(absolutePath, ct);
-            return await RenderTextPreviewAsync(snippet, ct);
+            return RenderTextPreview(snippet);
         }
 
         return await GenerateUnavailablePreviewAsync(ct);
@@ -104,15 +109,17 @@ public sealed class SharePreviewImageGenerator
     }
 
     public Task<byte[]> GenerateMosaicThumbnailAsync(string absolutePath, int maxHeight, CancellationToken ct) =>
-        WithTimeoutAsync(async token =>
+        WithTimeoutAsync(token => RunBoundedAsync(() =>
         {
-            using var source = await LoadBoundedImageAsync(absolutePath, new Size(maxHeight * 8, maxHeight), token);
-            FitWithin(source, new Size(maxHeight * 8, maxHeight));
+            var box = new SKSizeI(maxHeight * 8, maxHeight);
+            using var source = LoadBoundedImage(absolutePath, box);
+            var size = FitWithin(source.Info.Size, box);
 
-            await using var output = new MemoryStream();
-            await source.SaveAsJpegAsync(output, new JpegEncoder { Quality = 82 }, token);
-            return output.ToArray();
-        }, ct);
+            using var surface = SKSurface.Create(new SKImageInfo(size.Width, size.Height, SKColorType.Rgba8888, SKAlphaType.Premul));
+            surface.Canvas.Clear(White);
+            surface.Canvas.DrawBitmap(source, SKRect.Create(size.Width, size.Height), Resampling);
+            return EncodeJpeg(surface, 82);
+        }, token), ct);
 
     /// <summary>
     /// Runs <paramref name="work"/> under the configured time budget. A timeout surfaces as
@@ -133,48 +140,45 @@ public sealed class SharePreviewImageGenerator
     }
 
     /// <summary>
-    /// Opens an uploaded image within the budgets: the byte size is checked first, then the header (via
-    /// <see cref="Image.IdentifyAsync(DecoderOptions, string, CancellationToken)"/>) against the pixel budget, and only
-    /// then is a single frame decoded, scaled down to <paramref name="targetSize"/> where the format allows it.
+    /// Runs a synchronous Skia decode/draw on the pool inside one of the <see cref="RasterDecodeSlots"/>; only the wait
+    /// is cancellable. Waiting for a slot counts against the time budget, so with both slots held by abandoned work a
+    /// new request is rejected on timeout without ever starting. The slot is released when the worker actually exits.
     /// </summary>
-    private async Task<Image<Rgba32>> LoadBoundedImageAsync(string absolutePath, Size targetSize, CancellationToken ct)
+    private static async Task<T> RunBoundedAsync<T>(Func<T> work, CancellationToken ct)
+    {
+        await RasterDecodeSlots.WaitAsync(ct);
+        if (ct.IsCancellationRequested)
+        {
+            RasterDecodeSlots.Release();
+            ct.ThrowIfCancellationRequested();
+        }
+
+        var worker = Task.Run(() =>
+        {
+            Interlocked.Increment(ref _rasterDecodesStarted);
+            try
+            {
+                return work();
+            }
+            finally
+            {
+                RasterDecodeSlots.Release();
+            }
+        }, CancellationToken.None);
+
+        return await worker.WaitAsync(ct);
+    }
+
+    /// <summary>
+    /// Opens an uploaded image within the budgets: the byte size is checked first, then the header (format and pixel
+    /// budget, see <see cref="UntrustedImageDecoding"/>), and only then is the first frame decoded, scaled down during
+    /// decoding towards <paramref name="targetBox"/> where the format allows it.
+    /// </summary>
+    private SKBitmap LoadBoundedImage(string absolutePath, SKSizeI targetBox)
     {
         EnsureWithinByteBudget(absolutePath);
-        await using (var header = File.OpenRead(absolutePath))
-        {
-            if (UntrustedImageDecoding.RejectPngHeader(header, _limits.MaxSourcePixels) is { } reason)
-            {
-                throw new PreviewSourceRejectedException(reason);
-            }
-        }
-
-        ImageInfo info;
-        try
-        {
-            info = await Image.IdentifyAsync(UntrustedImageDecoding.CreateDecoderOptions(_decoderConfiguration), absolutePath, ct);
-        }
-        catch (ImageFormatException ex)
-        {
-            throw new PreviewSourceRejectedException($"source is not a decodable image ({ex.GetType().Name})");
-        }
-
-        var pixels = (long)info.Width * info.Height;
-        if (pixels > _limits.MaxSourcePixels)
-        {
-            throw new PreviewSourceRejectedException(
-                $"source is {info.Width}x{info.Height} ({pixels} pixels), above the {_limits.MaxSourcePixels} pixel budget");
-        }
-
-        // TargetSize would also upscale a small source to the box; only ask for it when the source is larger.
-        var decodeTarget = info.Width > targetSize.Width || info.Height > targetSize.Height ? targetSize : (Size?)null;
-        try
-        {
-            return await Image.LoadAsync<Rgba32>(UntrustedImageDecoding.CreateDecoderOptions(_decoderConfiguration, decodeTarget), absolutePath, ct);
-        }
-        catch (ImageFormatException ex)
-        {
-            throw new PreviewSourceRejectedException($"source is not a decodable image ({ex.GetType().Name})");
-        }
+        using var codec = UntrustedImageDecoding.OpenHeader(absolutePath, _limits.MaxSourcePixels);
+        return UntrustedImageDecoding.DecodeFirstFrame(codec, targetBox);
     }
 
     private void EnsureWithinByteBudget(string absolutePath)
@@ -200,7 +204,8 @@ public sealed class SharePreviewImageGenerator
         {
             try
             {
-                return RenderPdfFirstPageBounded(absolutePath);
+                using var page = RenderPdfFirstPageBounded(absolutePath);
+                return RenderContainedImage(page);
             }
             finally
             {
@@ -208,10 +213,9 @@ public sealed class SharePreviewImageGenerator
             }
         }, CancellationToken.None);
 
-        byte[] rendered;
         try
         {
-            rendered = await render.WaitAsync(ct);
+            return await render.WaitAsync(ct);
         }
         catch (OperationCanceledException)
         {
@@ -219,17 +223,6 @@ public sealed class SharePreviewImageGenerator
             throw;
         }
         catch (Exception ex) when (IsPdfInputError(ex))
-        {
-            return null;
-        }
-
-        try
-        {
-            await using var pdfImageStream = new MemoryStream(rendered);
-            using var source = await Image.LoadAsync<Rgba32>(UntrustedImageDecoding.CreateDecoderOptions(_decoderConfiguration), pdfImageStream, ct);
-            return await RenderContainedImageAsync(source, ct);
-        }
-        catch (ImageFormatException)
         {
             return null;
         }
@@ -243,11 +236,12 @@ public sealed class SharePreviewImageGenerator
         ex is PdfException or ArgumentException or InvalidOperationException;
 
     /// <summary>
-    /// Rasterizes page one of a PDF as JPEG with the longer side at <see cref="PdfLongSidePixels"/> pixels (aspect ratio
+    /// Rasterizes page one of a PDF with the longer side at <see cref="PdfLongSidePixels"/> pixels (aspect ratio
     /// preserved). Pages with a side above <see cref="PdfMaxPagePoints"/> points throw <see cref="PreviewSourceRejectedException"/>.
-    /// Public so tests can check the intermediate raster size; the caller is responsible for byte budget and timeout.
+    /// Public so tests can check the intermediate raster size; the caller is responsible for byte budget and timeout,
+    /// and disposes the bitmap.
     /// </summary>
-    public static byte[] RenderPdfFirstPageBounded(string absolutePath)
+    public static SKBitmap RenderPdfFirstPageBounded(string absolutePath)
     {
         using var pdf = File.OpenRead(absolutePath);
         var pageSize = Conversion.GetPageSize(pdf, page: 0, leaveOpen: true);
@@ -267,71 +261,55 @@ public sealed class SharePreviewImageGenerator
             : new RenderOptions(Height: PdfLongSidePixels, WithAspectRatio: true);
 
         pdf.Position = 0;
-        using var output = new MemoryStream();
-        Conversion.SaveJpeg(output, pdf, page: 0, leaveOpen: true, password: null, options: options);
-        return output.ToArray();
+        var page = Conversion.ToImage(pdf, page: 0, leaveOpen: true, password: null, options: options);
+        page.SetImmutable();
+        return page;
     }
 
     /// <summary>
-    /// Scales <paramref name="image"/> in either direction so it fits <paramref name="box"/> exactly on one side,
-    /// keeping the aspect ratio: a 40x30 source fills the box, while an extreme strip such as 2400x1 is bounded by the
-    /// box width (never 720000x300). Dimensions never drop below 1.
+    /// The size at which <paramref name="source"/> fits <paramref name="box"/> exactly on one side, scaling in either
+    /// direction and keeping the aspect ratio: a 40x30 source fills the box, while an extreme strip such as 2400x1 is
+    /// bounded by the box width (never 720000x300). Dimensions never drop below 1.
     /// </summary>
-    private static void FitWithin(Image<Rgba32> image, Size box)
+    private static SKSizeI FitWithin(SKSizeI source, SKSizeI box)
     {
-        var scale = Math.Min((double)box.Width / image.Width, (double)box.Height / image.Height);
-        var width = Math.Max(1, (int)Math.Round(image.Width * scale));
-        var height = Math.Max(1, (int)Math.Round(image.Height * scale));
-        if (width == image.Width && height == image.Height)
-        {
-            return;
-        }
-
-        image.Mutate(ctx => ctx.Resize(width, height, KnownResamplers.Bicubic));
+        var scale = Math.Min((double)box.Width / source.Width, (double)box.Height / source.Height);
+        return new SKSizeI(
+            Math.Max(1, (int)Math.Round(source.Width * scale)),
+            Math.Max(1, (int)Math.Round(source.Height * scale)));
     }
 
-    private async Task<byte[]> RenderContainedImageAsync(Image<Rgba32> source, CancellationToken ct)
+    private static byte[] RenderContainedImage(SKBitmap source)
     {
-        using var canvas = new Image<Rgba32>(CanvasWidth, CanvasHeight, White);
-
-        FitWithin(source, new Size(ContentMaxWidth, ContentMaxHeight));
-
-        var x = (CanvasWidth - source.Width) / 2;
-        var y = 20 + (ContentMaxHeight - source.Height) / 2;
-        canvas.Mutate(ctx =>
-        {
-            ctx.DrawImage(source, new Point(x, y), 1f);
-        });
-
-        await using var output = new MemoryStream();
-        await canvas.SaveAsJpegAsync(output, new JpegEncoder { Quality = 84 }, ct);
-        return output.ToArray();
+        using var surface = CreateCanvas();
+        var size = FitWithin(source.Info.Size, new SKSizeI(ContentMaxWidth, ContentMaxHeight));
+        var x = (CanvasWidth - size.Width) / 2;
+        var y = 20 + (ContentMaxHeight - size.Height) / 2;
+        surface.Canvas.DrawBitmap(source, SKRect.Create(x, y, size.Width, size.Height), Resampling);
+        return EncodeJpeg(surface, 84);
     }
 
-    private async Task<byte[]> RenderTextPreviewAsync(string text, CancellationToken ct)
+    private byte[] RenderTextPreview(string text)
     {
-        using var canvas = new Image<Rgba32>(CanvasWidth, CanvasHeight, White);
-        var bodyFont = PickFont(18, FontStyle.Regular);
+        using var surface = CreateCanvas();
+        var canvas = surface.Canvas;
+        using var fill = new SKPaint { Color = White, IsAntialias = true };
+        using var stroke = new SKPaint { Color = Border, IsAntialias = true, IsStroke = true, StrokeWidth = 1 };
+        var frame = SKRect.Create(20, 20, CanvasWidth - 40, CanvasHeight - 40);
+        canvas.DrawRect(frame, fill);
+        canvas.DrawRect(frame, stroke);
 
-        canvas.Mutate(ctx =>
-        {
-            ctx.Fill(Color.White, new RectangleF(20, 20, CanvasWidth - 40, CanvasHeight - 40));
-            ctx.Draw(Border, 1f, new RectangleF(20, 20, CanvasWidth - 40, CanvasHeight - 40));
-            ctx.DrawText(new RichTextOptions(bodyFont)
-            {
-                Origin = new PointF(34, 36),
-                WrappingLength = CanvasWidth - 68,
-                VerticalAlignment = VerticalAlignment.Top,
-                HorizontalAlignment = HorizontalAlignment.Left
-            }, NormalizeText(text), InkLight);
-        });
+        using var font = SkiaText.CreateFont(_typefaces.Regular, 18);
+        using var ink = SkiaText.CreatePaint(InkLight);
+        canvas.Save();
+        canvas.ClipRect(SKRect.Create(34, 36, CanvasWidth - 68, CanvasHeight - 72));
+        SkiaText.DrawWrapped(canvas, NormalizeText(text), font, ink, 34, 36, CanvasWidth - 68);
+        canvas.Restore();
 
-        await using var output = new MemoryStream();
-        await canvas.SaveAsJpegAsync(output, new JpegEncoder { Quality = 85 }, ct);
-        return output.ToArray();
+        return EncodeJpeg(surface, 85);
     }
 
-    private static byte[] GetOrCreatePendingPreviewBytes()
+    private byte[] GetOrCreatePendingPreviewBytes()
     {
         if (_pendingPreviewBytes is not null)
         {
@@ -340,12 +318,12 @@ public sealed class SharePreviewImageGenerator
 
         lock (GenericPreviewSync)
         {
-            _pendingPreviewBytes ??= RenderGenericStatusPreview("Preparing preview...");
+            _pendingPreviewBytes ??= RenderGenericStatusPreview(_typefaces, "Preparing preview...");
             return _pendingPreviewBytes;
         }
     }
 
-    private static byte[] GetOrCreateUnavailablePreviewBytes()
+    private byte[] GetOrCreateUnavailablePreviewBytes()
     {
         if (_unavailablePreviewBytes is not null)
         {
@@ -354,42 +332,61 @@ public sealed class SharePreviewImageGenerator
 
         lock (GenericPreviewSync)
         {
-            _unavailablePreviewBytes ??= RenderGenericStatusPreview("Preview cannot be shown for this file type.");
+            _unavailablePreviewBytes ??= RenderGenericStatusPreview(_typefaces, "Preview cannot be shown for this file type.");
             return _unavailablePreviewBytes;
         }
     }
 
-    private static byte[] RenderGenericStatusPreview(string message)
+    private static byte[] RenderGenericStatusPreview(BrandTypefaces typefaces, string message)
     {
-        using var canvas = new Image<Rgba32>(CanvasWidth, CanvasHeight, White);
+        using var surface = CreateCanvas();
+        var canvas = surface.Canvas;
 
-        canvas.Mutate(ctx =>
+        using (var gradient = new SKPaint
+               {
+                   Shader = SKShader.CreateLinearGradient(
+                       new SKPoint(0, 0),
+                       new SKPoint(CanvasWidth, CanvasHeight),
+                       [Terra.WithAlpha(22), Terra.WithAlpha(0)],
+                       SKShaderTileMode.Clamp)
+               })
         {
-            ctx.Fill(new LinearGradientBrush(
-                new PointF(0, 0),
-                new PointF(CanvasWidth, CanvasHeight),
-                GradientRepetitionMode.None,
-                new ColorStop(0, new Color(new Rgba32(196, 102, 58, 22))),
-                new ColorStop(1, Color.Transparent)),
-                new RectangleF(0, 0, CanvasWidth, CanvasHeight));
-            ctx.Fill(Color.White, new RectangleF(70, 90, CanvasWidth - 140, CanvasHeight - 180));
-            ctx.Draw(Border, 1f, new RectangleF(70, 90, CanvasWidth - 140, CanvasHeight - 180));
-            ctx.DrawText(new RichTextOptions(PickFont(52, FontStyle.Bold))
-            {
-                Origin = new PointF(CanvasWidth / 2f, 290),
-                HorizontalAlignment = HorizontalAlignment.Center
-            }, "PREVIEW", Terra);
-            ctx.DrawText(new RichTextOptions(PickFont(18, FontStyle.Regular))
-            {
-                Origin = new PointF(CanvasWidth / 2f, 380),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                WrappingLength = CanvasWidth - 220
-            }, message, InkLight);
-        });
+            canvas.DrawRect(SKRect.Create(CanvasWidth, CanvasHeight), gradient);
+        }
 
-        using var output = new MemoryStream();
-        canvas.SaveAsJpeg(output, new JpegEncoder { Quality = 85 });
-        return output.ToArray();
+        var card = SKRect.Create(70, 90, CanvasWidth - 140, CanvasHeight - 180);
+        using (var fill = new SKPaint { Color = White, IsAntialias = true })
+        using (var stroke = new SKPaint { Color = Border, IsAntialias = true, IsStroke = true, StrokeWidth = 1 })
+        {
+            canvas.DrawRect(card, fill);
+            canvas.DrawRect(card, stroke);
+        }
+
+        using (var titleFont = SkiaText.CreateFont(typefaces.Bold, 52))
+        using (var titlePaint = SkiaText.CreatePaint(Terra))
+        using (var bodyFont = SkiaText.CreateFont(typefaces.Regular, 18))
+        using (var bodyPaint = SkiaText.CreatePaint(InkLight))
+        {
+            SkiaText.DrawWrapped(canvas, "PREVIEW", titleFont, titlePaint, CanvasWidth / 2f, 290, CanvasWidth, SKTextAlign.Center);
+            SkiaText.DrawWrapped(canvas, message, bodyFont, bodyPaint, CanvasWidth / 2f, 380, CanvasWidth - 220, SKTextAlign.Center);
+        }
+
+        return EncodeJpeg(surface, 85);
+    }
+
+    private static SKSurface CreateCanvas()
+    {
+        var surface = SKSurface.Create(new SKImageInfo(CanvasWidth, CanvasHeight, SKColorType.Rgba8888, SKAlphaType.Premul));
+        surface.Canvas.Clear(White);
+        return surface;
+    }
+
+    private static byte[] EncodeJpeg(SKSurface surface, int quality)
+    {
+        using var image = surface.Snapshot();
+        using var data = image.Encode(SKEncodedImageFormat.Jpeg, quality)
+            ?? throw new InvalidOperationException("JPEG encoding failed.");
+        return data.ToArray();
     }
 
     private static bool LooksLikeTextFile(string fileName)
@@ -418,20 +415,6 @@ public sealed class SharePreviewImageGenerator
         }
 
         return builder.ToString();
-    }
-
-    private static Font PickFont(float size, FontStyle style)
-    {
-        var families = new[] { "DM Sans", "DejaVu Sans", "Arial", "Liberation Sans" };
-        foreach (var family in families)
-        {
-            if (SystemFonts.TryGet(family, out var fontFamily))
-            {
-                return fontFamily.CreateFont(size, style);
-            }
-        }
-
-        return SystemFonts.Collection.Families.First().CreateFont(size, style);
     }
 
     private static string NormalizeText(string text)

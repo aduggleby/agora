@@ -14,6 +14,9 @@ COPY . .
 RUN dotnet publish src/Agora.Web/Agora.Web.csproj -c Release -o /app/publish --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+# Image generation uses SkiaSharp (NativeAssets.Linux.NoDependencies: links only glibc, libstdc++ and libgcc_s, no
+# fontconfig; fonts come from /app/Fonts) and PDFium, both already shipped as managed-package native assets. No apt
+# packages are needed on this base image.
 WORKDIR /app
 
 ENV ASPNETCORE_URLS=http://0.0.0.0:18080

@@ -1,10 +1,4 @@
-using SixLabors.Fonts;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Drawing;
-using SixLabors.ImageSharp.Drawing.Processing;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
-using IOPath = System.IO.Path;
+using SkiaSharp;
 
 namespace Agora.Web.Services;
 
@@ -13,40 +7,28 @@ public sealed class OgImageGenerator
     private const int Width = 1200;
     private const int Height = 630;
 
-    private static readonly Color Cream = Color.ParseHex("#FAF7F2");
-    private static readonly Color Ink = Color.ParseHex("#1A1614");
-    private static readonly Color InkLight = Color.ParseHex("#5C534A");
-    private static readonly Color InkMuted = Color.ParseHex("#9B9189");
-    private static readonly Color Terra = Color.ParseHex("#C4663A");
-    private static readonly Color CardBg = Color.ParseHex("#FFFFFF");
-    private static readonly Color FilePillBg = Color.ParseHex("#F5F0E8");
+    private static readonly SKColor Cream = SKColor.Parse("#FAF7F2");
+    private static readonly SKColor Ink = SKColor.Parse("#1A1614");
+    private static readonly SKColor InkLight = SKColor.Parse("#5C534A");
+    private static readonly SKColor InkMuted = SKColor.Parse("#9B9189");
+    private static readonly SKColor Terra = SKColor.Parse("#C4663A");
+    private static readonly SKColor CardBg = SKColors.White;
+    private static readonly SKColor FilePillBg = SKColor.Parse("#F5F0E8");
 
-    private readonly FontFamily _fontFamily;
-    private readonly Font _titleFont;
-    private readonly Font _subtitleFont;
-    private readonly Font _smallFont;
-    private readonly Font _brandFont;
+    private static readonly SKSamplingOptions Resampling = new(SKCubicResampler.Mitchell);
+
+    private readonly BrandTypefaces _typefaces;
 
     public OgImageGenerator(string fontsDirectory)
     {
-        var collection = new FontCollection();
-        collection.Add(IOPath.Combine(fontsDirectory, "DMSans-Regular.ttf"));
-        collection.Add(IOPath.Combine(fontsDirectory, "DMSans-Medium.ttf"));
-        _fontFamily = collection.Add(IOPath.Combine(fontsDirectory, "DMSans-Bold.ttf"));
-
-        _titleFont = _fontFamily.CreateFont(35, FontStyle.Bold);
-        _subtitleFont = _fontFamily.CreateFont(22, FontStyle.Regular);
-        _smallFont = _fontFamily.CreateFont(16, FontStyle.Regular);
-        _brandFont = _fontFamily.CreateFont(18, FontStyle.Bold);
+        _typefaces = new BrandTypefaces(fontsDirectory);
     }
 
     public const long MaxBackgroundBytes = 20L * 1024 * 1024;
     public const long MaxBackgroundPixels = 40_000_000;
     public const double MaxBackgroundAspectRatio = 10;
 
-    private static readonly Configuration DecoderConfiguration = UntrustedImageDecoding.CreateConfiguration(MaxBackgroundPixels);
-
-    public async Task<byte[]> GenerateShareOgImageAsync(
+    public Task<byte[]> GenerateShareOgImageAsync(
         Stream? backgroundImage,
         string? backgroundColorHex,
         string title,
@@ -56,72 +38,65 @@ public sealed class OgImageGenerator
         string sizeDisplay,
         bool isExpired)
     {
-        using var image = new Image<Rgba32>(Width, Height);
+        using var surface = SKSurface.Create(new SKImageInfo(Width, Height, SKColorType.Rgba8888, SKAlphaType.Premul));
+        var canvas = surface.Canvas;
 
-        var hasBackground = backgroundImage is not null && await DrawBackgroundImageAsync(image, backgroundImage);
+        var hasBackground = backgroundImage is not null && DrawBackgroundImage(canvas, backgroundImage);
         if (!hasBackground)
-            DrawGradientBackground(image, backgroundColorHex);
+            DrawGradientBackground(canvas, backgroundColorHex);
 
-        DrawShareCard(image, title, subtitle, fileName, fileCount, sizeDisplay, isExpired);
-        DrawBranding(image, hasBackground);
+        DrawShareCard(canvas, title, subtitle, fileName, fileCount, sizeDisplay, isExpired);
+        DrawBranding(canvas, hasBackground);
 
-        using var ms = new MemoryStream();
-        await image.SaveAsPngAsync(ms);
-        return ms.ToArray();
+        return Task.FromResult(EncodePng(surface));
     }
 
-    public async Task<byte[]> GenerateDefaultOgImageAsync(string heading, string? description)
+    public Task<byte[]> GenerateDefaultOgImageAsync(string heading, string? description)
     {
-        using var image = new Image<Rgba32>(Width, Height);
-        DrawGradientBackground(image, null);
+        using var surface = SKSurface.Create(new SKImageInfo(Width, Height, SKColorType.Rgba8888, SKAlphaType.Premul));
+        var canvas = surface.Canvas;
+        DrawGradientBackground(canvas, null);
 
         // Decorative elements
-        image.Mutate(ctx =>
+        using (var paint = new SKPaint { Color = Terra.WithAlpha(12), IsAntialias = true })
         {
-            ctx.Fill(new Color(new Rgba32(196, 102, 58, 12)), new EllipsePolygon(150, 100, 200));
-            ctx.Fill(new Color(new Rgba32(196, 102, 58, 8)), new EllipsePolygon(1050, 500, 250));
-        });
+            canvas.DrawCircle(150, 100, 200, paint);
+            paint.Color = Terra.WithAlpha(8);
+            canvas.DrawCircle(1050, 500, 250, paint);
+        }
 
         // Center text
-        var titleOpts = new RichTextOptions(_fontFamily.CreateFont(56, FontStyle.Bold))
+        using (var font = SkiaText.CreateFont(_typefaces.Bold, 56))
+        using (var paint = SkiaText.CreatePaint(Ink))
         {
-            Origin = new PointF(Width / 2f, Height / 2f - 30),
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            WrappingLength = Width - 200
-        };
-        image.Mutate(ctx => ctx.DrawText(titleOpts, heading, Ink));
+            var height = SkiaText.MeasureHeight(heading, font, Width - 200);
+            SkiaText.DrawWrapped(canvas, heading, font, paint, Width / 2f, Height / 2f - 30 - height / 2, Width - 200, SKTextAlign.Center);
+        }
 
         if (!string.IsNullOrWhiteSpace(description))
         {
-            var descOpts = new RichTextOptions(_subtitleFont)
-            {
-                Origin = new PointF(Width / 2f, Height / 2f + 35),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-                WrappingLength = Width - 300
-            };
-            image.Mutate(ctx => ctx.DrawText(descOpts, description, InkLight));
+            using var font = SkiaText.CreateFont(_typefaces.Regular, 22);
+            using var paint = SkiaText.CreatePaint(InkLight);
+            var height = SkiaText.MeasureHeight(description, font, Width - 300);
+            SkiaText.DrawWrapped(canvas, description, font, paint, Width / 2f, Height / 2f + 35 - height / 2, Width - 300, SKTextAlign.Center);
         }
 
-        var brandOpts = new RichTextOptions(_brandFont)
+        using (var font = SkiaText.CreateFont(_typefaces.Bold, 18))
+        using (var paint = SkiaText.CreatePaint(Terra))
         {
-            Origin = new PointF(Width / 2f, Height - 50),
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        image.Mutate(ctx => ctx.DrawText(brandOpts, "Agora", Terra));
+            SkiaText.DrawCentered(canvas, "Agora", font, paint, Width / 2f, Height - 50, SKTextAlign.Center);
+        }
 
-        using var ms = new MemoryStream();
-        await image.SaveAsPngAsync(ms);
-        return ms.ToArray();
+        return Task.FromResult(EncodePng(surface));
     }
 
     /// <summary>
-    /// Draws the uploaded background, streamed (never buffered whole). Backgrounds above <see cref="MaxBackgroundBytes"/>
-    /// or <see cref="MaxBackgroundPixels"/> are skipped, as are undecodable ones. Returns false when nothing was drawn.
+    /// Draws the uploaded background cover-cropped and blurred straight into the canvas (no cover-sized intermediate:
+    /// the decode is downscaled towards 1200x630 where the format allows and the crop happens in the draw).
+    /// Backgrounds above <see cref="MaxBackgroundBytes"/>, <see cref="MaxBackgroundPixels"/> or
+    /// <see cref="MaxBackgroundAspectRatio"/> are skipped, as are undecodable ones. Returns false when nothing was drawn.
     /// </summary>
-    private async Task<bool> DrawBackgroundImageAsync(Image<Rgba32> canvas, Stream imageStream)
+    private static bool DrawBackgroundImage(SKCanvas canvas, Stream imageStream)
     {
         try
         {
@@ -130,46 +105,35 @@ public sealed class OgImageGenerator
                 return false;
             }
 
-            if (UntrustedImageDecoding.RejectPngHeader(imageStream, MaxBackgroundPixels) is not null)
-            {
-                return false;
-            }
+            using var codec = UntrustedImageDecoding.OpenHeader(imageStream, MaxBackgroundPixels);
+            var info = codec.Info;
 
-            imageStream.Position = 0;
-            var info = await Image.IdentifyAsync(UntrustedImageDecoding.CreateDecoderOptions(DecoderConfiguration), imageStream);
-            if (info.Width <= 0 || info.Height <= 0 || (long)info.Width * info.Height > MaxBackgroundPixels)
-            {
-                return false;
-            }
-
-            // Covering 1200x630 with an extreme strip (e.g. 400x1) would mean a huge intermediate before cropping.
+            // Covering 1200x630 with an extreme strip (e.g. 400x1) would blow the strip up to thousands of pixels.
             var aspect = (double)Math.Max(info.Width, info.Height) / Math.Min(info.Width, info.Height);
             if (aspect > MaxBackgroundAspectRatio)
             {
                 return false;
             }
 
-            imageStream.Position = 0;
-            var decoderOptions = UntrustedImageDecoding.CreateDecoderOptions(DecoderConfiguration, new Size(Width, Height));
-            using var bgImage = await Image.LoadAsync<Rgba32>(decoderOptions, imageStream);
-            bgImage.Mutate(ctx =>
-            {
-                // One scale-and-crop operation straight to the canvas size: no cover-sized intermediate.
-                ctx.Resize(new ResizeOptions
-                {
-                    Size = new Size(Width, Height),
-                    Mode = ResizeMode.Crop,
-                    Sampler = KnownResamplers.Bicubic
-                });
-                ctx.GaussianBlur(15);
-            });
+            using var bgImage = UntrustedImageDecoding.DecodeFirstFrame(codec, new SKSizeI(Width, Height), cover: true);
 
-            canvas.Mutate(ctx =>
+            // Centre crop of the source at the canvas aspect ratio.
+            var scale = Math.Max((float)Width / bgImage.Width, (float)Height / bgImage.Height);
+            var cropWidth = Width / scale;
+            var cropHeight = Height / scale;
+            var source = SKRect.Create((bgImage.Width - cropWidth) / 2, (bgImage.Height - cropHeight) / 2, cropWidth, cropHeight);
+
+            using (var paint = new SKPaint { ImageFilter = SKImageFilter.CreateBlur(15, 15, SKShaderTileMode.Clamp) })
             {
-                ctx.DrawImage(bgImage, new Point(0, 0), 1f);
-                // Dark overlay
-                ctx.Fill(new Color(new Rgba32(0, 0, 0, 130)), new RectangularPolygon(0, 0, Width, Height));
-            });
+                canvas.DrawBitmap(bgImage, source, SKRect.Create(Width, Height), Resampling, paint);
+            }
+
+            // Dark overlay
+            using (var overlay = new SKPaint { Color = SKColors.Black.WithAlpha(130) })
+            {
+                canvas.DrawRect(SKRect.Create(Width, Height), overlay);
+            }
+
             return true;
         }
         catch
@@ -178,82 +142,72 @@ public sealed class OgImageGenerator
         }
     }
 
-    private static void DrawGradientBackground(Image<Rgba32> canvas, string? colorHex)
+    private static void DrawGradientBackground(SKCanvas canvas, string? colorHex)
     {
         var baseColor = Cream;
-        if (!string.IsNullOrWhiteSpace(colorHex))
+        if (!string.IsNullOrWhiteSpace(colorHex) && SKColor.TryParse(colorHex, out var parsed))
         {
-            try { baseColor = Color.ParseHex(colorHex); } catch { /* keep default */ }
+            baseColor = parsed;
         }
 
-        canvas.Mutate(ctx =>
+        canvas.Clear(baseColor);
+        using var gradient = new SKPaint
         {
-            ctx.Fill(baseColor);
-            var gradientBrush = new LinearGradientBrush(
-                new PointF(0, 0),
-                new PointF(Width, Height),
-                GradientRepetitionMode.None,
-                new ColorStop(0, new Color(new Rgba32(196, 102, 58, 18))),
-                new ColorStop(0.5f, Color.Transparent),
-                new ColorStop(1, new Color(new Rgba32(196, 102, 58, 12)))
-            );
-            ctx.Fill(gradientBrush, new RectangularPolygon(0, 0, Width, Height));
-        });
+            Shader = SKShader.CreateLinearGradient(
+                new SKPoint(0, 0),
+                new SKPoint(Width, Height),
+                [Terra.WithAlpha(18), Terra.WithAlpha(0), Terra.WithAlpha(12)],
+                [0f, 0.5f, 1f],
+                SKShaderTileMode.Clamp)
+        };
+        canvas.DrawRect(SKRect.Create(Width, Height), gradient);
     }
 
-    private void DrawShareCard(Image<Rgba32> canvas, string title, string? subtitle, string fileName, int fileCount, string sizeDisplay, bool isExpired)
+    private void DrawShareCard(SKCanvas canvas, string title, string? subtitle, string fileName, int fileCount, string sizeDisplay, bool isExpired)
     {
         const int cardW = 640;
         const int cardH = 360;
         const int cardX = (Width - cardW) / 2;
         const int cardY = (Height - cardH) / 2 - 15;
         const int pad = 44;
+        const float cardRadius = 16;
+        const float panelRadius = 8;
+
+        using var fill = new SKPaint { IsAntialias = true };
 
         // Soft shadow
-        canvas.Mutate(ctx =>
-        {
-            ctx.Fill(new Color(new Rgba32(26, 22, 20, 12)),
-                new RectangularPolygon(cardX + 6, cardY + 8, cardW, cardH));
-            ctx.Fill(new Color(new Rgba32(26, 22, 20, 8)),
-                new RectangularPolygon(cardX + 3, cardY + 4, cardW, cardH));
-        });
+        fill.Color = Ink.WithAlpha(12);
+        canvas.DrawRoundRect(SKRect.Create(cardX + 6, cardY + 8, cardW, cardH), cardRadius, cardRadius, fill);
+        fill.Color = Ink.WithAlpha(8);
+        canvas.DrawRoundRect(SKRect.Create(cardX + 3, cardY + 4, cardW, cardH), cardRadius, cardRadius, fill);
 
-        // Card body
-        canvas.Mutate(ctx =>
-            ctx.Fill(CardBg, new RectangularPolygon(cardX, cardY, cardW, cardH)));
-
-        // Terra accent bar at top
-        canvas.Mutate(ctx =>
-            ctx.Fill(Terra, new RectangularPolygon(cardX, cardY, cardW, 5)));
+        // Card body with a terra accent bar at the top (clipped to the rounded card)
+        var card = SKRect.Create(cardX, cardY, cardW, cardH);
+        fill.Color = CardBg;
+        canvas.DrawRoundRect(card, cardRadius, cardRadius, fill);
+        canvas.Save();
+        canvas.ClipRoundRect(new SKRoundRect(card, cardRadius), antialias: true);
+        fill.Color = Terra;
+        canvas.DrawRect(SKRect.Create(cardX, cardY, cardW, 5), fill);
+        canvas.Restore();
 
         float cx = cardX + pad;
         float cw = cardW - pad * 2;
         float y = cardY + pad;
 
         // Title
-        var titleText = Truncate(title, 50);
-        var titleOpts = new RichTextOptions(_titleFont)
+        using (var font = SkiaText.CreateFont(_typefaces.Bold, 35))
+        using (var paint = SkiaText.CreatePaint(Ink))
         {
-            Origin = new PointF(cx, y),
-            WrappingLength = cw,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Top
-        };
-        canvas.Mutate(ctx => ctx.DrawText(titleOpts, titleText, Ink));
-        y += TextMeasurer.MeasureSize(titleText, titleOpts).Height + 6;
+            y += SkiaText.DrawWrapped(canvas, Truncate(title, 50), font, paint, cx, y, cw) + 6;
+        }
 
         // Subtitle
         if (!string.IsNullOrWhiteSpace(subtitle))
         {
-            var subOpts = new RichTextOptions(_subtitleFont)
-            {
-                Origin = new PointF(cx, y),
-                WrappingLength = cw,
-                HorizontalAlignment = HorizontalAlignment.Left,
-                VerticalAlignment = VerticalAlignment.Top
-            };
-            canvas.Mutate(ctx => ctx.DrawText(subOpts, Truncate(subtitle, 70), InkLight));
-            y += TextMeasurer.MeasureSize(Truncate(subtitle, 70), subOpts).Height + 18;
+            using var font = SkiaText.CreateFont(_typefaces.Regular, 22);
+            using var paint = SkiaText.CreatePaint(InkLight);
+            y += SkiaText.DrawWrapped(canvas, Truncate(subtitle, 70), font, paint, cx, y, cw) + 18;
         }
         else
         {
@@ -262,91 +216,73 @@ public sealed class OgImageGenerator
 
         // File info pill
         const float pillH = 60;
-        canvas.Mutate(ctx =>
-            ctx.Fill(FilePillBg, new RectangularPolygon(cx, y, cw, pillH)));
+        fill.Color = FilePillBg;
+        canvas.DrawRoundRect(SKRect.Create(cx, y, cw, pillH), panelRadius, panelRadius, fill);
 
-        // File icon block
-        canvas.Mutate(ctx =>
-            ctx.Fill(Terra, new RectangularPolygon(cx + 16, y + 15, 28, 30)));
-        // Small cutout effect on icon
-        canvas.Mutate(ctx =>
-            ctx.Fill(FilePillBg, new RectangularPolygon(cx + 20, y + 19, 10, 8)));
+        // File icon block with a small cutout effect
+        fill.Color = Terra;
+        canvas.DrawRoundRect(SKRect.Create(cx + 16, y + 15, 28, 30), 3, 3, fill);
+        fill.Color = FilePillBg;
+        canvas.DrawRect(SKRect.Create(cx + 20, y + 19, 10, 8), fill);
 
         // File name
-        var fnOpts = new RichTextOptions(_fontFamily.CreateFont(17, FontStyle.Bold))
+        using (var font = SkiaText.CreateFont(_typefaces.Bold, 17))
+        using (var paint = SkiaText.CreatePaint(Ink))
         {
-            Origin = new PointF(cx + 58, y + 14),
-            VerticalAlignment = VerticalAlignment.Top
-        };
-        canvas.Mutate(ctx => ctx.DrawText(fnOpts, Truncate(fileName, 40), Ink));
+            canvas.DrawText(Truncate(fileName, 40), cx + 58, y + 14 - font.Metrics.Ascent, SKTextAlign.Left, font, paint);
+        }
 
         // File meta line
         var filesLabel = fileCount == 1 ? "1 file" : $"{fileCount} files";
-        var metaOpts = new RichTextOptions(_smallFont)
+        using (var font = SkiaText.CreateFont(_typefaces.Regular, 16))
+        using (var paint = SkiaText.CreatePaint(InkMuted))
         {
-            Origin = new PointF(cx + 58, y + 37),
-            VerticalAlignment = VerticalAlignment.Top
-        };
-        canvas.Mutate(ctx => ctx.DrawText(metaOpts, $"{filesLabel}  \u00B7  {sizeDisplay}", InkMuted));
+            canvas.DrawText($"{filesLabel}  ·  {sizeDisplay}", cx + 58, y + 37 - font.Metrics.Ascent, SKTextAlign.Left, font, paint);
+        }
 
         y += pillH + 18;
 
         // Button
         const float btnH = 44;
-        if (isExpired)
+        var button = SKRect.Create(cx, y, cw, btnH);
+        fill.Color = isExpired ? new SKColor(246, 229, 220) : Terra;
+        canvas.DrawRoundRect(button, panelRadius, panelRadius, fill);
+        using (var font = SkiaText.CreateFont(_typefaces.Bold, 16))
+        using (var paint = SkiaText.CreatePaint(isExpired ? new SKColor(122, 63, 32) : SKColors.White))
         {
-            canvas.Mutate(ctx =>
-            {
-                ctx.Fill(new Color(new Rgba32(246, 229, 220, 255)),
-                    new RectangularPolygon(cx, y, cw, btnH));
-                var opts = new RichTextOptions(_fontFamily.CreateFont(16, FontStyle.Bold))
-                {
-                    Origin = new PointF(cx + cw / 2f, y + btnH / 2f),
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    VerticalAlignment = VerticalAlignment.Center
-                };
-                ctx.DrawText(opts, "Link Expired", new Color(new Rgba32(122, 63, 32, 255)));
-            });
-        }
-        else
-        {
-            canvas.Mutate(ctx =>
-            {
-                ctx.Fill(Terra, new RectangularPolygon(cx, y, cw, btnH));
-                var opts = new RichTextOptions(_fontFamily.CreateFont(16, FontStyle.Bold))
-                {
-                    Origin = new PointF(cx + cw / 2f, y + btnH / 2f),
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    VerticalAlignment = VerticalAlignment.Center
-                };
-                ctx.DrawText(opts, "Download", Color.White);
-            });
+            SkiaText.DrawCentered(canvas, isExpired ? "Link Expired" : "Download", font, paint, cx + cw / 2f, y + btnH / 2f, SKTextAlign.Center);
         }
     }
 
-    private void DrawBranding(Image<Rgba32> canvas, bool hasBgImage)
+    private void DrawBranding(SKCanvas canvas, bool hasBgImage)
     {
-        var textColor = hasBgImage ? new Color(new Rgba32(255, 255, 255, 200)) : InkMuted;
-        var accentColor = hasBgImage ? new Color(new Rgba32(255, 255, 255, 240)) : Terra;
+        var textColor = hasBgImage ? SKColors.White.WithAlpha(200) : InkMuted;
+        var accentColor = hasBgImage ? SKColors.White.WithAlpha(240) : Terra;
 
-        var brandOpts = new RichTextOptions(_brandFont)
+        using (var font = SkiaText.CreateFont(_typefaces.Bold, 18))
+        using (var paint = SkiaText.CreatePaint(accentColor))
         {
-            Origin = new PointF(40, Height - 38),
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        canvas.Mutate(ctx => ctx.DrawText(brandOpts, "Agora", accentColor));
+            SkiaText.DrawCentered(canvas, "Agora", font, paint, 40, Height - 38);
+        }
 
-        var tagOpts = new RichTextOptions(_smallFont)
+        using (var font = SkiaText.CreateFont(_typefaces.Regular, 16))
+        using (var paint = SkiaText.CreatePaint(textColor))
         {
-            Origin = new PointF(100, Height - 38),
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        canvas.Mutate(ctx => ctx.DrawText(tagOpts, "Self hosted secure file transfer", textColor));
+            SkiaText.DrawCentered(canvas, "Self hosted secure file transfer", font, paint, 100, Height - 38);
+        }
+    }
+
+    private static byte[] EncodePng(SKSurface surface)
+    {
+        using var image = surface.Snapshot();
+        using var data = image.Encode(SKEncodedImageFormat.Png, 100)
+            ?? throw new InvalidOperationException("PNG encoding failed.");
+        return data.ToArray();
     }
 
     private static string Truncate(string text, int max)
     {
         if (string.IsNullOrEmpty(text)) return string.Empty;
-        return text.Length <= max ? text : text[..(max - 1)] + "\u2026";
+        return text.Length <= max ? text : text[..(max - 1)] + "…";
     }
 }
