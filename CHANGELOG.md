@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.20] - 2026-10-13
+
+Security hardening release. **Breaking:** `Agora__PublicBaseUrl` is now required outside `Development`/`E2E` (startup fails without it), and `X-Forwarded-*` headers are honoured only from loopback and the proxies listed in `Agora__TrustedProxies`. Upgrading signs every existing session out once.
+
+### Added
+- `Agora__TrustedProxies`: comma-separated IPs and CIDRs of the reverse proxies whose `X-Forwarded-For/Proto/Host` headers are trusted. Empty means loopback only.
+- Session revalidation: users carry a security stamp that rotates on password change or reset, email change, role change and disable; cookies (and SignalR connections) are re-checked against the database every `Agora__Auth__SessionRevalidationMinutes` (default 5). `Agora__Auth__SessionLifetimeDays` (default 14, sliding) and `Agora__Auth__SecureCookies` (`Auto`/`Always`/`SameAsRequest`).
+- Preview limits: `Agora__Previews__MaxSourceBytes` (64 MB), `MaxSourcePixels` (50 MP), `TimeoutSeconds` (30). Only PNG, JPEG, WEBP and BMP sources get generated previews; PDFs render at most 1200 px on the long side.
+- `Agora__RateLimits__AnonymousPerMinute` (default 1200): per-IP budget for anonymous requests.
+- `Agora__GeoLookup__Enabled` (default `true`): set to `false` to stop sending downloader IPs to ipwho.is.
+- Upload quotas: per-draft file count and bytes are enforced at stage time (`Agora__MaxFilesPerShare`, `Agora__MaxTotalUploadBytes`), open drafts are capped per upload code and per client IP (`Agora__PublicUploads__MaxOpenDraftsPerToken` 20, `MaxOpenDraftsPerIp` 10), received shares are capped per account and day (`Agora__PublicUploads__MaxSharesPerCodePerDay` 50, `MaxBytesPerCodePerDay` 20 GB), and staging or share creation is refused with 507 when scratch would exceed `Agora__Scratch__MaxBytes` or leave less than `Agora__Scratch__MinFreeBytes` (1 GB) free.
+
+### Changed
+- Uploaded files are served by their extension-derived type only; the client-declared type is never stored. Raster images, common video/audio, PDF and plain text display inline, everything else downloads as `application/octet-stream`. Every user-content response (files, backgrounds, previews, archives) carries `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox` (inline PDFs excepted).
+- SVG files are no longer accepted as download-page backgrounds.
+- Emailed links (password reset, email confirmation, share notifications) and `og:url` are always built from `Agora__PublicBaseUrl`, never from the request host.
+- The forgot-password, reset-password and resend-confirmation page handlers share the `AuthEndpoints` rate limit.
+- Received shares from public upload links use the owner's default expiry (7 days unless changed in the account settings; `Agora__PublicUploads__DefaultExpiryDays` is the fallback) instead of never expiring.
+- The zombie sweep (`Agora__ZombieUploadRetentionHours`) now also covers abandoned drafts, share-creation status files and the draft index.
+- Preview jobs retry once instead of ten times; rejected sources are marked failed.
+- Admins can no longer disable or delete their own account from the admin forms.
+- PDFtoImage 5.2.0 -> 5.4.0.
+
+### Fixed
+- The admin "allow registration" toggle could not re-enable registration (the form posted `false,true`).
+
+### Notes
+- `SixLabors.ImageSharp` stays at 3.1.12. The patched 4.x line requires a build-time license key. The five open advisories are unreachable in Agora: TIFF encoding is never used, the TIFF decoder is not registered, histogram equalization is never called, and ICC profiles are never parsed (`SkipMetadata`).
+
 ## [0.9.19] - 2026-10-13
 
 ### Added

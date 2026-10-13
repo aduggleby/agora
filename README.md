@@ -274,6 +274,12 @@ Switching providers does not move existing content. To move a FileSystem install
 
 ### Upgrade notes
 
+**0.9.20:** `Agora__PublicBaseUrl` is required (startup fails without it outside `Development`), and `X-Forwarded-*`
+headers are honoured only from loopback and the proxies in `Agora__TrustedProxies`; set it to your reverse proxy's
+address or every visitor shares one rate-limit bucket. Cookies are `Secure` in `Production` (set
+`Agora__Auth__SecureCookies=SameAsRequest` only for private HTTP-only installs). Every existing session is signed out
+once. Received shares from public upload links now expire (owner's default expiry).
+
 **0.9.18:** DataProtection keys are now persisted (`DataProtection__KeysPath`) under the fixed application name `Agora`.
 Before, containers kept keys only in memory, so every restart already signed everyone out. Upgrading to 0.9.18 signs all
 users out (and invalidates open login/confirmation forms) one last time; after that, sign-ins survive restarts and updates.
