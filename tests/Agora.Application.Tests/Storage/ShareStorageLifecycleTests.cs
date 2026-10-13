@@ -284,10 +284,69 @@ public sealed class ShareStorageLifecycleTests : IAsyncLifetime
         DeleteShareAfterPreviewUpload(shareId, file.Id);
         _store.FailOn = key => key == SharePreviewPaths.ThumbnailKey(shareId, file.Id);
 
-        await CreatePreviewService().GeneratePreviewAsync(shareId, file.Id, Ct);
+        // The upload failure is an infrastructure error, so it propagates (Hangfire retries once) after cleanup ran.
+        await Assert.ThrowsAsync<IOException>(() => CreatePreviewService().GeneratePreviewAsync(shareId, file.Id, Ct));
 
         Assert.Null(await _store.GetInfoAsync(SharePreviewPaths.Key(shareId, file.Id), Ct));
         Assert.False(File.Exists(SharePreviewPaths.LockPath(StorageRoot, shareId, file.Id)));
+        AssertScratchEmpty();
+    }
+
+    [Fact]
+    public async Task Transient_upload_failure_propagates_for_retry_without_a_failed_marker()
+    {
+        var (shareId, file) = await CreateImageShareAsync();
+        _store.FailOn = key => key == SharePreviewPaths.Key(shareId, file.Id);
+
+        await Assert.ThrowsAsync<IOException>(() => CreatePreviewService().GeneratePreviewAsync(shareId, file.Id, Ct));
+
+        Assert.False(File.Exists(SharePreviewPaths.FailedPath(StorageRoot, shareId, file.Id)));
+        Assert.False(File.Exists(SharePreviewPaths.LockPath(StorageRoot, shareId, file.Id)));
+        Assert.Null(await _store.GetInfoAsync(SharePreviewPaths.Key(shareId, file.Id), Ct));
+        AssertScratchEmpty();
+
+        // The retry succeeds once the store recovers.
+        _store.FailOn = _ => false;
+        await CreatePreviewService().GeneratePreviewAsync(shareId, file.Id, Ct);
+        Assert.NotNull(await _store.GetInfoAsync(SharePreviewPaths.Key(shareId, file.Id), Ct));
+        Assert.NotNull(await _store.GetInfoAsync(SharePreviewPaths.ThumbnailKey(shareId, file.Id), Ct));
+    }
+
+    [Fact]
+    public async Task Missing_thumbnail_is_generated_when_the_preview_already_exists()
+    {
+        var (shareId, file) = await CreateImageShareAsync();
+        var existingPreview = new byte[] { 1, 2, 3 };
+        await _store.PutBytesAsync(SharePreviewPaths.Key(shareId, file.Id), existingPreview, "image/jpeg", Ct);
+
+        await CreatePreviewService().GeneratePreviewAsync(shareId, file.Id, Ct);
+
+        Assert.NotNull(await _store.GetInfoAsync(SharePreviewPaths.ThumbnailKey(shareId, file.Id), Ct));
+        var preview = await _store.OpenReadAsync(SharePreviewPaths.Key(shareId, file.Id), Ct);
+        Assert.NotNull(preview);
+        await using (preview.Content)
+        {
+            using var buffer = new MemoryStream();
+            await preview.Content.CopyToAsync(buffer, Ct);
+            Assert.Equal(existingPreview, buffer.ToArray());
+        }
+
+        AssertScratchEmpty();
+    }
+
+    [Fact]
+    public async Task Source_above_the_byte_budget_is_rejected_before_download()
+    {
+        var (shareId, file) = await CreateImageShareAsync();
+        var downloads = 0;
+        _store.OnDownload = _ => downloads++;
+        var service = CreatePreviewService(previews: new AgoraPreviewOptions { MaxSourceBytes = 10 });
+
+        await service.GeneratePreviewAsync(shareId, file.Id, Ct);
+
+        Assert.Equal(0, downloads);
+        Assert.True(File.Exists(SharePreviewPaths.FailedPath(StorageRoot, shareId, file.Id)));
+        Assert.Null(await _store.GetInfoAsync(SharePreviewPaths.Key(shareId, file.Id), Ct));
         AssertScratchEmpty();
     }
 
@@ -338,6 +397,26 @@ public sealed class ShareStorageLifecycleTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Preview_source_over_budget_is_marked_failed_without_throwing()
+    {
+        var (shareId, file) = await CreateImageShareAsync();
+        var share = await _db.Shares.AsNoTracking().SingleAsync(x => x.Id == shareId);
+        // The test image is 40x30 = 1200 pixels.
+        var service = CreatePreviewService(previews: new AgoraPreviewOptions { MaxSourcePixels = 1000 });
+
+        await service.GeneratePreviewAsync(shareId, file.Id, Ct);
+
+        Assert.True(File.Exists(SharePreviewPaths.FailedPath(StorageRoot, shareId, file.Id)));
+        Assert.False(File.Exists(SharePreviewPaths.LockPath(StorageRoot, shareId, file.Id)));
+        Assert.Null(await _store.GetInfoAsync(SharePreviewPaths.Key(shareId, file.Id), Ct));
+        Assert.Null(await _store.GetInfoAsync(SharePreviewPaths.ThumbnailKey(shareId, file.Id), Ct));
+        var availability = await service.GetAvailabilityAsync(share, file, Ct);
+        Assert.Equal("unavailable", availability.State);
+        Assert.Equal("generation_failed", availability.Reason);
+        AssertScratchEmpty();
+    }
+
+    [Fact]
     public async Task Preview_cleanup_job_is_a_no_op_for_an_active_share()
     {
         var (shareId, file) = await CreateImageShareAsync();
@@ -350,9 +429,25 @@ public sealed class ShareStorageLifecycleTests : IAsyncLifetime
         Assert.NotNull(await _store.GetInfoAsync(SharePreviewPaths.Key(shareId, file.Id), Ct));
     }
 
-    private async Task<(Guid ShareId, ShareFile File)> CreateImageShareAsync()
+    [Fact]
+    public async Task Gif_source_is_marked_failed_without_throwing()
     {
-        var result = await CreateManager().CreateShareAsync(await CommandAsync(password: null, withBackground: false, imageFile: true), Ct);
+        var (shareId, file) = await CreateImageShareAsync("anim.gif");
+        var share = await _db.Shares.AsNoTracking().SingleAsync(x => x.Id == shareId);
+        var service = CreatePreviewService();
+
+        await service.GeneratePreviewAsync(shareId, file.Id, Ct);
+
+        Assert.True(File.Exists(SharePreviewPaths.FailedPath(StorageRoot, shareId, file.Id)));
+        Assert.Null(await _store.GetInfoAsync(SharePreviewPaths.Key(shareId, file.Id), Ct));
+        Assert.Null(await _store.GetInfoAsync(SharePreviewPaths.ThumbnailKey(shareId, file.Id), Ct));
+        Assert.Equal("generation_failed", (await service.GetAvailabilityAsync(share, file, Ct)).Reason);
+        AssertScratchEmpty();
+    }
+
+    private async Task<(Guid ShareId, ShareFile File)> CreateImageShareAsync(string imageName = "photo.png")
+    {
+        var result = await CreateManager().CreateShareAsync(await CommandAsync(password: null, withBackground: false, imageFile: true, imageName), Ct);
         return (result.ShareId, await _db.ShareFiles.AsNoTracking().SingleAsync(x => x.ShareId == result.ShareId));
     }
 
@@ -375,15 +470,19 @@ public sealed class ShareStorageLifecycleTests : IAsyncLifetime
         new NoopBackgroundJobClient(),
         NullLogger<ShareManager>.Instance);
 
-    private SharePreviewJobService CreatePreviewService(IBackgroundJobClient? jobs = null) => new(
-        _db,
-        _store,
-        new SharePreviewImageGenerator(),
-        jobs ?? new NoopBackgroundJobClient(),
-        Options.Create(new AgoraOptions { StorageRoot = StorageRoot }),
-        NullLogger<SharePreviewJobService>.Instance);
+    private SharePreviewJobService CreatePreviewService(IBackgroundJobClient? jobs = null, AgoraPreviewOptions? previews = null)
+    {
+        var options = Options.Create(new AgoraOptions { StorageRoot = StorageRoot, Previews = previews ?? new AgoraPreviewOptions() });
+        return new SharePreviewJobService(
+            _db,
+            _store,
+            new SharePreviewImageGenerator(options),
+            jobs ?? new NoopBackgroundJobClient(),
+            options,
+            NullLogger<SharePreviewJobService>.Instance);
+    }
 
-    private async Task<CreateShareCommand> CommandAsync(string? password, bool withBackground, bool imageFile = false)
+    private async Task<CreateShareCommand> CommandAsync(string? password, bool withBackground, bool imageFile = false, string imageName = "photo.png")
     {
         var uploads = Directory.CreateDirectory(Path.Combine(_root, "uploads")).FullName;
         var filePath = Path.Combine(uploads, $"{Guid.NewGuid():N}");
@@ -391,8 +490,17 @@ public sealed class ShareStorageLifecycleTests : IAsyncLifetime
         if (imageFile)
         {
             using var image = new Image<Rgba32>(40, 30, new Rgba32(200, 100, 50));
-            await image.SaveAsPngAsync(filePath);
-            file = new UploadSourceFile(filePath, "photo.png", new FileInfo(filePath).Length, "image/png");
+            var isGif = imageName.EndsWith(".gif", StringComparison.OrdinalIgnoreCase);
+            if (isGif)
+            {
+                await image.SaveAsGifAsync(filePath);
+            }
+            else
+            {
+                await image.SaveAsPngAsync(filePath);
+            }
+
+            file = new UploadSourceFile(filePath, imageName, new FileInfo(filePath).Length, isGif ? "image/gif" : "image/png");
         }
         else
         {
@@ -490,7 +598,13 @@ public sealed class ShareStorageLifecycleTests : IAsyncLifetime
 
         public Task<ObjectInfo?> GetInfoAsync(string key, CancellationToken ct) => inner.GetInfoAsync(key, ct);
         public Task<ObjectStream?> OpenReadAsync(string key, CancellationToken ct) => inner.OpenReadAsync(key, ct);
-        public Task DownloadToFileAsync(string key, string localPath, CancellationToken ct) => inner.DownloadToFileAsync(key, localPath, ct);
+        public Action<string> OnDownload { get; set; } = _ => { };
+
+        public Task DownloadToFileAsync(string key, string localPath, CancellationToken ct)
+        {
+            OnDownload(key);
+            return inner.DownloadToFileAsync(key, localPath, ct);
+        }
         public Task DeleteAsync(string key, CancellationToken ct) => BeforeDelete(key) ?? inner.DeleteAsync(key, ct);
         public Task DeletePrefixAsync(string prefix, CancellationToken ct) => BeforeDelete(prefix) ?? inner.DeletePrefixAsync(prefix, ct);
 

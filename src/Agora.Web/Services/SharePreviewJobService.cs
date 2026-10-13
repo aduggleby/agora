@@ -105,7 +105,12 @@ public sealed class SharePreviewJobService(
         return await LoadPreviewImageAsync(share, file, ct);
     }
 
+    /// <summary>
+    /// Source problems (over budget, undecodable, too slow) end in the <c>.failed</c> marker and are never retried;
+    /// infrastructure failures (object store, IO, database) propagate so Hangfire retries exactly once.
+    /// </summary>
     [Queue("previews")]
+    [AutomaticRetry(Attempts = 1)]
     public async Task GeneratePreviewAsync(Guid shareId, Guid fileId, CancellationToken ct, PerformContext? performContext = null)
     {
         performContext?.WriteLine($"Generating preview for share '{shareId}', file '{fileId}'.");
@@ -131,7 +136,10 @@ public sealed class SharePreviewJobService(
         }
 
         var previewKey = SharePreviewPaths.Key(shareId, fileId);
-        if (await objectStore.GetInfoAsync(previewKey, ct) is not null)
+        var thumbKey = SharePreviewPaths.ThumbnailKey(shareId, fileId);
+        var previewExists = await objectStore.GetInfoAsync(previewKey, ct) is not null;
+        var thumbnailMissing = ContentTypePolicy.IsRasterImage(file.OriginalFilename) && await objectStore.GetInfoAsync(thumbKey, ct) is null;
+        if (previewExists && !thumbnailMissing)
         {
             performContext?.WriteLine("Preview already exists.");
             return;
@@ -154,20 +162,34 @@ public sealed class SharePreviewJobService(
 
         var sourcePath = ScratchFiles.NewPath(_options.StorageRoot, Path.GetExtension(file.StoredRelativePath) ?? string.Empty);
         var published = false;
+        // Download and generation share one time budget; uploads and cleanup run on the job's own token.
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _options.Previews.TimeoutSeconds)));
         try
         {
-            await objectStore.DownloadToFileAsync(ObjectKey.Normalize(file.StoredRelativePath), sourcePath, ct);
-
-            var content = await imageGenerator.GenerateForFileAsync(file, sourcePath, ct);
-            published = true;
-            await objectStore.PutBytesAsync(previewKey, content, "image/jpeg", ct);
-            performContext?.WriteLine("Preview generated.");
-
-            var renderType = (file.RenderType ?? string.Empty).Trim().ToLowerInvariant();
-            var thumbKey = SharePreviewPaths.ThumbnailKey(shareId, fileId);
-            if (renderType == "image" && await objectStore.GetInfoAsync(thumbKey, ct) is null)
+            var sourceKey = ObjectKey.Normalize(file.StoredRelativePath);
+            var sourceInfo = await objectStore.GetInfoAsync(sourceKey, budget.Token)
+                ?? throw new PreviewSourceRejectedException("source object is missing");
+            if (sourceInfo.Length > _options.Previews.MaxSourceBytes)
             {
-                var thumbContent = await imageGenerator.GenerateMosaicThumbnailAsync(sourcePath, 300, ct);
+                throw new PreviewSourceRejectedException(
+                    $"source is {sourceInfo.Length} bytes, above the {_options.Previews.MaxSourceBytes} byte budget");
+            }
+
+            await objectStore.DownloadToFileAsync(sourceKey, sourcePath, budget.Token);
+
+            if (!previewExists)
+            {
+                var content = await imageGenerator.GenerateForFileAsync(file, sourcePath, budget.Token);
+                published = true;
+                await objectStore.PutBytesAsync(previewKey, content, "image/jpeg", ct);
+                performContext?.WriteLine("Preview generated.");
+            }
+
+            if (thumbnailMissing)
+            {
+                var thumbContent = await imageGenerator.GenerateMosaicThumbnailAsync(sourcePath, 300, budget.Token);
+                published = true;
                 await objectStore.PutBytesAsync(thumbKey, thumbContent, "image/jpeg", ct);
                 performContext?.WriteLine("Mosaic thumbnail generated.");
             }
@@ -177,11 +199,20 @@ public sealed class SharePreviewJobService(
                 File.Delete(failedPath);
             }
         }
-        catch (Exception ex)
+        catch (PreviewSourceRejectedException ex)
         {
+            await MarkRejectedAsync(ex.Message);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            await MarkRejectedAsync($"download and generation exceeded the {_options.Previews.TimeoutSeconds}s time budget");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Object store, IO or database trouble: leave no marker so the single Hangfire retry can succeed.
             logger.LogWarning(ex, "Failed generating preview for share={ShareId} file={FileId}", shareId, fileId);
             performContext?.WriteLine($"Preview generation failed: {ex.Message}");
-            await File.WriteAllTextAsync(failedPath, DateTime.UtcNow.ToString("O"), ct);
+            throw;
         }
         finally
         {
@@ -196,6 +227,14 @@ public sealed class SharePreviewJobService(
             {
                 File.Delete(lockPath);
             }
+        }
+
+        // Expected for user-supplied content: not an error, never retried, and the message never includes content.
+        async Task MarkRejectedAsync(string reason)
+        {
+            logger.LogInformation("Preview rejected for share={ShareId} file={FileId}: {Reason}", shareId, fileId, reason);
+            performContext?.WriteLine($"Preview rejected: {reason}");
+            await File.WriteAllTextAsync(failedPath, DateTime.UtcNow.ToString("O"), CancellationToken.None);
         }
     }
 

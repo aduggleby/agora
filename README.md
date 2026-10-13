@@ -261,6 +261,24 @@ users out (and invalidates open login/confirmation forms) one last time; after t
 | `Agora__DownloadEventRetentionDays` | `90` | How long download-event records are kept |
 | `Agora__ZombieUploadRetentionHours` | `24` | Cleanup window for abandoned staged uploads |
 
+### Previews
+
+Preview and thumbnail generation decodes uploaded images and PDFs inside the app process, so it is budgeted. A source
+over a budget is not decoded at all; the share shows the "preview unavailable" image for that file instead.
+
+| Setting | Default | What it controls |
+| --- | --- | --- |
+| `Agora__Previews__MaxSourceBytes` | `67108864` | Largest image or PDF (64 MB) that is opened for a preview |
+| `Agora__Previews__MaxSourcePixels` | `50000000` | Largest image (width x height, 50 megapixels) that is decoded; checked from the file header before decoding |
+| `Agora__Previews__TimeoutSeconds` | `30` | Wall-clock budget for generating one preview or thumbnail |
+
+Not configurable: only one frame of an animated image is decoded, images are scaled down during decoding where the
+format allows it, only PNG, JPEG, WEBP and BMP decoders are enabled regardless of the file's extension (GIF uploads are
+served inline but get no generated preview), PNG headers are checked before decoding, PDF pages
+are rasterized with the longer side at 1200 pixels (pages larger than 14400 points on a side, the PDF maximum, are
+rejected) with at most two PDF renders running at once, and a preview job is retried at most once on infrastructure
+errors (never on a decoder failure).
+
 How uploaded content is served (not configurable):
 
 - The content type of every uploaded file is derived from its file extension; the type declared by the uploading browser is ignored.

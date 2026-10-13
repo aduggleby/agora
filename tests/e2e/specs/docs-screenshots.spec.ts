@@ -32,14 +32,84 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
   return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
 }
 
+// Preview generation budgets (Agora__Previews__*): keep sample pictures well inside them so every preview becomes ready.
+const MAX_SAMPLE_BYTES = 8 * 1024 * 1024;
+const MAX_SAMPLE_PIXELS = 20_000_000;
+
+/** Reads the pixel size from a PNG IHDR, a WEBP VP8/VP8L/VP8X header or a JPEG SOF marker; undefined when it cannot be determined. */
+async function readImageDimensions(filePath: string): Promise<{ width: number; height: number } | undefined> {
+  const handle = await fs.open(filePath, 'r');
+  try {
+    const head = Buffer.alloc(64 * 1024);
+    const { bytesRead } = await handle.read(head, 0, head.length, 0);
+    const bytes = head.subarray(0, bytesRead);
+    if (bytes.length >= 24 && bytes.toString('ascii', 1, 4) === 'PNG') {
+      return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+    }
+    if (bytes.length >= 30 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') {
+      const chunk = bytes.toString('ascii', 12, 16);
+      if (chunk === 'VP8 ' && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a) {
+        return { width: bytes.readUInt16LE(26) & 0x3fff, height: bytes.readUInt16LE(28) & 0x3fff };
+      }
+      if (chunk === 'VP8L' && bytes[20] === 0x2f) {
+        const bits = bytes.readUInt32LE(21);
+        return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 };
+      }
+      if (chunk === 'VP8X') {
+        return { width: bytes.readUIntLE(24, 3) + 1, height: bytes.readUIntLE(27, 3) + 1 };
+      }
+      return undefined;
+    }
+    if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+      let offset = 2;
+      while (offset + 9 < bytes.length) {
+        if (bytes[offset] !== 0xff) {
+          offset += 1;
+          continue;
+        }
+        const marker = bytes[offset + 1];
+        const length = bytes.readUInt16BE(offset + 2);
+        const isSof = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+        if (isSof) {
+          return { height: bytes.readUInt16BE(offset + 5), width: bytes.readUInt16BE(offset + 7) };
+        }
+        offset += 2 + length;
+      }
+    }
+    return undefined;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function isWithinPreviewBudget(filePath: string): Promise<boolean> {
+  const stat = await fs.stat(filePath).catch(() => undefined);
+  if (!stat || stat.size > MAX_SAMPLE_BYTES) {
+    return false;
+  }
+  const dimensions = await readImageDimensions(filePath).catch(() => undefined);
+  // Files whose size cannot be verified from the header are skipped, never trusted.
+  return dimensions !== undefined && dimensions.width > 0 && dimensions.height > 0
+    && dimensions.width * dimensions.height <= MAX_SAMPLE_PIXELS;
+}
+
 async function loadImageSamples(tempRoot: string, required: number): Promise<string[]> {
   const picturesRoot = path.join(os.homedir(), 'Pictures');
   const entries = await fs.readdir(picturesRoot, { withFileTypes: true }).catch(() => []);
-  const pictureImages = entries
+  const candidates = entries
     .filter((entry) => entry.isFile())
     .map((entry) => path.join(picturesRoot, entry.name))
     .filter((filePath) => /\.(jpg|jpeg|png|webp)$/i.test(filePath))
     .sort((a, b) => a.localeCompare(b));
+  const pictureImages: string[] = [];
+  for (const filePath of candidates) {
+    if (pictureImages.length >= required) {
+      break;
+    }
+    if (await isWithinPreviewBudget(filePath)) {
+      pictureImages.push(filePath);
+    }
+  }
 
   if (pictureImages.length >= required) {
     return pictureImages.slice(0, required);

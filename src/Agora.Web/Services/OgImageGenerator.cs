@@ -42,6 +42,9 @@ public sealed class OgImageGenerator
 
     public const long MaxBackgroundBytes = 20L * 1024 * 1024;
     public const long MaxBackgroundPixels = 40_000_000;
+    public const double MaxBackgroundAspectRatio = 10;
+
+    private static readonly Configuration DecoderConfiguration = UntrustedImageDecoding.CreateConfiguration(MaxBackgroundPixels);
 
     public async Task<byte[]> GenerateShareOgImageAsync(
         Stream? backgroundImage,
@@ -127,21 +130,37 @@ public sealed class OgImageGenerator
                 return false;
             }
 
-            var info = await Image.IdentifyAsync(imageStream);
-            if ((long)info.Width * info.Height > MaxBackgroundPixels)
+            if (UntrustedImageDecoding.RejectPngHeader(imageStream, MaxBackgroundPixels) is not null)
             {
                 return false;
             }
 
             imageStream.Position = 0;
-            using var bgImage = await Image.LoadAsync<Rgba32>(imageStream);
-            var scale = Math.Max((float)Width / bgImage.Width, (float)Height / bgImage.Height);
+            var info = await Image.IdentifyAsync(UntrustedImageDecoding.CreateDecoderOptions(DecoderConfiguration), imageStream);
+            if (info.Width <= 0 || info.Height <= 0 || (long)info.Width * info.Height > MaxBackgroundPixels)
+            {
+                return false;
+            }
+
+            // Covering 1200x630 with an extreme strip (e.g. 400x1) would mean a huge intermediate before cropping.
+            var aspect = (double)Math.Max(info.Width, info.Height) / Math.Min(info.Width, info.Height);
+            if (aspect > MaxBackgroundAspectRatio)
+            {
+                return false;
+            }
+
+            imageStream.Position = 0;
+            var decoderOptions = UntrustedImageDecoding.CreateDecoderOptions(DecoderConfiguration, new Size(Width, Height));
+            using var bgImage = await Image.LoadAsync<Rgba32>(decoderOptions, imageStream);
             bgImage.Mutate(ctx =>
             {
-                ctx.Resize((int)(bgImage.Width * scale), (int)(bgImage.Height * scale));
-                var cropX = (bgImage.Width - Width) / 2;
-                var cropY = (bgImage.Height - Height) / 2;
-                ctx.Crop(new Rectangle(Math.Max(0, cropX), Math.Max(0, cropY), Width, Height));
+                // One scale-and-crop operation straight to the canvas size: no cover-sized intermediate.
+                ctx.Resize(new ResizeOptions
+                {
+                    Size = new Size(Width, Height),
+                    Mode = ResizeMode.Crop,
+                    Sampler = KnownResamplers.Bicubic
+                });
                 ctx.GaussianBlur(15);
             });
 
