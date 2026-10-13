@@ -5,9 +5,19 @@ namespace Agora.Infrastructure.Persistence;
 
 /// <summary>
 /// EF Core database context for Agora runtime entities, including shares, uploaded-file metadata, and account settings.
+/// Bound to the SQL Server migration set; <see cref="PostgresAgoraDbContext"/> derives from it for PostgreSQL.
 /// </summary>
-public sealed class AgoraDbContext(DbContextOptions<AgoraDbContext> options) : DbContext(options)
+public class AgoraDbContext : DbContext
 {
+    public AgoraDbContext(DbContextOptions<AgoraDbContext> options) : base(options)
+    {
+    }
+
+    /// <summary>Lets provider-specific subclasses pass their own typed options.</summary>
+    protected AgoraDbContext(DbContextOptions options) : base(options)
+    {
+    }
+
     public DbSet<Share> Shares => Set<Share>();
     public DbSet<ShareFile> ShareFiles => Set<ShareFile>();
     public DbSet<DownloadEvent> DownloadEvents => Set<DownloadEvent>();

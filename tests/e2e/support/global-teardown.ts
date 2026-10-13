@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
 export default async function globalTeardown() {
+  // Remove only this run's database container (SQL Server or PostgreSQL, per PLAYWRIGHT_E2E_DB).
   const containerName = process.env.PLAYWRIGHT_E2E_SQL_CONTAINER_NAME;
   if (!containerName) {
     return;

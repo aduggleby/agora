@@ -4,6 +4,7 @@ using Agora.Application.Models;
 using Agora.Application.Utilities;
 using Agora.Domain.Entities;
 using Agora.Infrastructure.Auth;
+using Agora.Infrastructure.Logging;
 using Agora.Infrastructure.Persistence;
 using Agora.Infrastructure.Services;
 using Agora.Web.Auth;
@@ -11,16 +12,16 @@ using Agora.Web.Endpoints;
 using Agora.Web.Hubs;
 using Agora.Web.Services;
 using Agora.Web.Hangfire;
+using Agora.Web.Startup;
 using Hangfire.Console;
 using Hangfire;
 using Hangfire.Dashboard;
-using Hangfire.InMemory;
-using Hangfire.SqlServer;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
@@ -35,6 +36,14 @@ using System.Threading.RateLimiting;
 
 // Composes the web host, infrastructure services, middleware pipeline, and startup data/bootstrap routines.
 var builder = WebApplication.CreateBuilder(args);
+var storageRootPath = Path.GetFullPath(builder.Configuration[$"{AgoraOptions.Section}:StorageRoot"] ?? new AgoraOptions().StorageRoot);
+
+// Multipart bodies above 64 KB are buffered to ASPNETCORE_TEMP (default: the system temp dir, a 64 MB tmpfs on
+// prod1). Point it under StorageRoot unless set explicitly. Must happen before the first request is processed.
+if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_TEMP")))
+{
+    Environment.SetEnvironmentVariable("ASPNETCORE_TEMP", Directory.CreateDirectory(Path.Combine(storageRootPath, "tmp", "aspnet")).FullName);
+}
 
 var initialUploadLimits = builder.Configuration.GetSection(AgoraOptions.Section);
 var configuredMaxFileSizeBytes = initialUploadLimits.GetValue<long?>("MaxFileSizeBytes") ?? (5L * 1024 * 1024 * 1024);
@@ -49,25 +58,51 @@ builder.Services.Configure<AgoraOptions>(builder.Configuration.GetSection(AgoraO
 builder.Services.Configure<EmailSenderOptions>(builder.Configuration.GetSection(EmailSenderOptions.Section));
 builder.Services.Configure<FileSystemEmailOptions>(builder.Configuration.GetSection(FileSystemEmailOptions.Section));
 
-builder.Host.UseSerilog((context, services, loggerConfig) => loggerConfig
-    .ReadFrom.Configuration(context.Configuration)
-    .ReadFrom.Services(services)
-    .Enrich.FromLogContext());
-
-var connectionString = builder.Configuration.GetConnectionString("Default") ?? "Data Source=agora.db";
-var useSqlServer = connectionString.Contains("Server=", StringComparison.OrdinalIgnoreCase);
-
-builder.Services.AddDbContext<AgoraDbContext>(options =>
+// Logging: always stdout; plus a daily rolling file (Agora:Logging:File:Enabled/Path/RetainedDays).
+// Sinks are configured here; the Serilog config section still supplies MinimumLevel/overrides/enrichers.
+var logFile = LogFileOptions.Resolve(builder.Configuration);
+builder.Host.UseSerilog((context, services, loggerConfig) =>
 {
-    if (useSqlServer)
+    const string outputTemplate = "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj} {Properties:j}{NewLine}{Exception}";
+    loggerConfig
+        .ReadFrom.Configuration(WithoutSerilogSinks(context.Configuration))
+        .ReadFrom.Services(services)
+        .Enrich.FromLogContext()
+        .WriteTo.Console(outputTemplate: outputTemplate);
+    if (logFile.Enabled)
     {
-        options.UseSqlServer(connectionString);
-    }
-    else
-    {
-        options.UseSqlite(connectionString);
+        loggerConfig.WriteTo.File(
+            Path.Combine(logFile.Path, LogFileOptions.FileNamePattern),
+            rollingInterval: RollingInterval.Day,
+            retainedFileCountLimit: logFile.RetainedDays,
+            shared: true,
+            flushToDiskInterval: TimeSpan.FromSeconds(2),
+            outputTemplate: outputTemplate);
     }
 });
+
+var connectionString = builder.Configuration.GetConnectionString("Default");
+if (string.IsNullOrWhiteSpace(connectionString))
+{
+    throw new InvalidOperationException("Connection string 'Default' is not configured (env ConnectionStrings__Default).");
+}
+
+// Throws for unsupported values so a typo can never silently fall back to the wrong database.
+var databaseProvider = DatabaseSetup.ParseProvider(builder.Configuration[DatabaseSetup.ProviderKey]);
+builder.Services.AddAgoraDbContext(databaseProvider, connectionString);
+builder.Services.AddHealthChecks()
+    .AddCheck<DatabaseHealthCheck>("database", tags: [DatabaseHealthCheck.ReadyTag], timeout: TimeSpan.FromSeconds(5));
+
+// Persist DataProtection keys so auth cookies and gate tokens survive restarts.
+var dataProtectionKeysPath = builder.Configuration["DataProtection:KeysPath"];
+if (string.IsNullOrWhiteSpace(dataProtectionKeysPath))
+{
+    dataProtectionKeysPath = Path.Combine(Path.GetDirectoryName(storageRootPath) ?? storageRootPath, "keys");
+}
+
+builder.Services.AddDataProtection()
+    .SetApplicationName("Agora")
+    .PersistKeysToFileSystem(Directory.CreateDirectory(dataProtectionKeysPath));
 
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
     .AddCookie(options =>
@@ -186,17 +221,7 @@ if (builder.Environment.IsDevelopment())
 builder.Services.AddHangfire(configuration =>
 {
     configuration.UseSimpleAssemblyNameTypeSerializer().UseRecommendedSerializerSettings().UseConsole();
-    if (useSqlServer)
-    {
-        configuration.UseSqlServerStorage(connectionString, new SqlServerStorageOptions
-        {
-            PrepareSchemaIfNecessary = true
-        });
-    }
-    else
-    {
-        configuration.UseInMemoryStorage();
-    }
+    configuration.UseAgoraHangfireStorage(databaseProvider, connectionString);
 });
 
 builder.Services.AddHangfireServer(options =>
@@ -256,6 +281,12 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 });
 
 var app = builder.Build();
+app.Logger.LogInformation(
+    "Database provider: {DatabaseProvider}. File logging: {FileLogging} ({FileLoggingPath}, retention: {FileLoggingRetention}).",
+    databaseProvider,
+    logFile.Enabled,
+    Path.GetFullPath(logFile.Path),
+    logFile.RetainedDays is { } retainedDays ? $"{retainedDays} days" : "unlimited");
 var isDevelopment = app.Environment.IsDevelopment();
 var isE2E = builder.Configuration.GetValue<bool>("E2E:Enabled") ||
             string.Equals(Environment.GetEnvironmentVariable("AGORA_E2E"), "1", StringComparison.OrdinalIgnoreCase) ||
@@ -308,6 +339,13 @@ app.UseStaticFiles();
 app.UseAuthentication();
 app.Use(async (context, next) =>
 {
+    // Health probes stay independent of DataProtection/antiforgery and never set cookies.
+    if (IsHealthPath(context.Request.Path))
+    {
+        await next();
+        return;
+    }
+
     var antiforgery = context.RequestServices.GetRequiredService<IAntiforgery>();
 
     if (IsSafeHttpMethod(context.Request.Method))
@@ -365,6 +403,12 @@ app.Use(async (context, next) =>
 app.UseRateLimiter();
 app.UseAuthorization();
 app.MapRazorPages();
+
+// Health endpoints (anonymous, not rate limited). /ready returns 503 when the database is unreachable.
+app.MapHealthChecks("/live", new HealthCheckOptions { Predicate = _ => false }).AllowAnonymous().DisableRateLimiting();
+app.MapHealthChecks("/ready", new HealthCheckOptions { Predicate = c => c.Tags.Contains(DatabaseHealthCheck.ReadyTag) })
+    .AllowAnonymous()
+    .DisableRateLimiting();
 
 app.MapHangfireDashboard("/hangfire", new DashboardOptions
 {
@@ -495,7 +539,7 @@ if (isE2E)
         }
 
         var form = await request.ReadFormAsync(ct);
-        var email = form["email"].ToString().Trim();
+        var email = EmailAddress.Normalize(form["email"].ToString());
         var password = form["password"].ToString();
         var defaultNotifyMode = form["defaultNotifyMode"].ToString();
         var defaultExpiryMode = form["defaultExpiryMode"].ToString();
@@ -590,7 +634,7 @@ if (isE2E)
         }
 
         var form = await request.ReadFormAsync(ct);
-        var email = form["email"].ToString().Trim();
+        var email = EmailAddress.Normalize(form["email"].ToString());
         if (string.IsNullOrWhiteSpace(email))
         {
             return Results.BadRequest(new { error = "email is required." });
@@ -629,7 +673,7 @@ if (isE2E)
 
         var form = await request.ReadFormAsync(ct);
         var token = form["token"].ToString().Trim();
-        var uploaderEmail = form["uploaderEmail"].ToString().Trim();
+        var uploaderEmail = EmailAddress.Normalize(form["uploaderEmail"].ToString());
         if (!IsValidShareToken(token))
         {
             return Results.BadRequest(new { error = "token must be 3-64 letters, numbers, hyphens, or underscores." });
@@ -1213,7 +1257,7 @@ app.MapPost("/api/public-uploads/create-share", async (
     var uploadToken = form["uploadToken"].ToString().Trim();
     var draftShareId = form["draftShareId"].ToString().Trim();
     var senderName = form["senderName"].ToString().Trim();
-    var senderEmail = form["senderEmail"].ToString().Trim();
+    var senderEmail = EmailAddress.Normalize(form["senderEmail"].ToString());
     var senderMessage = form["senderMessage"].ToString().Trim();
     if (string.IsNullOrWhiteSpace(uploadToken) || string.IsNullOrWhiteSpace(draftShareId))
     {
@@ -1752,6 +1796,9 @@ static ClaimsPrincipal CreatePrincipal(UserAccount user)
     return new ClaimsPrincipal(identity);
 }
 
+static bool IsHealthPath(PathString path) =>
+    path.Equals("/live", StringComparison.OrdinalIgnoreCase) || path.Equals("/ready", StringComparison.OrdinalIgnoreCase);
+
 static bool IsSafeHttpMethod(string method)
 {
     return HttpMethods.IsGet(method) ||
@@ -1889,4 +1936,17 @@ static bool IsAllowedBackgroundImageFileName(string? fileName)
 {
     var extension = Path.GetExtension(fileName ?? string.Empty).ToLowerInvariant();
     return extension is ".jpg" or ".jpeg" or ".png" or ".svg" or ".webp";
+}
+
+static IConfiguration WithoutSerilogSinks(IConfiguration configuration)
+{
+    // Sinks are built in code; drop Serilog:WriteTo/Using so legacy overrides such as
+    // Serilog__WriteTo__0__Args__path (still honoured by LogFileOptions) cannot create a nameless sink.
+    var settings = configuration.GetSection("Serilog").AsEnumerable()
+        .Where(x => !IsUnder(x.Key, "Serilog:WriteTo") && !IsUnder(x.Key, "Serilog:Using"));
+    return new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
+
+    static bool IsUnder(string key, string section) =>
+        string.Equals(key, section, StringComparison.OrdinalIgnoreCase) ||
+        key.StartsWith(section + ConfigurationPath.KeyDelimiter, StringComparison.OrdinalIgnoreCase);
 }

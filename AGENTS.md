@@ -3,7 +3,7 @@
 ## Project Identity
 
 - Name: `Agora`
-- Stack: ASP.NET Core 10, EF Core (SQL Server), Serilog, Docker
+- Stack: ASP.NET Core 10, EF Core (SQL Server or PostgreSQL), Hangfire, Serilog, Docker
 - Reserved ports: `18000-18099`
 - Default app port: `18080`
 
@@ -22,17 +22,23 @@ When working in this repository, agents should prioritize:
 - Keep naming consistently under the `Agora` identity.
 - Do not hardcode secrets.
 - Keep all persisted mutable runtime data under `/app/data` when containerized.
-- Ensure log retention remains daily rolling with 30-day retention.
+- Logs: daily rolling file plus stdout; retention configurable (`Agora__Logging__File__RetainedDays`), default 30 days.
 - Share tokens are stored and queried in plaintext via `ShareToken` (indexed). Do not reintroduce hashing without an explicit request.
 - Never hand-author EF migration files. Create/remove migrations only via `dotnet ef` tooling.
-- SQLite must not be used for app runtime or e2e. Use SQL Server only.
+- Two migration sets must stay in sync: SQL Server (`AgoraDbContext`, `Migrations/`) and PostgreSQL (`PostgresAgoraDbContext`, `Migrations/Postgres/`). Add migrations with `scripts/add-migration.sh <Name>`, which runs `dotnet ef migrations add` for both contexts.
+- SQLite must not be used for app runtime or e2e. Use SQL Server or PostgreSQL (`Database__Provider`). SQLite in-memory is allowed only in fast unit tests.
+- Store and query emails lower-cased (`EmailAddress.Normalize`); PostgreSQL comparisons are case-sensitive.
+- Persist only UTC `DateTime` values (`DateTimeKind.Utc`); Npgsql rejects other kinds for `timestamptz`.
+- Share/upload token lookups are exact-match: case-sensitive on PostgreSQL, case-insensitive on default SQL Server collations. Do not rely on either behaviour.
+- Large temp files go under `StorageRoot/tmp` (never the system `/tmp`, a 64 MB tmpfs on prod1). Startup sets `ASPNETCORE_TEMP` to `StorageRoot/tmp/aspnet` unless it is set explicitly.
 
 ## Build/Test Commands
 
 - Build system: `Ando` (https://andobuild.com/llms.txt)
 - `dotnet restore Agora.slnx`
 - `dotnet build Agora.slnx`
-- `dotnet test tests/Agora.Application.Tests/Agora.Application.Tests.csproj`
+- `dotnet test tests/Agora.Application.Tests/Agora.Application.Tests.csproj` (PostgreSQL integration tests use Testcontainers and skip without Docker; set `AGORA_REQUIRE_POSTGRES_TESTS=1` to make that a failure)
+- E2E: `cd tests/e2e && npm run test:sqlserver`, `npm run test:postgres`, or `npm run test:all` (`PLAYWRIGHT_E2E_DB=sqlserver|postgres`)
 - `ando` (uses `build.csando`)
 
 ## Container Contract
@@ -41,7 +47,8 @@ The container must run with only:
 
 - Environment variables for config
 - One writable volume
-  - `/app/data` (contains uploads/db/logs)
+  - `/app/data` (contains uploads, DataProtection keys, logs)
+- Health endpoints: `GET /live` (process up) and `GET /ready` (database reachable)
 
 Default container port:
 
@@ -55,6 +62,7 @@ Agents should use ports in this range for local services and examples.
 E2E defaults:
 - Web app (Playwright): `18090`
 - Dedicated E2E SQL Server container: `mcr.microsoft.com/mssql/server:2022-latest` on `18091`
+- Dedicated E2E PostgreSQL container: `postgres:17` on `18092`
 - Dedicated E2E database: `agora_e2e`
 
 ## File Ownership and Layout

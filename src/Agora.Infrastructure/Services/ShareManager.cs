@@ -7,10 +7,10 @@ using Agora.Domain.Entities;
 using Agora.Infrastructure.Persistence;
 using Hangfire;
 using Microsoft.Data.SqlClient;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 
 namespace Agora.Infrastructure.Services;
 
@@ -188,7 +188,7 @@ public sealed class ShareManager(
             var share = new Share
             {
                 Id = Guid.NewGuid(),
-                UploaderEmail = command.UploaderEmail.Trim(),
+                UploaderEmail = EmailAddress.Normalize(command.UploaderEmail),
                 ShareToken = token,
                 ZipDisplayName = zipName,
                 ZipDiskPath = archiveDiskPath,
@@ -199,7 +199,7 @@ public sealed class ShareManager(
                 DownloadPasswordHash = downloadPassword is null ? null : PasswordHasher.Hash(downloadPassword),
                 UploaderMessage = command.Message,
                 SenderName = command.SenderName,
-                SenderEmail = command.SenderEmail,
+                SenderEmail = EmailAddress.NormalizeOptional(command.SenderEmail),
                 SenderMessage = command.SenderMessage,
                 NotifyMode = command.NotifyMode,
                 ExpiresAtUtc = command.ExpiryMode == ExpiryMode.Indefinite ? null : command.ExpiresAtUtc,
@@ -260,14 +260,14 @@ public sealed class ShareManager(
 
     public Task<Share?> FindByTokenForUploaderAsync(string token, string uploaderEmail, CancellationToken cancellationToken)
     {
-        var normalizedEmail = uploaderEmail.Trim();
+        var normalizedEmail = EmailAddress.Normalize(uploaderEmail);
         return db.Shares
             .SingleOrDefaultAsync(x => x.ShareToken == token && x.UploaderEmail == normalizedEmail, cancellationToken);
     }
 
     public Task<List<UserShareSummary>> ListRecentSharesForUploaderAsync(string uploaderEmail, int take, CancellationToken cancellationToken)
     {
-        var normalizedEmail = uploaderEmail.Trim();
+        var normalizedEmail = EmailAddress.Normalize(uploaderEmail);
         return db.Shares
             .AsNoTracking()
             .Where(x => x.UploaderEmail == normalizedEmail && x.DeletedAtUtc == null)
@@ -295,7 +295,7 @@ public sealed class ShareManager(
 
     public async Task<bool> DeleteShareAsync(Guid shareId, string uploaderEmail, CancellationToken cancellationToken)
     {
-        var normalizedEmail = uploaderEmail.Trim();
+        var normalizedEmail = EmailAddress.Normalize(uploaderEmail);
         var share = await db.Shares.SingleOrDefaultAsync(x => x.Id == shareId && x.UploaderEmail == normalizedEmail, cancellationToken);
         if (share is null)
         {
@@ -314,7 +314,7 @@ public sealed class ShareManager(
 
     public async Task<bool> ReenableShareFor24HoursAsync(Guid shareId, string uploaderEmail, CancellationToken cancellationToken)
     {
-        var normalizedEmail = uploaderEmail.Trim();
+        var normalizedEmail = EmailAddress.Normalize(uploaderEmail);
         var share = await db.Shares.SingleOrDefaultAsync(
             x => x.Id == shareId && x.UploaderEmail == normalizedEmail && x.DeletedAtUtc == null,
             cancellationToken);
@@ -342,7 +342,7 @@ public sealed class ShareManager(
 
     public async Task<string?> GetCopyableShareTokenAsync(Guid shareId, string uploaderEmail, CancellationToken cancellationToken)
     {
-        var normalizedEmail = uploaderEmail.Trim();
+        var normalizedEmail = EmailAddress.Normalize(uploaderEmail);
         var share = await db.Shares.SingleOrDefaultAsync(
             x => x.Id == shareId && x.UploaderEmail == normalizedEmail && x.DeletedAtUtc == null,
             cancellationToken);
@@ -439,9 +439,10 @@ public sealed class ShareManager(
         await using var tx = await db.Database.BeginTransactionAsync(cancellationToken);
         if (mode == "once")
         {
-            // Atomic first-download update ensures only one notification is sent in concurrent requests.
-            var affected = await db.Database.ExecuteSqlInterpolatedAsync(
-                $"UPDATE Shares SET FirstDownloadedAtUtc = {now} WHERE Id = {share.Id} AND FirstDownloadedAtUtc IS NULL", cancellationToken);
+            // Atomic conditional first-download update ensures only one notification is sent in concurrent requests.
+            var affected = await db.Shares
+                .Where(x => x.Id == share.Id && x.FirstDownloadedAtUtc == null)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.FirstDownloadedAtUtc, now), cancellationToken);
             shouldSend = affected == 1;
             if (affected == 1)
             {
@@ -481,7 +482,7 @@ public sealed class ShareManager(
 
     public async Task UpsertAccountTemplateAsync(string uploaderEmail, ShareTemplateData template, CancellationToken cancellationToken)
     {
-        var normalizedEmail = uploaderEmail.Trim();
+        var normalizedEmail = EmailAddress.Normalize(uploaderEmail);
         var existing = await db.AccountTemplates.SingleOrDefaultAsync(x => x.UploaderEmail == normalizedEmail, cancellationToken);
         if (existing is null)
         {
@@ -514,7 +515,7 @@ public sealed class ShareManager(
 
     public async Task<ShareTemplateData> GetAccountTemplateAsync(string uploaderEmail, CancellationToken cancellationToken)
     {
-        var normalizedEmail = uploaderEmail.Trim();
+        var normalizedEmail = EmailAddress.Normalize(uploaderEmail);
         var existing = await db.AccountTemplates.SingleOrDefaultAsync(x => x.UploaderEmail == normalizedEmail, cancellationToken);
         if (existing is null)
         {
@@ -1036,7 +1037,7 @@ public sealed class ShareManager(
                 NormalizeContainerPosition(command.TemplateContainerPosition));
         }
 
-        var template = await db.AccountTemplates.SingleOrDefaultAsync(x => x.UploaderEmail == command.UploaderEmail.Trim(), cancellationToken);
+        var template = await db.AccountTemplates.SingleOrDefaultAsync(x => x.UploaderEmail == EmailAddress.Normalize(command.UploaderEmail), cancellationToken);
         if (template is null)
         {
             return new ShareTemplateData(
@@ -1270,7 +1271,7 @@ public sealed class ShareManager(
         }
     }
 
-    private static bool IsShareTokenConflict(DbUpdateException ex)
+    internal static bool IsShareTokenConflict(DbUpdateException ex)
     {
         var text = ex.ToString();
         if (ex.InnerException is SqlException sqlEx &&
@@ -1280,13 +1281,14 @@ public sealed class ShareManager(
             return true;
         }
 
-        if (ex.InnerException is SqliteException sqliteEx &&
-            sqliteEx.SqliteErrorCode == 19 &&
-            (text.Contains("IX_Shares_ShareToken", StringComparison.OrdinalIgnoreCase) ||
-             text.Contains("UNIQUE constraint failed: Shares.ShareToken", StringComparison.OrdinalIgnoreCase)))
+        if (ex.InnerException is PostgresException pgEx &&
+            pgEx.SqlState == PostgresErrorCodes.UniqueViolation &&
+            string.Equals(pgEx.ConstraintName, "IX_Shares_ShareToken", StringComparison.Ordinal))
         {
             return true;
         }
+
+        // Text fallback also covers SQLite ("UNIQUE constraint failed"), used by the in-memory unit tests.
 
         return text.Contains("IX_Shares_ShareToken", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("UNIQUE constraint failed: Shares.ShareToken", StringComparison.OrdinalIgnoreCase);

@@ -135,7 +135,7 @@ ConnectionStrings__Default="$CONNECTION_STRING" \
 Agora__StorageRoot="$APP_STORAGE_ROOT" \
 Email__Provider=filesystem \
 Email__FileSystem__OutputDirectory="$APP_EMAIL_DIR" \
-Serilog__WriteTo__0__Args__path="$SERILOG_PATH" \
+Agora__Logging__File__Path="$APP_LOG_DIR" \
 DOTNET_WATCH_SUPPRESS_BROWSER_REFRESH=1 \
 dotnet watch --project src/Agora.Web/Agora.Web.csproj \
   --exclude "src/Agora.Web/storage/**" \

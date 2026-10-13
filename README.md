@@ -40,7 +40,7 @@ Production/container deployments should use:
 - One writable volume mounted at `/app/data`
 - Default HTTP port `18080`
 
-All mutable runtime data should remain under `/app/data` (uploads, database, logs).
+All mutable runtime data should remain under `/app/data` (uploads, DataProtection keys, logs).
 
 ### Docker
 
@@ -63,7 +63,6 @@ docker run -d \
   -e Email__Resend__FromDisplayName="<display_name>" \
   -e Email__Resend__FromAddress="no-reply@yourdomain.com" \
   -e Email__Resend__ApiUrl="https://api.resend.com" \
-  -e Serilog__WriteTo__0__Args__path="/app/data/logs/agora-.log" \
   -v agora_data:/app/data \
   agora:latest
 ```
@@ -138,16 +137,72 @@ services:
 ## Configuration
 
 Startup behavior:
-- The app applies EF Core migrations on startup.
+- The app applies EF Core migrations on startup (the migration set of the selected provider).
 - If migrations fail for any reason, startup logs a fatal error and the server stops.
+- A missing `ConnectionStrings__Default` or an unknown `Database__Provider` stops startup with a clear error.
 
 ### Core settings
 
 | Setting | Default | What it controls |
 | --- | --- | --- |
-| `ConnectionStrings__Default` | *(required)* | SQL Server connection string |
+| `ConnectionStrings__Default` | *(required)* | Database connection string (also used for Hangfire job storage) |
+| `Database__Provider` | `SqlServer` | `SqlServer` or `Postgres` (case-insensitive); anything else is a startup error |
 | `Agora__PublicBaseUrl` | request host | Public base URL in generated links |
-| `Serilog__WriteTo__0__Args__path` | `/app/data/logs/agora-.log` | Log file path (daily rolling, 30-day retention) |
+| `DataProtection__KeysPath` | `<parent of StorageRoot>/keys` (`/app/data/keys` in the container) | Where DataProtection keys are persisted, so sign-ins survive restarts. Must be writable and persistent. |
+
+### Database provider
+
+SQL Server stays the default, so existing installs need no change. To run on PostgreSQL:
+
+```bash
+Database__Provider=Postgres
+ConnectionStrings__Default="Host=YOUR_PG_HOST;Port=5432;Database=agora;Username=agora;Password=YOUR_PASSWORD;GSS Encryption Mode=Disable"
+```
+
+The database must exist; tables (and the `hangfire` schema) are created on first start.
+Switching providers does not migrate data.
+
+Token lookups are case-sensitive on PostgreSQL. Share links (`/s/{token}`) and upload links (`/u/{token}`) are matched
+exactly, so `/s/MyToken` and `/s/mytoken` are different links there. On SQL Server with the default case-insensitive
+collation they resolve to the same share. Generated tokens and user-chosen custom share tokens/upload codes may contain
+upper- and lower-case letters, so always use links exactly as Agora shows them.
+
+### Health endpoints
+
+| Endpoint | Returns |
+| --- | --- |
+| `GET /live` | `200` while the process is up (no checks) |
+| `GET /ready` | `200` when the database is reachable, `503` otherwise |
+
+Both are anonymous and not rate limited.
+
+### Logging
+
+Logs always go to the console (stdout). In addition, a daily rolling file `agora-YYYYMMDD.log` is written:
+
+| Setting | Default | What it controls |
+| --- | --- | --- |
+| `Agora__Logging__File__Enabled` | `true` | `false` = stdout only (e.g. read-only root filesystem) |
+| `Agora__Logging__File__Path` | `logs` (`/app/data/logs` in the container) | Log directory |
+| `Agora__Logging__File__RetainedDays` | `30` | Number of daily files kept (1-3650) |
+
+The prod1 platform uses `Agora__Logging__File__Path=/var/log/agora` and `Agora__Logging__File__RetainedDays=90`.
+For existing installs, the legacy `Serilog__WriteTo__0__Args__path` (for example `/app/data/logs/agora-.log`) and
+`Serilog__WriteTo__0__Args__retainedFileCountLimit` are still honoured and take precedence over the `Agora__Logging__File__*`
+settings, so logs keep going to the same place with the same retention. As in Serilog, a legacy retention that is set but
+empty means unlimited, and legacy numbers are not capped (minimum 1); the 1-3650 range applies only to `Agora__Logging__File__RetainedDays`.
+
+### Temporary files
+
+Large multipart form bodies are buffered to disk by ASP.NET Core (`ASPNETCORE_TEMP`). Unless `ASPNETCORE_TEMP` is set
+explicitly, Agora points it at `<StorageRoot>/tmp/aspnet` (`/app/data/uploads/tmp/aspnet` in the container) so uploads
+never fill a small `/tmp` (prod1 mounts `/tmp` as a 64 MB tmpfs). Size the storage volume for the uploads in flight.
+
+### Upgrade notes
+
+**0.9.18:** DataProtection keys are now persisted (`DataProtection__KeysPath`) under the fixed application name `Agora`.
+Before, containers kept keys only in memory, so every restart already signed everyone out. Upgrading to 0.9.18 signs all
+users out (and invalidates open login/confirmation forms) one last time; after that, sign-ins survive restarts and updates.
 
 ### Upload and retention
 

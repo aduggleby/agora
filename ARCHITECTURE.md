@@ -26,7 +26,7 @@ Presentation and runtime composition layer.
 - `Endpoints/PublicShareEndpoints.cs`: public recipient API surface (`/s/{token}/...`).
 - `Services/*`: UI/runtime services (preview generation orchestration, rendering strategies, progress broadcast, OG image generation).
 - `Hubs/ShareProgressHub.cs`: SignalR hub for real-time queued share status.
-- `Startup/SchemaUpgradeRunner.cs`: legacy schema compatibility upgrades (no longer called at startup; kept for reference).
+- `Startup/DatabaseHealthCheck.cs`: readiness check behind `GET /ready`.
 
 ### `src/Agora.Application`
 
@@ -40,9 +40,12 @@ Application contracts, value models, and cross-layer utilities.
 
 Persistence and external-integration implementations.
 
-- `Persistence/AgoraDbContext.cs`: EF Core model and mappings.
-- `Migrations/*`: current EF Core migration history (SQL Server baseline).
-- `Persistence/Migrations/*`: legacy migration files from earlier schema versions.
+- `Persistence/AgoraDbContext.cs`: EF Core model and mappings (SQL Server context).
+- `Persistence/PostgresAgoraDbContext.cs`: PostgreSQL context (same model, own migration set).
+- `Persistence/DatabaseSetup.cs`: `Database:Provider` parsing, EF and Hangfire storage registration.
+- `Persistence/DesignTimeDbContextFactories.cs`: `dotnet ef` factories for both contexts.
+- `Migrations/*`: SQL Server migration history.
+- `Migrations/Postgres/*`: PostgreSQL migration history.
 - `Services/ShareManager.cs`: core share domain workflow orchestrator.
 - `Services/ShareContentStore.cs`: file storage persistence/path safety.
 - `Services/*Email*`: notification and auth email delivery adapters.
@@ -75,7 +78,7 @@ Hangfire worker queues:
 
 Storage model:
 
-- DB: SQL Server (primary). SQLite is supported as a legacy fallback via connection string detection.
+- DB: SQL Server (default) or PostgreSQL, selected by `Database:Provider` (`Persistence/DatabaseSetup.cs`). Each provider has its own context type and migration set (`AgoraDbContext` -> `Migrations/`, `PostgresAgoraDbContext` -> `Migrations/Postgres/`). Hangfire storage uses the same database.
 - File data: rooted under `AgoraOptions.StorageRoot`.
 - Container contract: mutable runtime data under `/app/data`.
 

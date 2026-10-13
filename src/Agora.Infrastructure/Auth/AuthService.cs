@@ -957,10 +957,7 @@ public sealed class AuthService(
         return (true, string.Empty);
     }
 
-    private static string NormalizeEmail(string value)
-    {
-        return (value ?? string.Empty).Trim().ToLowerInvariant();
-    }
+    private static string NormalizeEmail(string value) => EmailAddress.Normalize(value);
 
     private static string DefaultDisplayNameForEmail(string email)
     {

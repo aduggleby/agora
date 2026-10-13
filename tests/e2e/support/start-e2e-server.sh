@@ -11,16 +11,32 @@ existing_container_id="$(docker ps --filter "publish=${PLAYWRIGHT_E2E_SQL_PORT}"
 if [[ -n "${existing_container_id}" ]]; then
   docker rm -f "${existing_container_id}" >/dev/null 2>&1 || true
 fi
-docker run -d \
-  --name "${PLAYWRIGHT_E2E_SQL_CONTAINER_NAME}" \
-  -e ACCEPT_EULA=Y \
-  -e SA_PASSWORD="${PLAYWRIGHT_E2E_SQL_PASSWORD}" \
-  -p "${PLAYWRIGHT_E2E_SQL_PORT}:1433" \
-  mcr.microsoft.com/mssql/server:2022-latest >/dev/null
+if [[ "${PLAYWRIGHT_E2E_DB:-sqlserver}" == "postgres" ]]; then
+  docker run -d \
+    --name "${PLAYWRIGHT_E2E_SQL_CONTAINER_NAME}" \
+    -e POSTGRES_PASSWORD="${PLAYWRIGHT_E2E_SQL_PASSWORD}" \
+    -e POSTGRES_DB=agora_e2e \
+    -p "${PLAYWRIGHT_E2E_SQL_PORT}:5432" \
+    postgres:17 >/dev/null
+  ready_check() {
+    # TCP check: the image's init server listens on the unix socket only, so this waits for the real server.
+    docker exec "${PLAYWRIGHT_E2E_SQL_CONTAINER_NAME}" pg_isready -h 127.0.0.1 -U postgres -d agora_e2e >/dev/null 2>&1
+  }
+else
+  docker run -d \
+    --name "${PLAYWRIGHT_E2E_SQL_CONTAINER_NAME}" \
+    -e ACCEPT_EULA=Y \
+    -e SA_PASSWORD="${PLAYWRIGHT_E2E_SQL_PASSWORD}" \
+    -p "${PLAYWRIGHT_E2E_SQL_PORT}:1433" \
+    mcr.microsoft.com/mssql/server:2022-latest >/dev/null
+  ready_check() {
+    docker logs "${PLAYWRIGHT_E2E_SQL_CONTAINER_NAME}" 2>&1 | rg -q "SQL Server is now ready for client connections"
+  }
+fi
 
 ready=0
 for _ in $(seq 1 90); do
-  if docker logs "${PLAYWRIGHT_E2E_SQL_CONTAINER_NAME}" 2>&1 | rg -q "SQL Server is now ready for client connections"; then
+  if ready_check; then
     ready=1
     break
   fi
@@ -28,7 +44,7 @@ for _ in $(seq 1 90); do
 done
 
 if [[ "${ready}" -ne 1 ]]; then
-  echo "SQL Server container did not become ready in time: ${PLAYWRIGHT_E2E_SQL_CONTAINER_NAME}" >&2
+  echo "Database container did not become ready in time: ${PLAYWRIGHT_E2E_SQL_CONTAINER_NAME}" >&2
   docker logs "${PLAYWRIGHT_E2E_SQL_CONTAINER_NAME}" 2>&1 | tail -n 200 >&2 || true
   exit 1
 fi

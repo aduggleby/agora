@@ -12,6 +12,8 @@ src/Agora.Web/emails/
 /storage/
 /logs/
 /emails/
+/keys/
+src/Agora.Web/keys/
 .dev/
 **/node_modules/
 

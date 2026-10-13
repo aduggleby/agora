@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.18] - 2026-10-12
+
+### Added
+- PostgreSQL support: `Database__Provider=Postgres` (default stays `SqlServer`). EF Core and Hangfire (`Hangfire.PostgreSql`) use the same database; PostgreSQL has its own migration set (`InitialPostgres`).
+- `GET /live` and `GET /ready` health endpoints (anonymous, not rate limited; `/ready` checks the database).
+- DataProtection keys are persisted to `DataProtection__KeysPath` (default: `keys` next to the storage root, `/app/data/keys` in the container), so sign-ins survive restarts.
+- Logging settings `Agora__Logging__File__Enabled|Path|RetainedDays`; logs always go to stdout as well.
+- `scripts/add-migration.sh` adds a migration to both migration sets.
+- E2E suite runs against SQL Server or PostgreSQL (`PLAYWRIGHT_E2E_DB`).
+
+### Changed
+- A missing `ConnectionStrings__Default` is now a startup error. The SQLite runtime fallback, the `Server=` connection-string heuristic and the Hangfire in-memory fallback are removed.
+- Emails on shares and account templates are stored lower-cased, like user emails.
+- Notify-once first-download tracking uses a provider-neutral conditional update.
+- Multipart upload buffering (`ASPNETCORE_TEMP`) defaults to `<StorageRoot>/tmp/aspnet` instead of the system temp directory.
+- Legacy `Serilog__WriteTo__0__Args__path` and `retainedFileCountLimit` overrides are still honoured.
+- `/live` and `/ready` skip antiforgery and set no cookies.
+- Upgrade note: persisting DataProtection keys (application name `Agora`) signs all users out once when upgrading to 0.9.18. Previously keys were not persisted in containers, so every restart already did this; from now on sign-ins survive restarts.
+- EF Core packages updated to 10.0.4.
+
+### Removed
+- Unused legacy `SchemaUpgradeRunner` and `V0901`/`V0902` migration files.
+
 ## [0.9.7] - 2026-02-19
 
 ### Added

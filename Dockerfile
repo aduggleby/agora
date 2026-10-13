@@ -18,9 +18,9 @@ WORKDIR /app
 
 ENV ASPNETCORE_URLS=http://0.0.0.0:18080
 ENV ASPNETCORE_ENVIRONMENT=Production
-ENV ConnectionStrings__Default="Data Source=/app/data/uploads/agora.db"
 ENV Agora__StorageRoot=/app/data/uploads
-ENV Serilog__WriteTo__0__Args__path=/app/data/logs/agora-.log
+ENV Agora__Logging__File__Path=/app/data/logs
+ENV DataProtection__KeysPath=/app/data/keys
 ENV Email__Resend__ApiUrl=https://api.resend.com
 ENV Email__Resend__ApiToken=
 ENV Email__Resend__FromAddress=no-reply@example.com
