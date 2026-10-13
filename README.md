@@ -414,6 +414,43 @@ HTTP works outside `Production`, for example with `ASPNETCORE_ENVIRONMENT=Develo
 > On a site reachable over plain HTTP from the public internet it lets anyone on the network path read the session
 > and CSRF cookies and take over the account. Prefer HTTPS.
 
+### Security headers
+
+The app sets browser hardening headers on every response itself, so they do not depend on the reverse proxy:
+
+| Header | Value |
+| --- | --- |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Frame-Options` | `SAMEORIGIN` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=()` |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains`, only on HTTPS requests (behind a proxy this means the proxy is listed in `Agora__TrustedProxies` and sends `X-Forwarded-Proto: https`) |
+
+A header the response already carries is left alone, so the enforced `Content-Security-Policy` of user-content
+responses (uploaded files, previews, backgrounds) is never replaced.
+
+| Setting | Default | What it controls |
+| --- | --- | --- |
+| `Agora__SecurityHeaders__Enabled` | `true` | Set to `false` only when the reverse proxy sets these headers (and the report-only policy below) itself |
+
+The app's own HTML pages additionally get a `Content-Security-Policy-Report-Only` header with a per-request script
+nonce:
+
+```
+default-src 'self'; script-src 'self' 'nonce-<random>'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self' https://fonts.gstatic.com;
+frame-ancestors 'self'; form-action 'self'; base-uri 'self'; object-src 'none'
+```
+
+Report-only means the browser blocks nothing; it only logs what an enforced policy would have blocked. All scripts
+are bundled locally (SignalR and Alpine included) and every `<script>` tag carries the nonce; Google Fonts is the only
+third-party origin. Known reports today are the inline `onclick` handlers on the download page's image lightbox and
+the Alpine expressions on the "share created" page, which an enforced policy will need moved into the bundled
+scripts. The Hangfire dashboard (`/hangfire`) serves its own inline scripts and gets no report-only policy. To see
+the reports, open the browser developer tools (F12), load a page and look in the Console for messages starting with
+"[Report Only]" (Chrome, Edge) or "Content-Security-Policy: The page's settings would block" (Firefox); each names
+the directive and the blocked source.
+
 ### Accounts
 
 - Sign-in failures are uniform: a wrong password, an unknown address, a disabled account and a locked address all

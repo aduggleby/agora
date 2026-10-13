@@ -332,6 +332,12 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.UseForwardedHeaders();
+app.UseAgoraSecurityHeaders();
+if (!isDevelopment)
+{
+    app.UseAgoraExceptionHandler();
+}
+
 app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAgoraCsrf(isE2E, cookieSecurePolicy, app.Logger);

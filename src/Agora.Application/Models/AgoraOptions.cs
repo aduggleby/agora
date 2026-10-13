@@ -23,6 +23,16 @@ public sealed class AgoraOptions
     public AgoraRateLimitOptions RateLimits { get; set; } = new();
     public AgoraPublicUploadOptions PublicUploads { get; set; } = new();
     public AgoraScratchOptions Scratch { get; set; } = new();
+    public AgoraSecurityHeadersOptions SecurityHeaders { get; set; } = new();
+}
+
+/// <summary>
+/// Browser hardening headers (nosniff, X-Frame-Options, Referrer-Policy, Permissions-Policy, HSTS on HTTPS) and the
+/// report-only Content-Security-Policy on HTML pages. Disable only when the reverse proxy sets them instead.
+/// </summary>
+public sealed class AgoraSecurityHeadersOptions
+{
+    public bool Enabled { get; set; } = true;
 }
 
 /// <summary>

@@ -86,8 +86,8 @@
       </div>
     </div>
   </footer>
-  <script src="/js/csrf-client.js"></script>
-  <script>
+  <script nonce="@Html.CspNonce()" src="/js/csrf-client.js"></script>
+  <script nonce="@Html.CspNonce()">
     (() => {
       const menus = document.querySelectorAll('details[data-account-menu]');
       if (menus.length === 0) return;
