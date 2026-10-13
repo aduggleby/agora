@@ -32,7 +32,7 @@ When working in this repository, agents should prioritize:
 - Share/upload token lookups are exact-match: case-sensitive on PostgreSQL, case-insensitive on default SQL Server collations. Do not rely on either behaviour.
 - Durable content (share files, archives, backgrounds, previews) is read and written only through `IObjectStore` (`Storage__Provider=FileSystem|S3`). Never use `File.*`/`Directory.*` on durable paths, and never build durable paths from `StorageRoot`. Keys are relative, forward-slash paths validated by `ObjectKey`; `DeletePrefixAsync` takes only prefixes with at least two segments and a trailing `/`.
 - Local `StorageRoot` is scratch only: staged uploads, drafts, share-create status, preview `.lock`/`.failed` markers and `StorageRoot/tmp` (`ScratchFiles`). Build archives locally, then upload; track every uploaded key and delete them if share creation fails.
-- Large temp files go under `StorageRoot/tmp` (never the system `/tmp`, a 64 MB tmpfs on prod1). Startup sets `ASPNETCORE_TEMP` to `StorageRoot/tmp/aspnet` unless it is set explicitly.
+- Large temp files go under `StorageRoot/tmp` (never the system `/tmp`, which may be a small tmpfs in hardened containers). Startup sets `ASPNETCORE_TEMP` to `StorageRoot/tmp/aspnet` unless it is set explicitly.
 
 ## Build/Test Commands
 

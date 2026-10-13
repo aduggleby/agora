@@ -188,7 +188,6 @@ Logs always go to the console (stdout). In addition, a daily rolling file `agora
 | `Agora__Logging__File__Path` | `logs` (`/app/data/logs` in the container) | Log directory |
 | `Agora__Logging__File__RetainedDays` | `30` | Number of daily files kept (1-3650) |
 
-The prod1 platform uses `Agora__Logging__File__Path=/var/log/agora` and `Agora__Logging__File__RetainedDays=90`.
 For existing installs, the legacy `Serilog__WriteTo__0__Args__path` (for example `/app/data/logs/agora-.log`) and
 `Serilog__WriteTo__0__Args__retainedFileCountLimit` are still honoured and take precedence over the `Agora__Logging__File__*`
 settings, so logs keep going to the same place with the same retention. As in Serilog, a legacy retention that is set but
@@ -198,7 +197,7 @@ empty means unlimited, and legacy numbers are not capped (minimum 1); the 1-3650
 
 Large multipart form bodies are buffered to disk by ASP.NET Core (`ASPNETCORE_TEMP`). Unless `ASPNETCORE_TEMP` is set
 explicitly, Agora points it at `<StorageRoot>/tmp/aspnet` (`/app/data/uploads/tmp/aspnet` in the container) so uploads
-never fill a small `/tmp` (prod1 mounts `/tmp` as a 64 MB tmpfs). Size the storage volume for the uploads in flight.
+never fill a small `/tmp` (for example a size-limited tmpfs in hardened containers). Size the storage volume for the uploads in flight.
 
 ### Storage
 

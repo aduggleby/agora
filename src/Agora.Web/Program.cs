@@ -40,8 +40,8 @@ using System.Threading.RateLimiting;
 var builder = WebApplication.CreateBuilder(args);
 var storageRootPath = Path.GetFullPath(builder.Configuration[$"{AgoraOptions.Section}:StorageRoot"] ?? new AgoraOptions().StorageRoot);
 
-// Multipart bodies above 64 KB are buffered to ASPNETCORE_TEMP (default: the system temp dir, a 64 MB tmpfs on
-// prod1). Point it under StorageRoot unless set explicitly. Must happen before the first request is processed.
+// Multipart bodies above 64 KB are buffered to ASPNETCORE_TEMP (default: the system temp dir, which may be a small
+// tmpfs in hardened containers). Point it under StorageRoot unless set explicitly. Must happen before the first request is processed.
 if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_TEMP")))
 {
     Environment.SetEnvironmentVariable("ASPNETCORE_TEMP", Directory.CreateDirectory(Path.Combine(storageRootPath, "tmp", "aspnet")).FullName);

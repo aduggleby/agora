@@ -18,7 +18,7 @@ public sealed class AuthService(
     IEmailSender emailSender,
     IBackgroundJobClient? backgroundJobs = null)
 {
-    public const string DevelopmentUserEmail = "ad@dualconsult.com";
+    public const string DevelopmentUserEmail = "dev@example.com";
     public const string EmailConfirmationRequiredError = "Please confirm your email before signing in.";
     private const int MaxFailedLoginAttempts = 5;
     private static readonly TimeSpan FailedAttemptWindow = TimeSpan.FromMinutes(15);
