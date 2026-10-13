@@ -82,6 +82,36 @@
     maxTotalUploadBytes: Number(el.dataset.maxTotalUploadBytes || "0")
   });
 
+  // scripts/ts/clipboard.ts
+  async function copyText(value) {
+    if (!value) return false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch {
+    }
+    return fallbackCopy(value);
+  }
+  function fallbackCopy(value) {
+    const input = document.createElement("textarea");
+    input.value = value;
+    input.setAttribute("readonly", "readonly");
+    input.style.position = "absolute";
+    input.style.left = "-9999px";
+    document.body.appendChild(input);
+    input.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    document.body.removeChild(input);
+    return ok;
+  }
+
   // scripts/ts/shares-new.ts
   (() => {
     const form = document.querySelector("[data-share-form]");
@@ -113,21 +143,44 @@
     const removeNameNode = form.querySelector("[data-upload-remove-file-name]");
     const removeCancelButton = form.querySelector("[data-upload-remove-cancel]");
     const removeConfirmButton = form.querySelector("[data-upload-remove-confirm]");
+    const directLinkButton = form.querySelector("[data-direct-link]");
+    const directDurationInput = form.querySelector("[data-direct-duration]");
+    const directResult = form.querySelector("[data-direct-link-result]");
+    const directResultSuccess = form.querySelector("[data-direct-link-success]");
+    const directResultUrl = form.querySelector("[data-direct-link-url]");
+    const directResultExpiry = form.querySelector("[data-direct-link-expiry]");
+    const directResultNotice = form.querySelector("[data-direct-link-notice]");
+    const directResultCopy = form.querySelector("[data-direct-link-copy]");
+    const directResultError = form.querySelector("[data-direct-link-error]");
     if (!fileInput || !pickButton || !cancelUploadsButton || !list || !hidden || !status || !submit || !draftShareIdInput) return;
     const limits = readLimitsFromElement(form);
     const uploadedIds = /* @__PURE__ */ new Set();
+    const uploads = /* @__PURE__ */ new Map();
     hidden.querySelectorAll('input[name="uploadedFileIds"]').forEach((input) => {
       if (input.value) uploadedIds.add(input.value);
+    });
+    list.querySelectorAll("[data-upload-id]").forEach((row) => {
+      const id = row.getAttribute("data-upload-id") || "";
+      if (!id) return;
+      uploads.set(id, {
+        fileName: row.getAttribute("data-upload-file-name") || "",
+        sizeBytes: Number(row.getAttribute("data-upload-size-bytes") || "0"),
+        directLinkEligible: row.getAttribute("data-direct-link-eligible") === "true"
+      });
     });
     let activeUploads = 0;
     let manualExpiryValue = "";
     let pendingRemoval = null;
     let isSubmitting = false;
+    let isCreatingDirectLink = false;
     let cancelRequested = false;
+    let directLinkUrl = "";
     const activeRequests = /* @__PURE__ */ new Set();
+    const directDurationStorageKey = "agora.directLink.duration";
+    const allowedDirectDurations = /* @__PURE__ */ new Set(["30m", "6h", "1d", "7d"]);
     const optionsStorageKey = "agora:new-share:options-collapsed";
     const optionsStateStoragePrefix = "agora:new-share:options-state:";
-    const optionsStateStorageKey = `${optionsStateStoragePrefix}${draftShareIdInput.value.trim()}`;
+    let optionsStateStorageKey = `${optionsStateStoragePrefix}${draftShareIdInput.value.trim()}`;
     const pickPrimaryClass = "px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors";
     const pickSecondaryClass = "px-4 py-2 bg-cream text-ink text-sm font-medium rounded-lg border border-border hover:bg-cream-dark/70 transition-colors";
     const allowedNotifyModes = /* @__PURE__ */ new Set(["account_default", "none", "once", "every_time"]);
@@ -267,10 +320,47 @@
       expiresAtInput.value = toLocalDateTimeValue(calculated);
       expiresAtInput.title = "Calculated from expiry mode.";
     };
+    const directLinkDisabledReason = () => {
+      if (isSubmitting) return "Preparing your link...";
+      if (isCreatingDirectLink) return "Creating your direct link...";
+      if (activeUploads > 0) return "Please wait for uploads to finish.";
+      if (uploadedIds.size === 0) return "Upload one file first.";
+      if (uploadedIds.size > 1) return "A direct link can hold only one file; remove the others or create a share link.";
+      const [onlyId] = Array.from(uploadedIds);
+      const state = uploads.get(onlyId);
+      if (!state || !state.directLinkEligible) return "This file type can only be downloaded, not opened directly; create a share link instead.";
+      return "";
+    };
+    const setDraftLocked = (locked) => {
+      fileInput.disabled = locked;
+      pickButton.disabled = locked;
+      pickButton.title = locked ? "Creating your direct link..." : "";
+      list.querySelectorAll("[data-upload-remove]").forEach((button) => {
+        button.disabled = locked;
+        button.title = locked ? "Creating your direct link..." : "Remove file";
+      });
+      if (locked) {
+        cancelUploadsButton.disabled = true;
+        cancelUploadsButton.title = "Creating your direct link...";
+      }
+    };
+    const refreshDirectLinkState = () => {
+      if (!directLinkButton) return;
+      const reason = directLinkDisabledReason();
+      directLinkButton.disabled = reason.length > 0;
+      directLinkButton.title = reason || "Create a link that opens this file directly, without a download page.";
+      if (directDurationInput) directDurationInput.disabled = isSubmitting || isCreatingDirectLink;
+    };
     const refreshState = () => {
+      refreshDirectLinkState();
       if (isSubmitting) {
         submit.disabled = true;
         submit.title = "Preparing your link...";
+        return;
+      }
+      if (isCreatingDirectLink) {
+        submit.disabled = true;
+        submit.title = "Creating your direct link...";
         return;
       }
       const hasUploadedFiles = uploadedIds.size > 0;
@@ -348,13 +438,14 @@
       });
     };
     const executeRemove = (id, row) => {
-      if (!id) return;
+      if (!id || isCreatingDirectLink) return;
       const data = new FormData();
       data.append("uploadId", id);
       data.append("draftShareId", draftShareIdInput.value);
       fetch("/api/uploads/remove", { method: "POST", body: data }).then((response) => {
         if (!response.ok) throw new Error();
         uploadedIds.delete(id);
+        uploads.delete(id);
         removeHidden(id);
         row?.remove();
         refreshState();
@@ -363,7 +454,7 @@
       });
     };
     const requestRemove = (id, row) => {
-      if (!id) return;
+      if (!id || isCreatingDirectLink) return;
       pendingRemoval = { id, row };
       if (removeNameNode) {
         const fileNameNode = row?.querySelector("p");
@@ -383,6 +474,7 @@
       remove.className = "absolute right-1 top-1 p-0.5 text-ink-muted hover:text-danger leading-none text-sm font-semibold hidden";
       remove.textContent = "x";
       remove.title = "Remove file";
+      remove.setAttribute("data-upload-remove", "");
       const name = document.createElement("p");
       name.className = "text-xs text-ink-light truncate pr-6";
       name.textContent = file.name;
@@ -455,6 +547,11 @@
         if (xhr.status >= 200 && xhr.status < 300 && response?.uploadId) {
           const id = response.uploadId;
           uploadedIds.add(id);
+          uploads.set(id, {
+            fileName: response.fileName || file.name,
+            sizeBytes: typeof response.sizeBytes === "number" ? response.sizeBytes : file.size,
+            directLinkEligible: response.directLinkEligible === true
+          });
           addHidden(id);
           ui.row.setAttribute("data-upload-id", id);
           ui.row.setAttribute("data-upload-size-bytes", String(file.size || 0));
@@ -504,6 +601,7 @@
       cancelUploadsButton.title = "Canceling upload...";
       status.textContent = "Canceling upload...";
       uploadedIds.clear();
+      uploads.clear();
       hidden.querySelectorAll('input[name="uploadedFileIds"]').forEach((input) => input.remove());
       activeRequests.forEach((request) => request.abort());
       await queueDraftCleanup();
@@ -530,6 +628,7 @@
       removeDialog?.close();
     });
     const queueSelectedFiles = (files) => {
+      if (isCreatingDirectLink) return;
       const selected = Array.from(files ?? []);
       if (selected.length === 0) return;
       cancelRequested = false;
@@ -549,6 +648,7 @@
     });
     dropzone?.addEventListener("dragover", (event) => {
       event.preventDefault();
+      if (isCreatingDirectLink) return;
       dropzone.classList.add("ring-2", "ring-terra/40");
     });
     dropzone?.addEventListener("dragleave", () => dropzone.classList.remove("ring-2", "ring-terra/40"));
@@ -595,24 +695,6 @@
         toggleOptions();
       });
     }
-    form.addEventListener("submit", (event) => {
-      if (submit.disabled || isSubmitting) {
-        event.preventDefault();
-        return;
-      }
-      isSubmitting = true;
-      submit.disabled = true;
-      submit.title = "Preparing your link...";
-      submit.textContent = "Preparing your link...";
-      submitPending?.classList.remove("hidden");
-      form.setAttribute("aria-busy", "true");
-      fileInput.disabled = true;
-      pickButton.disabled = true;
-      optionsToggle?.setAttribute("disabled", "disabled");
-      shareTokenInput?.setAttribute("readonly", "readonly");
-      downloadPasswordInput?.setAttribute("readonly", "readonly");
-      refreshState();
-    });
     const modeInput = form.querySelector("[data-template-mode]");
     const summary = form.querySelector("[data-template-summary]");
     const titleInput = form.querySelector("[data-template-title]");
@@ -639,7 +721,155 @@
       refreshTemplateMode();
       saveOptionsState();
     });
+    const restoreDirectDuration = () => {
+      if (!directDurationInput) return;
+      try {
+        const saved = (localStorage.getItem(directDurationStorageKey) || "").trim();
+        if (saved && allowedDirectDurations.has(saved)) directDurationInput.value = saved;
+      } catch {
+      }
+    };
+    directDurationInput?.addEventListener("change", () => {
+      try {
+        localStorage.setItem(directDurationStorageKey, directDurationInput.value);
+      } catch {
+      }
+    });
+    const showDirectLinkError = (message) => {
+      if (!directResult) return;
+      directResult.classList.remove("hidden");
+      directResultSuccess?.classList.add("hidden");
+      if (directResultError) {
+        directResultError.textContent = message;
+        directResultError.classList.remove("hidden");
+      }
+    };
+    const setDirectLinkNotice = (message, ok) => {
+      if (!directResultNotice) return;
+      directResultNotice.textContent = message;
+      directResultNotice.classList.toggle("text-sage", ok);
+      directResultNotice.classList.toggle("text-danger", !ok);
+      directResultNotice.classList.remove("hidden");
+    };
+    const showDirectLinkResult = (url, expiresAtUtc, copied) => {
+      if (!directResult) return;
+      directLinkUrl = url;
+      directResult.classList.remove("hidden");
+      directResultError?.classList.add("hidden");
+      directResultSuccess?.classList.remove("hidden");
+      if (directResultUrl) {
+        directResultUrl.href = url;
+        directResultUrl.textContent = url;
+      }
+      if (directResultExpiry) {
+        const expires = new Date(expiresAtUtc);
+        directResultExpiry.textContent = Number.isNaN(expires.getTime()) ? "" : new Intl.DateTimeFormat(void 0, { dateStyle: "medium", timeStyle: "short" }).format(expires);
+      }
+      setDirectLinkNotice(copied ? "Copied to clipboard" : "Could not copy automatically; use the Copy link button.", copied);
+    };
+    const newDraftShareId = () => typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID().replace(/-/g, "") : Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+    const replaceDraft = (nextDraftShareId) => {
+      const draftShareId = nextDraftShareId || newDraftShareId();
+      uploadedIds.clear();
+      uploads.clear();
+      hidden.querySelectorAll('input[name="uploadedFileIds"]').forEach((input) => input.remove());
+      list.innerHTML = "";
+      draftShareIdInput.value = draftShareId;
+      optionsStateStorageKey = `${optionsStateStoragePrefix}${draftShareId}`;
+      const designer = form.querySelector("[data-template-designer-link]");
+      if (designer) designer.href = `/share/landing-page-designer?draftShareId=${encodeURIComponent(draftShareId)}`;
+      try {
+        window.history.replaceState(null, "", `/shares/new?draftShareId=${encodeURIComponent(draftShareId)}`);
+      } catch {
+      }
+      const templateDefaults = [
+        ["[data-template-title]", ""],
+        ["[data-template-h1]", ""],
+        ["[data-template-description]", ""],
+        ["[data-template-background-upload-id]", ""],
+        ["[data-template-background-color-hex]", ""],
+        ["[data-template-container-position]", "center"]
+      ];
+      templateDefaults.forEach(([selector, value]) => {
+        const input = form.querySelector(selector);
+        if (input) input.value = value;
+      });
+      const templateModeInput = form.querySelector("[data-template-mode]");
+      if (templateModeInput) templateModeInput.value = "account_default";
+      refreshTemplateMode();
+    };
+    const resolveDirectLinkError = async (response) => {
+      try {
+        const payload = await response.json();
+        if (payload?.error?.trim()) return payload.error.trim();
+      } catch {
+      }
+      return response.status === 413 ? "Request too large." : `Could not create the direct link (HTTP ${response.status}).`;
+    };
+    directLinkButton?.addEventListener("click", async () => {
+      if (directLinkButton.disabled || isCreatingDirectLink) return;
+      const [uploadId] = Array.from(uploadedIds);
+      if (!uploadId) return;
+      isCreatingDirectLink = true;
+      setDraftLocked(true);
+      refreshState();
+      try {
+        const response = await fetch("/api/shares/direct-link", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({
+            draftShareId: draftShareIdInput.value,
+            uploadId,
+            duration: directDurationInput?.value || "1d"
+          })
+        });
+        if (!response.ok) {
+          showDirectLinkError(await resolveDirectLinkError(response));
+          return;
+        }
+        const payload = await response.json();
+        const url = (payload.url || "").trim();
+        if (!url) {
+          showDirectLinkError("The server did not return a link.");
+          return;
+        }
+        replaceDraft((payload.nextDraftShareId || "").trim());
+        const copied = await copyText(url);
+        showDirectLinkResult(url, payload.expiresAtUtc || "", copied);
+      } catch {
+        showDirectLinkError("Could not create the direct link. Check your connection and try again.");
+      } finally {
+        isCreatingDirectLink = false;
+        setDraftLocked(false);
+        refreshState();
+      }
+    });
+    directResultCopy?.addEventListener("click", async () => {
+      if (!directLinkUrl) return;
+      const copied = await copyText(directLinkUrl);
+      setDirectLinkNotice(copied ? "Copied to clipboard" : "Could not copy; select the link and copy it manually.", copied);
+    });
+    form.addEventListener("submit", (event) => {
+      if (submit.disabled || isSubmitting) {
+        event.preventDefault();
+        return;
+      }
+      isSubmitting = true;
+      submit.disabled = true;
+      submit.title = "Preparing your link...";
+      submit.textContent = "Preparing your link...";
+      submitPending?.classList.remove("hidden");
+      form.setAttribute("aria-busy", "true");
+      fileInput.disabled = true;
+      pickButton.disabled = true;
+      optionsToggle?.setAttribute("disabled", "disabled");
+      shareTokenInput?.setAttribute("readonly", "readonly");
+      downloadPasswordInput?.setAttribute("readonly", "readonly");
+      refreshState();
+    });
     restoreOptionsState();
+    restoreDirectDuration();
     refreshTemplateMode();
     refreshState();
   })();

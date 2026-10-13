@@ -1,3 +1,4 @@
+using Agora.Application.Models;
 using Agora.Application.Utilities;
 using Agora.Infrastructure.Services;
 using Agora.Web.Auth;
@@ -18,6 +19,9 @@ public class CreatedModel(PublicBaseUrlResolver publicBaseUrls, ShareManager man
     public bool IsReady { get; private set; }
     public bool IsFailed { get; private set; }
     public string? StatusError { get; private set; }
+    public bool IsDirectLink { get; private set; }
+    public bool IsExpired { get; private set; }
+    public DateTime? ExpiresAtUtc { get; private set; }
 
     public async Task<IActionResult> OnGet()
     {
@@ -63,10 +67,13 @@ public class CreatedModel(PublicBaseUrlResolver publicBaseUrls, ShareManager man
             }
 
             IsReady = true;
+            IsDirectLink = ShareModes.IsDirectLink(share.AccessMode);
+            ExpiresAtUtc = share.ExpiresAtUtc;
             var sizeDisplay = share.ZipSizeBytes >= 1024 * 1024
                 ? $"{share.ZipSizeBytes / (1024.0 * 1024.0):F1} MB"
                 : $"{share.ZipSizeBytes / 1024.0:F0} KB";
             var isExpired = !ShareManager.IsActive(share, DateTime.UtcNow);
+            IsExpired = isExpired;
             PreviewCard = new ShareLandingCardViewModel(
                 Title: share.PageH1,
                 Subtitle: share.PageTitle,
@@ -95,7 +102,7 @@ public class CreatedModel(PublicBaseUrlResolver publicBaseUrls, ShareManager man
             }
         }
 
-        ViewData["Title"] = "Share created";
+        ViewData["Title"] = IsDirectLink ? "Direct link" : "Share created";
         return Page();
     }
 }

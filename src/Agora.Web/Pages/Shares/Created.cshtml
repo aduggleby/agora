@@ -1,14 +1,55 @@
 @page "/shares/created/{token?}"
 @model Agora.Web.Pages.Shares.CreatedModel
 
-@if (Model.IsReady)
+@if (Model.IsReady && !Model.IsDirectLink)
 {
   <canvas class="fixed inset-0 pointer-events-none z-0" data-confetti-canvas></canvas>
 }
 
 <section class="relative z-10" data-share-created-page data-token="@Model.Token" data-ready="@(Model.IsReady ? "true" : "false")" data-progress-hub-url="/hubs/share-progress">
   <div class="max-w-3xl mx-auto">
-    @if (Model.IsReady)
+    @if (Model.IsDirectLink)
+    {
+      <div class="rounded-2xl border border-border bg-white/95 backdrop-blur-sm shadow-sm p-8 sm:p-10" data-created-direct-link>
+        <p class="text-xs font-medium text-terra uppercase tracking-[0.18em]">Temporary direct link</p>
+        <h1 class="font-display text-5xl tracking-tight mt-3">@(Model.IsExpired ? "This direct link has expired" : "Your direct link")</h1>
+        <p class="text-sm text-ink-muted mt-3">
+          @if (Model.IsExpired)
+          {
+            @:The link stopped working and the file is removed at the next cleanup run. Direct links cannot be re-enabled; upload the file again to create a new one.
+          }
+          else
+          {
+            @:Opens the file itself with no download page, so it can be pasted into chats, forums or an image tag.
+          }
+        </p>
+
+        <div class="mt-8 rounded-xl border border-terra-light/40 bg-terra-wash/70 p-4 sm:p-5">
+          <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div class="min-w-0">
+              <p class="text-xs uppercase tracking-wider text-ink-muted mb-2">Direct link</p>
+              <a href="@Model.ShareUrl" target="_blank" rel="noreferrer" class="block font-display text-3xl sm:text-4xl leading-tight text-terra break-all hover:underline">@Model.ShareUrl</a>
+              @if (Model.ExpiresAtUtc is { } expiresAtUtc)
+              {
+                <p class="text-xs text-ink-muted mt-2">@(Model.IsExpired ? "Expired" : "Expires") <span data-local-datetime="@expiresAtUtc.ToString("O")"></span></p>
+              }
+            </div>
+            @if (!Model.IsExpired)
+            {
+              <div x-data="shareReadyCopy('@Model.ShareUrl')" class="shrink-0">
+                <button type="button" class="px-5 py-2.5 text-white text-sm font-medium rounded-lg transition-colors" :class="buttonClass" x-text="label" @@click="copy"></button>
+              </div>
+            }
+          </div>
+        </div>
+
+        <div class="mt-10 flex flex-wrap justify-end gap-3">
+          <a href="/" class="px-4 py-2 border border-border bg-cream text-ink-light text-xs font-medium rounded-lg hover:bg-cream-dark/70 transition-colors">Return to dashboard</a>
+          <a href="/shares/new" class="px-4 py-2 bg-ink text-white text-xs font-medium rounded-lg hover:bg-ink/90 transition-colors">Create new share</a>
+        </div>
+      </div>
+    }
+    else if (Model.IsReady)
     {
       <div class="rounded-2xl border border-border bg-white/95 backdrop-blur-sm shadow-sm p-8 sm:p-10" data-created-ready>
         <p class="text-xs font-medium text-terra uppercase tracking-[0.18em]">File uploaded and downloadable</p>
@@ -67,4 +108,5 @@
   </div>
 </section>
 
+<script nonce="@Html.CspNonce()" src="/js/local-datetime.js"></script>
 <script nonce="@Html.CspNonce()" src="/js/shares-created.js"></script>

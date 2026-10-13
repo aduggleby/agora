@@ -67,8 +67,9 @@ public static class PublicShareEndpoints
             CancellationToken ct) =>
         {
             var share = await manager.FindByTokenAsync(token, ct);
-            if (share is null || ShareManager.IsDeleted(share))
+            if (share is null || ShareManager.IsDeleted(share) || ShareModes.IsDirectLink(share.AccessMode))
             {
+                // A direct link has no page, so there is nothing to render for it.
                 return Results.NotFound();
             }
 

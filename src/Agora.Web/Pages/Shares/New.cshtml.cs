@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Agora.Application.Models;
+using Agora.Application.Utilities;
 using Agora.Infrastructure.Auth;
 using Agora.Infrastructure.Services;
 using Agora.Web.Auth;
@@ -16,9 +17,14 @@ public class NewModel(AuthService authService, ShareManager manager, IOptions<Ag
 {
     private readonly AgoraOptions _options = options.Value;
 
+    /// <summary>A staged file as the page renders it; <see cref="DirectLinkEligible"/> mirrors the stage response flag.</summary>
+    public sealed record StagedUploadRow(string UploadId, string OriginalFileName, long OriginalSizeBytes, bool DirectLinkEligible);
+
     public string DraftShareId { get; private set; } = string.Empty;
     public ShareManager.DraftTemplateState DraftTemplate { get; private set; } = new("", "account_default", "", "", "", null, null, null, "center");
-    public IReadOnlyList<ShareManager.StagedUploadFile> StagedUploads { get; private set; } = [];
+    public IReadOnlyList<StagedUploadRow> StagedUploads { get; private set; } = [];
+    public IReadOnlyList<DirectLinkDuration> DirectLinkDurationOptions => DirectLinkDurations.All;
+    public string DefaultDirectLinkDuration => DirectLinkDurations.DefaultWireValue;
     public string TemplateModeForDraft { get; private set; } = "account_default";
     public string AccountDefaultNotifyModeLabel { get; private set; } = "First download only";
     public string AccountDefaultExpiryModeLabel { get; private set; } = "7 days";
@@ -48,7 +54,9 @@ public class NewModel(AuthService authService, ShareManager manager, IOptions<Ag
         }
 
         DraftTemplate = await manager.GetDraftTemplateAsync(userId, DraftShareId, ct);
-        StagedUploads = await manager.ListStagedUploadsForDraftAsync(userId, DraftShareId, ct);
+        StagedUploads = (await manager.ListStagedUploadsForDraftAsync(userId, DraftShareId, ct))
+            .Select(x => new StagedUploadRow(x.UploadId, x.OriginalFileName, x.OriginalSizeBytes, ContentTypePolicy.Resolve(x.OriginalFileName).Inline))
+            .ToList();
         TemplateModeForDraft = string.Equals(DraftTemplate.TemplateMode, "per_upload", StringComparison.OrdinalIgnoreCase)
             ? "per_upload"
             : "account_default";
@@ -87,6 +95,14 @@ public class NewModel(AuthService authService, ShareManager manager, IOptions<Ag
         ViewData["Message"] = Request.Query["msg"].ToString();
         return Page();
     }
+
+    public static string DirectLinkDurationLabel(DirectLinkDuration duration) => duration switch
+    {
+        DirectLinkDuration.ThirtyMinutes => "30 min",
+        DirectLinkDuration.SixHours => "6 hours",
+        DirectLinkDuration.SevenDays => "7 days",
+        _ => "1 day"
+    };
 
     private static bool IsValidShareToken(string value)
     {

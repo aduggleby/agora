@@ -61,7 +61,13 @@
           var size = share.ZipSizeBytes >= 1024 * 1024 ? $"{share.ZipSizeBytes / (1024.0 * 1024.0):F1} MB" : $"{share.ZipSizeBytes / 1024.0:F0} KB";
           var filesJson = JsonSerializer.Serialize(share.Files);
           <tr class="border-b border-border/60 hover:bg-cream-dark/40 transition-colors">
-            <td class="px-4 py-3 text-sm">@share.ZipDisplayName</td>
+            <td class="px-4 py-3 text-sm">
+              @share.ZipDisplayName
+              @if (share.IsDirectLink)
+              {
+                <span class="ml-1 align-middle text-[11px] px-1.5 py-0.5 rounded-md bg-terra-wash text-terra whitespace-nowrap" title="Opens the file directly; no download page, cannot be re-enabled" data-direct-link-badge>Direct link</span>
+              }
+            </td>
             <td class="px-4 py-3 text-xs text-ink-muted">
               <button type="button" class="text-xs text-terra hover:underline" data-share-details-trigger data-share-name="@share.ZipDisplayName" data-share-files='@filesJson'>@share.FileCount file(s) - @size</button>
             </td>
@@ -82,7 +88,7 @@
               <form method="post" action="/shares/@share.ShareId/show-link" class="inline">
                 <button type="submit" class="text-xs text-terra hover:underline">Show link</button>
               </form>
-              @if (isExpired)
+              @if (isExpired && !share.IsDirectLink)
               {
                 <form method="post" action="/shares/@share.ShareId/reenable" class="inline">
                   <button type="submit" class="text-xs text-sage hover:underline">Re-enable 24h</button>

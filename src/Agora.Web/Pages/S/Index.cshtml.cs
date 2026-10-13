@@ -1,12 +1,15 @@
+using Agora.Application.Abstractions;
+using Agora.Application.Models;
 using Agora.Application.Utilities;
 using Agora.Infrastructure.Services;
+using Agora.Web.Endpoints;
 using Agora.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
 namespace Agora.Web.Pages.S;
 
-public class IndexModel(ShareManager manager, ShareExperienceRendererResolver shareExperienceRendererResolver, PublicBaseUrlResolver publicBaseUrls, ILogger<IndexModel> logger) : PageModel
+public class IndexModel(ShareManager manager, IObjectStore objectStore, ShareExperienceRendererResolver shareExperienceRendererResolver, PublicBaseUrlResolver publicBaseUrls, ILogger<IndexModel> logger) : PageModel
 {
     public sealed record PreviewItemViewModel(
         Guid Id,
@@ -49,17 +52,29 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
         Response.Headers["Referrer-Policy"] = "same-origin";
         Token = token;
         Share = await manager.FindByTokenAsync(token, ct);
-        if (Share is null || ShareManager.IsDeleted(Share))
+        if (Share is not null && ShareModes.IsDirectLink(Share.AccessMode) && ShareManager.IsDeleted(Share))
+        {
+            // A direct link that was deleted early or purged by cleanup is gone like an expired one: the recipient
+            // (or an embed) gets the expired page with 410, never a 404 that would read as a wrong link.
+            IsExpired = true;
+        }
+        else if (Share is null || ShareManager.IsDeleted(Share))
         {
             // Deleted shares are indistinguishable from unknown tokens; nothing of them is rendered.
             return NotFound("Share not found.");
         }
 
-        IsExpired = ShareManager.IsExpired(Share, DateTime.UtcNow);
+        IsExpired = IsExpired || ShareManager.IsExpired(Share, DateTime.UtcNow);
         if (IsExpired)
         {
             // The expired view is still rendered, but crawlers and clients see the share is gone.
             Response.StatusCode = StatusCodes.Status410Gone;
+        }
+
+        if (ShareModes.IsDirectLink(Share.AccessMode) && !IsExpired)
+        {
+            // A live direct link is the file itself; an expired one falls through to the expired view (410).
+            return await ServeDirectLinkAsync(Share, token, ct);
         }
 
         DisplayH1 = ResolveDisplayH1(Share.PageH1, Share.Files.Count);
@@ -123,6 +138,37 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
 
         ViewData["Title"] = "File Download";
         return Page();
+    }
+
+    /// <summary>
+    /// Streams the single file of a direct link under the user-content policy (extension-derived type, nosniff,
+    /// sandbox CSP). Every request counts as a download, whoever makes it; direct links never notify.
+    /// </summary>
+    private async Task<IActionResult> ServeDirectLinkAsync(Domain.Entities.Share share, string token, CancellationToken ct)
+    {
+        var file = share.Files.SingleOrDefault();
+        var stored = file is not null && ObjectKey.TryNormalize(file.StoredRelativePath, out var key)
+            ? await objectStore.OpenReadAsync(key, ct)
+            : null;
+        if (file is null || stored is null)
+        {
+            return StatusCode(StatusCodes.Status410Gone);
+        }
+
+        try
+        {
+            var remote = HttpContext.Connection.RemoteIpAddress?.ToString();
+            var ip = IpAddressUtilities.TryNormalizeIp(remote, out var normalized) ? normalized : "unknown";
+            await manager.RecordDownloadAsync(share, token, ip, Request.Headers.UserAgent.ToString(), ct);
+        }
+        catch
+        {
+            await stored.Content.DisposeAsync();
+            throw;
+        }
+
+        await ObjectResults.UserContent(Response, stored, file.OriginalFilename).ExecuteAsync(HttpContext);
+        return new EmptyResult();
     }
 
     private static string ResolveDisplayH1(string? rawH1, int fileCount)

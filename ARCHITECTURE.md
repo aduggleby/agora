@@ -94,7 +94,7 @@ Key fields:
 - `ZipDiskPath`, `ZipDisplayName`, `ZipSizeBytes`: archived payload metadata.
 - `DownloadPasswordHash`: hash of recipient password if password-protected.
 - `SenderName`, `SenderEmail`, `SenderMessage`: attribution metadata from public upload intake.
-- `ShareExperienceType`, `AccessMode`: rendering and access semantics.
+- `ShareExperienceType`, `AccessMode`: rendering and access semantics. `AccessMode` is `download_only`, `preview_only`, `preview_and_download` or `direct_link` (a single file served as raw bytes at `/s/{token}`; `ZipDiskPath` stays empty).
 - `PageTitle`, `PageH1`, `PageDescription`, `BackgroundImageUrl`, `PageBackgroundColorHex`, `PageContainerPosition`: download-page customization.
 - `ExpiresAtUtc`, `DeletedAtUtc`: lifecycle gates.
 
@@ -155,11 +155,20 @@ Anonymous users can send files to a registered user through a personal upload li
 5. Job updates status (`ShareCreationStatusStore`) and broadcasts over SignalR (`ShareProgressBroadcaster`).
 6. Job optionally queues preview generation and sends “share ready” email. For public-upload shares, the email uses a “files were sent to you” template with a from-name override (“{configured display name} on behalf of {sender}”) and includes the sender's message. The display name comes from the email provider's `FromDisplayName` setting.
 
+## 5.1.1 Temporary Direct Link Flow
+
+1. The new-share page enables "Create temporary direct link" only when exactly one file is staged and the stage response flagged it `directLinkEligible` (`ContentTypePolicy.Resolve(name).Inline`).
+2. `POST /api/shares/direct-link` (`DirectLinkEndpoints`, authenticated, CSRF token in the header, 16 KB JSON body) re-validates the draft, the single file and the duration (`DirectLinkDuration`: `30m`, `6h`, `1d`, `7d`), preflights the durable demand against the scratch budget, then seals the draft and runs `ShareManager.CreateDirectLinkShareAsync` inline (no queue).
+3. `CreateDirectLinkShareAsync` persists the file through `IShareContentStore` (same `shares/yyyy/MM/{guid}/` layout), takes the owner lock (owner exists and is enabled) and inserts the `Share` with `AccessMode = direct_link`, `NotifyMode = none`, `ExpiresAtUtc = now + duration`, `ZipDisplayName` = file name and no archive. A failed insert removes the stored file again.
+4. The endpoint finalizes the draft, hands out a fresh draft id and returns `{url, token, expiresAtUtc, nextDraftShareId}`; the browser copies the URL to the clipboard.
+5. `GET /s/{token}` for a live direct link records a download event for every request (no email) and streams the bytes through `ObjectResults.UserContent` (extension-derived type, `nosniff`, sandbox CSP). An expired, deleted or purged direct link renders the expired page with 410 (ordinary deleted shares stay 404); `/files`, `/download`, `/og-image` and `/api/shares/{token}` answer 403/302/404/404 as the mode allows neither preview nor archive download.
+6. `CleanupExpiredSharesAsync` purges direct links as soon as they are expired (other shares keep the 7-day grace for "Re-enable 24h", which refuses direct links).
+
 ## 5.2 Public Recipient Access Flow
 
 Public endpoints are in `PublicShareEndpoints`:
 
-- `/s/{token}` (Razor page) resolves share by `ShareToken`.
+- `/s/{token}` (Razor page) resolves share by `ShareToken`; for a direct link it serves the file bytes (see 5.1.1).
 - `/s/{token}/download` performs gated download behavior.
 - `/s/{token}/files`, `/preview`, `/thumbnail`, `/preview-status` serve preview surfaces when allowed.
 - `/s/{token}/background` serves custom background image from internal marker.

@@ -6269,6 +6269,36 @@ ${expression ? 'Expression: "' + expression + '"\n\n' : ""}`, el);
     return logger.log !== void 0;
   }
 
+  // scripts/ts/clipboard.ts
+  async function copyText(value) {
+    if (!value) return false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch {
+    }
+    return fallbackCopy(value);
+  }
+  function fallbackCopy(value) {
+    const input = document.createElement("textarea");
+    input.value = value;
+    input.setAttribute("readonly", "readonly");
+    input.style.position = "absolute";
+    input.style.left = "-9999px";
+    document.body.appendChild(input);
+    input.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    document.body.removeChild(input);
+    return ok;
+  }
+
   // scripts/ts/shares-created.ts
   function shareReadyCopy(shareUrl) {
     return {
@@ -6280,18 +6310,6 @@ ${expression ? 'Expression: "' + expression + '"\n\n' : ""}`, el);
         if (this.state === "success") return "bg-sage hover:bg-sage";
         if (this.state === "error") return "bg-danger hover:bg-danger/90";
         return "bg-terra hover:bg-terra/90";
-      },
-      fallbackCopy(value) {
-        const input = document.createElement("textarea");
-        input.value = value;
-        input.setAttribute("readonly", "readonly");
-        input.style.position = "absolute";
-        input.style.left = "-9999px";
-        document.body.appendChild(input);
-        input.select();
-        const ok = document.execCommand("copy");
-        document.body.removeChild(input);
-        return ok;
       },
       flash(state) {
         if (this.resetTimer) window.clearTimeout(this.resetTimer);
@@ -6309,9 +6327,7 @@ ${expression ? 'Expression: "' + expression + '"\n\n' : ""}`, el);
           return;
         }
         try {
-          if (navigator.clipboard?.writeText) {
-            await navigator.clipboard.writeText(this.shareUrl);
-          } else if (!this.fallbackCopy(this.shareUrl)) {
+          if (!await copyText(this.shareUrl)) {
             throw new Error("copy failed");
           }
           this.flash("success");

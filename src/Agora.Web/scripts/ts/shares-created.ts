@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
 import * as signalR from '@microsoft/signalr';
+import { copyText } from './clipboard';
 
 type CopyState = 'idle' | 'success' | 'error';
 
@@ -9,7 +10,6 @@ type ShareReadyCopyModel = {
   state: CopyState;
   resetTimer: number | null;
   buttonClass: string;
-  fallbackCopy(value: string): boolean;
   flash(state: Exclude<CopyState, 'idle'>): void;
   copy(event: Event): Promise<void>;
 };
@@ -41,18 +41,6 @@ function shareReadyCopy(shareUrl: string): ShareReadyCopyModel {
       if (this.state === 'error') return 'bg-danger hover:bg-danger/90';
       return 'bg-terra hover:bg-terra/90';
     },
-    fallbackCopy(value: string): boolean {
-      const input = document.createElement('textarea');
-      input.value = value;
-      input.setAttribute('readonly', 'readonly');
-      input.style.position = 'absolute';
-      input.style.left = '-9999px';
-      document.body.appendChild(input);
-      input.select();
-      const ok = document.execCommand('copy');
-      document.body.removeChild(input);
-      return ok;
-    },
     flash(state: Exclude<CopyState, 'idle'>): void {
       if (this.resetTimer) window.clearTimeout(this.resetTimer);
       this.state = state;
@@ -70,9 +58,7 @@ function shareReadyCopy(shareUrl: string): ShareReadyCopyModel {
       }
 
       try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(this.shareUrl);
-        } else if (!this.fallbackCopy(this.shareUrl)) {
+        if (!(await copyText(this.shareUrl))) {
           throw new Error('copy failed');
         }
 

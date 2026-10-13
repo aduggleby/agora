@@ -1,7 +1,25 @@
 import { readLimitsFromElement, validateFileSelection, formatLimitBytes, showLimitDialog } from './upload-limits';
+import { copyText } from './clipboard';
 
 type UploadStageResponse = {
   uploadId?: string;
+  fileName?: string;
+  sizeBytes?: number;
+  directLinkEligible?: boolean;
+};
+
+type StagedUploadState = {
+  fileName: string;
+  sizeBytes: number;
+  directLinkEligible: boolean;
+};
+
+type DirectLinkResponse = {
+  url?: string;
+  token?: string;
+  expiresAtUtc?: string;
+  nextDraftShareId?: string;
+  error?: string;
 };
 
 type UploadUi = {
@@ -52,26 +70,50 @@ type SavedShareOptionsState = {
   const removeNameNode = form.querySelector<HTMLElement>('[data-upload-remove-file-name]');
   const removeCancelButton = form.querySelector<HTMLButtonElement>('[data-upload-remove-cancel]');
   const removeConfirmButton = form.querySelector<HTMLButtonElement>('[data-upload-remove-confirm]');
+  const directLinkButton = form.querySelector<HTMLButtonElement>('[data-direct-link]');
+  const directDurationInput = form.querySelector<HTMLSelectElement>('[data-direct-duration]');
+  const directResult = form.querySelector<HTMLElement>('[data-direct-link-result]');
+  const directResultSuccess = form.querySelector<HTMLElement>('[data-direct-link-success]');
+  const directResultUrl = form.querySelector<HTMLAnchorElement>('[data-direct-link-url]');
+  const directResultExpiry = form.querySelector<HTMLElement>('[data-direct-link-expiry]');
+  const directResultNotice = form.querySelector<HTMLElement>('[data-direct-link-notice]');
+  const directResultCopy = form.querySelector<HTMLButtonElement>('[data-direct-link-copy]');
+  const directResultError = form.querySelector<HTMLElement>('[data-direct-link-error]');
 
   if (!fileInput || !pickButton || !cancelUploadsButton || !list || !hidden || !status || !submit || !draftShareIdInput) return;
 
   const limits = readLimitsFromElement(form);
   const uploadedIds = new Set<string>();
+  // Per-upload state from the stage response (or the server-rendered rows), keyed by upload id.
+  const uploads = new Map<string, StagedUploadState>();
 
   hidden.querySelectorAll<HTMLInputElement>('input[name="uploadedFileIds"]').forEach((input) => {
     if (input.value) uploadedIds.add(input.value);
+  });
+  list.querySelectorAll<HTMLElement>('[data-upload-id]').forEach((row) => {
+    const id = row.getAttribute('data-upload-id') || '';
+    if (!id) return;
+    uploads.set(id, {
+      fileName: row.getAttribute('data-upload-file-name') || '',
+      sizeBytes: Number(row.getAttribute('data-upload-size-bytes') || '0'),
+      directLinkEligible: row.getAttribute('data-direct-link-eligible') === 'true'
+    });
   });
 
   let activeUploads = 0;
   let manualExpiryValue = '';
   let pendingRemoval: { id: string; row: Element | null } | null = null;
   let isSubmitting = false;
+  let isCreatingDirectLink = false;
   let cancelRequested = false;
+  let directLinkUrl = '';
   const activeRequests = new Set<XMLHttpRequest>();
+  const directDurationStorageKey = 'agora.directLink.duration';
+  const allowedDirectDurations = new Set(['30m', '6h', '1d', '7d']);
 
   const optionsStorageKey = 'agora:new-share:options-collapsed';
   const optionsStateStoragePrefix = 'agora:new-share:options-state:';
-  const optionsStateStorageKey = `${optionsStateStoragePrefix}${draftShareIdInput.value.trim()}`;
+  let optionsStateStorageKey = `${optionsStateStoragePrefix}${draftShareIdInput.value.trim()}`;
   const pickPrimaryClass = 'px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors';
   const pickSecondaryClass = 'px-4 py-2 bg-cream text-ink text-sm font-medium rounded-lg border border-border hover:bg-cream-dark/70 transition-colors';
   const allowedNotifyModes = new Set(['account_default', 'none', 'once', 'every_time']);
@@ -234,10 +276,53 @@ type SavedShareOptionsState = {
     expiresAtInput.title = 'Calculated from expiry mode.';
   };
 
+  const directLinkDisabledReason = (): string => {
+    if (isSubmitting) return 'Preparing your link...';
+    if (isCreatingDirectLink) return 'Creating your direct link...';
+    if (activeUploads > 0) return 'Please wait for uploads to finish.';
+    if (uploadedIds.size === 0) return 'Upload one file first.';
+    if (uploadedIds.size > 1) return 'A direct link can hold only one file; remove the others or create a share link.';
+    const [onlyId] = Array.from(uploadedIds);
+    const state = uploads.get(onlyId);
+    if (!state || !state.directLinkEligible) return 'This file type can only be downloaded, not opened directly; create a share link instead.';
+    return '';
+  };
+
+  // While a direct link is being created the draft is about to be finalized and replaced: nothing may be staged
+  // into, or removed from, it until the replacement draft is in place.
+  const setDraftLocked = (locked: boolean): void => {
+    fileInput.disabled = locked;
+    pickButton.disabled = locked;
+    pickButton.title = locked ? 'Creating your direct link...' : '';
+    list.querySelectorAll<HTMLButtonElement>('[data-upload-remove]').forEach((button) => {
+      button.disabled = locked;
+      button.title = locked ? 'Creating your direct link...' : 'Remove file';
+    });
+    if (locked) {
+      cancelUploadsButton.disabled = true;
+      cancelUploadsButton.title = 'Creating your direct link...';
+    }
+  };
+
+  const refreshDirectLinkState = (): void => {
+    if (!directLinkButton) return;
+    const reason = directLinkDisabledReason();
+    directLinkButton.disabled = reason.length > 0;
+    directLinkButton.title = reason || 'Create a link that opens this file directly, without a download page.';
+    if (directDurationInput) directDurationInput.disabled = isSubmitting || isCreatingDirectLink;
+  };
+
   const refreshState = (): void => {
+    refreshDirectLinkState();
     if (isSubmitting) {
       submit.disabled = true;
       submit.title = 'Preparing your link...';
+      return;
+    }
+
+    if (isCreatingDirectLink) {
+      submit.disabled = true;
+      submit.title = 'Creating your direct link...';
       return;
     }
 
@@ -328,7 +413,7 @@ type SavedShareOptionsState = {
   };
 
   const executeRemove = (id: string, row: Element | null): void => {
-    if (!id) return;
+    if (!id || isCreatingDirectLink) return;
     const data = new FormData();
     data.append('uploadId', id);
     data.append('draftShareId', draftShareIdInput.value);
@@ -337,6 +422,7 @@ type SavedShareOptionsState = {
       .then((response) => {
         if (!response.ok) throw new Error();
         uploadedIds.delete(id);
+        uploads.delete(id);
         removeHidden(id);
         row?.remove();
         refreshState();
@@ -347,7 +433,7 @@ type SavedShareOptionsState = {
   };
 
   const requestRemove = (id: string, row: Element | null): void => {
-    if (!id) return;
+    if (!id || isCreatingDirectLink) return;
 
     pendingRemoval = { id, row };
     if (removeNameNode) {
@@ -372,6 +458,7 @@ type SavedShareOptionsState = {
     remove.className = 'absolute right-1 top-1 p-0.5 text-ink-muted hover:text-danger leading-none text-sm font-semibold hidden';
     remove.textContent = 'x';
     remove.title = 'Remove file';
+    remove.setAttribute('data-upload-remove', '');
 
     const name = document.createElement('p');
     name.className = 'text-xs text-ink-light truncate pr-6';
@@ -461,6 +548,11 @@ type SavedShareOptionsState = {
       if (xhr.status >= 200 && xhr.status < 300 && response?.uploadId) {
         const id = response.uploadId;
         uploadedIds.add(id);
+        uploads.set(id, {
+          fileName: response.fileName || file.name,
+          sizeBytes: typeof response.sizeBytes === 'number' ? response.sizeBytes : file.size,
+          directLinkEligible: response.directLinkEligible === true
+        });
         addHidden(id);
         ui.row.setAttribute('data-upload-id', id);
         ui.row.setAttribute('data-upload-size-bytes', String(file.size || 0));
@@ -515,6 +607,7 @@ type SavedShareOptionsState = {
     status.textContent = 'Canceling upload...';
 
     uploadedIds.clear();
+    uploads.clear();
     hidden.querySelectorAll<HTMLInputElement>('input[name="uploadedFileIds"]').forEach((input) => input.remove());
 
     activeRequests.forEach((request) => request.abort());
@@ -546,6 +639,9 @@ type SavedShareOptionsState = {
   });
 
   const queueSelectedFiles = (files: FileList | File[] | null | undefined): void => {
+    // Drops and picks that land while the draft is being replaced are ignored: they would stage into a draft
+    // that is being finalized.
+    if (isCreatingDirectLink) return;
     const selected = Array.from(files ?? []);
     if (selected.length === 0) return;
     cancelRequested = false;
@@ -573,6 +669,7 @@ type SavedShareOptionsState = {
 
   dropzone?.addEventListener('dragover', (event) => {
     event.preventDefault();
+    if (isCreatingDirectLink) return;
     dropzone.classList.add('ring-2', 'ring-terra/40');
   });
   dropzone?.addEventListener('dragleave', () => dropzone.classList.remove('ring-2', 'ring-terra/40'));
@@ -627,26 +724,6 @@ type SavedShareOptionsState = {
     });
   }
 
-  form.addEventListener('submit', (event) => {
-    if (submit.disabled || isSubmitting) {
-      event.preventDefault();
-      return;
-    }
-
-    isSubmitting = true;
-    submit.disabled = true;
-    submit.title = 'Preparing your link...';
-    submit.textContent = 'Preparing your link...';
-    submitPending?.classList.remove('hidden');
-    form.setAttribute('aria-busy', 'true');
-    fileInput.disabled = true;
-    pickButton.disabled = true;
-    optionsToggle?.setAttribute('disabled', 'disabled');
-    shareTokenInput?.setAttribute('readonly', 'readonly');
-    downloadPasswordInput?.setAttribute('readonly', 'readonly');
-    refreshState();
-  });
-
   const modeInput = form.querySelector<HTMLSelectElement>('[data-template-mode]');
   const summary = form.querySelector<HTMLElement>('[data-template-summary]');
   const titleInput = form.querySelector<HTMLInputElement>('[data-template-title]');
@@ -677,7 +754,187 @@ type SavedShareOptionsState = {
     saveOptionsState();
   });
 
+  const restoreDirectDuration = (): void => {
+    if (!directDurationInput) return;
+    try {
+      const saved = (localStorage.getItem(directDurationStorageKey) || '').trim();
+      if (saved && allowedDirectDurations.has(saved)) directDurationInput.value = saved;
+    } catch {
+      // Ignore localStorage access errors.
+    }
+  };
+
+  directDurationInput?.addEventListener('change', () => {
+    try {
+      localStorage.setItem(directDurationStorageKey, directDurationInput.value);
+    } catch {
+      // Ignore localStorage access errors.
+    }
+  });
+
+  const showDirectLinkError = (message: string): void => {
+    if (!directResult) return;
+    directResult.classList.remove('hidden');
+    directResultSuccess?.classList.add('hidden');
+    if (directResultError) {
+      directResultError.textContent = message;
+      directResultError.classList.remove('hidden');
+    }
+  };
+
+  const setDirectLinkNotice = (message: string, ok: boolean): void => {
+    if (!directResultNotice) return;
+    directResultNotice.textContent = message;
+    directResultNotice.classList.toggle('text-sage', ok);
+    directResultNotice.classList.toggle('text-danger', !ok);
+    directResultNotice.classList.remove('hidden');
+  };
+
+  const showDirectLinkResult = (url: string, expiresAtUtc: string, copied: boolean): void => {
+    if (!directResult) return;
+    directLinkUrl = url;
+    directResult.classList.remove('hidden');
+    directResultError?.classList.add('hidden');
+    directResultSuccess?.classList.remove('hidden');
+    if (directResultUrl) {
+      directResultUrl.href = url;
+      directResultUrl.textContent = url;
+    }
+    if (directResultExpiry) {
+      const expires = new Date(expiresAtUtc);
+      directResultExpiry.textContent = Number.isNaN(expires.getTime())
+        ? ''
+        : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(expires);
+    }
+    setDirectLinkNotice(copied ? 'Copied to clipboard' : 'Could not copy automatically; use the Copy link button.', copied);
+  };
+
+  const newDraftShareId = (): string =>
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID().replace(/-/g, '')
+      : Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+
+  // The old draft was finalized by the server (staged files and background gone): the page continues on a clean
+  // replacement draft, with the template reset to the account default.
+  const replaceDraft = (nextDraftShareId: string): void => {
+    const draftShareId = nextDraftShareId || newDraftShareId();
+    uploadedIds.clear();
+    uploads.clear();
+    hidden.querySelectorAll<HTMLInputElement>('input[name="uploadedFileIds"]').forEach((input) => input.remove());
+    list.innerHTML = '';
+
+    draftShareIdInput.value = draftShareId;
+    optionsStateStorageKey = `${optionsStateStoragePrefix}${draftShareId}`;
+    const designer = form.querySelector<HTMLAnchorElement>('[data-template-designer-link]');
+    if (designer) designer.href = `/share/landing-page-designer?draftShareId=${encodeURIComponent(draftShareId)}`;
+    try {
+      window.history.replaceState(null, '', `/shares/new?draftShareId=${encodeURIComponent(draftShareId)}`);
+    } catch {
+      // Ignore history access errors.
+    }
+
+    const templateDefaults: Array<[string, string]> = [
+      ['[data-template-title]', ''],
+      ['[data-template-h1]', ''],
+      ['[data-template-description]', ''],
+      ['[data-template-background-upload-id]', ''],
+      ['[data-template-background-color-hex]', ''],
+      ['[data-template-container-position]', 'center']
+    ];
+    templateDefaults.forEach(([selector, value]) => {
+      const input = form.querySelector<HTMLInputElement>(selector);
+      if (input) input.value = value;
+    });
+    const templateModeInput = form.querySelector<HTMLSelectElement>('[data-template-mode]');
+    if (templateModeInput) templateModeInput.value = 'account_default';
+    refreshTemplateMode();
+  };
+
+  const resolveDirectLinkError = async (response: Response): Promise<string> => {
+    try {
+      const payload = (await response.json()) as DirectLinkResponse;
+      if (payload?.error?.trim()) return payload.error.trim();
+    } catch {
+      // Not JSON: fall back to the status text.
+    }
+    return response.status === 413 ? 'Request too large.' : `Could not create the direct link (HTTP ${response.status}).`;
+  };
+
+  directLinkButton?.addEventListener('click', async () => {
+    if (directLinkButton.disabled || isCreatingDirectLink) return;
+    const [uploadId] = Array.from(uploadedIds);
+    if (!uploadId) return;
+
+    isCreatingDirectLink = true;
+    setDraftLocked(true);
+    refreshState();
+    try {
+      // The CSRF header is added by csrf-client, which has patched fetch by the time a click can happen.
+      const response = await fetch('/api/shares/direct-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          draftShareId: draftShareIdInput.value,
+          uploadId,
+          duration: directDurationInput?.value || '1d'
+        })
+      });
+
+      if (!response.ok) {
+        showDirectLinkError(await resolveDirectLinkError(response));
+        return;
+      }
+
+      const payload = (await response.json()) as DirectLinkResponse;
+      const url = (payload.url || '').trim();
+      if (!url) {
+        showDirectLinkError('The server did not return a link.');
+        return;
+      }
+
+      // The draft is replaced before the clipboard write, which may take a while or prompt.
+      replaceDraft((payload.nextDraftShareId || '').trim());
+      const copied = await copyText(url);
+      showDirectLinkResult(url, payload.expiresAtUtc || '', copied);
+    } catch {
+      showDirectLinkError('Could not create the direct link. Check your connection and try again.');
+    } finally {
+      isCreatingDirectLink = false;
+      setDraftLocked(false);
+      refreshState();
+    }
+  });
+
+  directResultCopy?.addEventListener('click', async () => {
+    if (!directLinkUrl) return;
+    const copied = await copyText(directLinkUrl);
+    setDirectLinkNotice(copied ? 'Copied to clipboard' : 'Could not copy; select the link and copy it manually.', copied);
+  });
+
+  form.addEventListener('submit', (event) => {
+    if (submit.disabled || isSubmitting) {
+      event.preventDefault();
+      return;
+    }
+
+    isSubmitting = true;
+    submit.disabled = true;
+    submit.title = 'Preparing your link...';
+    submit.textContent = 'Preparing your link...';
+    submitPending?.classList.remove('hidden');
+    form.setAttribute('aria-busy', 'true');
+    fileInput.disabled = true;
+    pickButton.disabled = true;
+    optionsToggle?.setAttribute('disabled', 'disabled');
+    shareTokenInput?.setAttribute('readonly', 'readonly');
+    downloadPasswordInput?.setAttribute('readonly', 'readonly');
+    refreshState();
+  });
+
+
   restoreOptionsState();
+  restoreDirectDuration();
   refreshTemplateMode();
   refreshState();
 })();

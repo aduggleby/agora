@@ -50,7 +50,11 @@ public sealed class ShareManager(
         string? SenderName,
         string? SenderEmail,
         string? SenderMessage,
-        IReadOnlyList<ShareArchiveFileSummary> Files);
+        string AccessMode,
+        IReadOnlyList<ShareArchiveFileSummary> Files)
+    {
+        public bool IsDirectLink => ShareModes.IsDirectLink(AccessMode);
+    }
 
     public sealed record DraftTemplateState(
         string DraftShareId,
@@ -344,6 +348,153 @@ public sealed class ShareManager(
         }
     }
 
+    /// <summary>
+    /// Creates a temporary direct link: the one file staged into the draft is persisted under the usual content root
+    /// and served as raw bytes at <c>/s/{token}</c>; no archive is built and no notification is ever sent. Refuses
+    /// drafts that hold anything but exactly that one file and files the content policy would not serve inline.
+    /// </summary>
+    public async Task<CreateShareResult> CreateDirectLinkShareAsync(CreateDirectLinkCommand command, CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        var owner = ShareOwner.For(command.OwnerUserId, command.UploaderEmail);
+        if (!TryNormalizeDraftShareId(command.DraftShareId, out var draftShareId))
+        {
+            throw new InvalidOperationException("draftShareId is invalid.");
+        }
+
+        var staged = await ResolveDirectLinkUploadAsync(owner.UserId, draftShareId, command.UploadId, cancellationToken);
+        var file = new UploadSourceFile(staged.TempPath, staged.OriginalFileName, staged.OriginalSizeBytes, staged.ContentType);
+        var expiresAtUtc = now.Add(DirectLinkDurations.ToTimeSpan(command.Duration));
+
+        // No archive: only the stored original lands on the durable volume (FileSystem store) or nowhere local (S3).
+        using var scratchReservation = scratchSpace.Reserve(scratchSpace.DurableDemand(Math.Max(0, file.OriginalSizeBytes)));
+        string? shareContentRelativePath = null;
+        var attemptedShareIds = new List<Guid>();
+        try
+        {
+            var persistedContent = await contentStore.PersistShareFilesAsync([file], now, cancellationToken);
+            shareContentRelativePath = persistedContent.ContentRootPath;
+            var stored = persistedContent.Files.Single();
+
+            // Serialized with account deletion, like CreateShareAsync: the owner must still exist and be enabled.
+            using var ownerLock = await draftLocks.LockAsync(OwnerLockKey(owner.UserId), cancellationToken);
+            if (!await db.Users.AnyAsync(x => x.Id == owner.UserId && x.IsEnabled, cancellationToken))
+            {
+                throw new InvalidOperationException("The account that owns this share no longer exists.");
+            }
+
+            for (var attempt = 0; attempt < 16; attempt += 1)
+            {
+                var token = TokenCodec.GenerateAlphanumericToken(8);
+                var share = new Share
+                {
+                    Id = Guid.NewGuid(),
+                    OwnerUserId = owner.UserId,
+                    UploaderEmail = owner.Email,
+                    ShareToken = token,
+                    ZipDisplayName = stored.EntryName,
+                    ZipDiskPath = string.Empty,
+                    ZipSizeBytes = stored.SizeBytes,
+                    ShareExperienceType = ShareModes.ToStorageValue(ShareExperienceType.Archive),
+                    AccessMode = ShareModes.ToStorageValue(ShareAccessMode.DirectLink),
+                    ContentRootPath = shareContentRelativePath,
+                    NotifyMode = "none",
+                    ExpiresAtUtc = expiresAtUtc,
+                    CreatedAtUtc = now,
+                    PageTitle = stored.EntryName,
+                    PageH1 = stored.EntryName,
+                    PageDescription = string.Empty,
+                    Files =
+                    [
+                        new ShareFile
+                        {
+                            Id = Guid.NewGuid(),
+                            OriginalFilename = stored.EntryName,
+                            StoredRelativePath = stored.StoredRelativePath,
+                            RenderType = DetectRenderType(stored.EntryName),
+                            OriginalSizeBytes = stored.SizeBytes,
+                            DetectedContentType = ContentTypePolicy.FromFileName(stored.EntryName)
+                        }
+                    ]
+                };
+
+                db.Shares.Add(share);
+                attemptedShareIds.Add(share.Id);
+                try
+                {
+                    await db.SaveChangesAsync(cancellationToken);
+                    return new CreateShareResult(share.Id, token, share.ZipDisplayName, share.ExpiresAtUtc);
+                }
+                catch (DbUpdateException ex) when (IsShareTokenConflict(ex))
+                {
+                    logger.LogWarning(
+                        "Share token conflict while creating direct link. share={TokenRef} uploader={Uploader} constraint={Constraint}",
+                        LogSafe.Token(token),
+                        command.UploaderEmail,
+                        ShareTokenConflictConstraint(ex));
+                    db.Entry(share).State = EntityState.Detached;
+                    // Random collision on a generated token; retry with a new one.
+                }
+                catch
+                {
+                    db.Entry(share).State = EntityState.Detached;
+                    throw;
+                }
+            }
+
+            throw new InvalidOperationException("Unable to generate a unique share token right now.");
+        }
+        catch
+        {
+            if (await IsAnyShareCommittedAsync(attemptedShareIds))
+            {
+                logger.LogWarning(
+                    "Direct link creation failed but a share row may have been committed (ids {ShareIds}); keeping its content root {ContentRoot} for reconciliation",
+                    attemptedShareIds,
+                    shareContentRelativePath);
+            }
+            else
+            {
+                await DeleteUploadedObjectsAsync(shareContentRelativePath, []);
+            }
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The single share file of a draft, for a direct link: the draft must hold exactly one staged share file, it
+    /// must be the one the client named, and its extension must be one the content policy serves inline.
+    /// </summary>
+    public async Task<StagedUploadFile> ResolveDirectLinkUploadAsync(Guid ownerUserId, string draftShareId, string uploadId, CancellationToken cancellationToken)
+    {
+        if (!UploadIds.TryNormalize(uploadId, out var normalizedUploadId))
+        {
+            throw new InvalidOperationException("Uploaded file id is invalid.");
+        }
+
+        var staged = await ListStagedUploadsForDraftAsync(ownerUserId, draftShareId, cancellationToken);
+        if (staged.Count != 1)
+        {
+            throw new InvalidOperationException(staged.Count == 0
+                ? "Upload one file first."
+                : "A direct link can hold only one file; remove the others or create a share link instead.");
+        }
+
+        var file = staged[0];
+        if (!string.Equals(file.UploadId, normalizedUploadId, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Uploaded file does not belong to this draft share.");
+        }
+
+        if (!ContentTypePolicy.Resolve(file.OriginalFileName).Inline)
+        {
+            throw new InvalidOperationException("This file type can only be downloaded, not opened directly; create a share link instead.");
+        }
+
+        return file;
+    }
+
     private async Task<bool> IsAnyShareCommittedAsync(IReadOnlyList<Guid> shareIds)
     {
         if (shareIds.Count == 0)
@@ -480,6 +631,7 @@ public sealed class ShareManager(
                 x.SenderName,
                 x.SenderEmail,
                 x.SenderMessage,
+                x.AccessMode,
                 x.Files
                     .Select(file => new ShareArchiveFileSummary(
                         file.OriginalFilename,
@@ -512,6 +664,12 @@ public sealed class ShareManager(
             x => x.Id == shareId && x.DeletedAtUtc == null,
             cancellationToken);
         if (share is null)
+        {
+            return false;
+        }
+
+        // A direct link is purged at the first cleanup run after expiry and has no archive to re-enable.
+        if (ShareModes.IsDirectLink(share.AccessMode))
         {
             return false;
         }
@@ -730,9 +888,13 @@ public sealed class ShareManager(
     public async Task<int> CleanupExpiredSharesAsync(CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
+        // Ordinary shares keep a 7-day grace after expiry so the owner can "Re-enable 24h"; direct links cannot be
+        // re-enabled and are purged at the first run after they expire.
         var purgeCutoff = now.AddDays(-7);
+        var directLinkMode = ShareModes.ToStorageValue(ShareAccessMode.DirectLink);
         var expired = await db.Shares
-            .Where(x => x.DeletedAtUtc == null && x.ExpiresAtUtc != null && x.ExpiresAtUtc <= purgeCutoff)
+            .Where(x => x.DeletedAtUtc == null && x.ExpiresAtUtc != null &&
+                        (x.ExpiresAtUtc <= purgeCutoff || (x.AccessMode == directLinkMode && x.ExpiresAtUtc <= now)))
             .ToListAsync(cancellationToken);
 
         var count = 0;

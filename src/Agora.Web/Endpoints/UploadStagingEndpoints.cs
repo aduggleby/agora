@@ -267,7 +267,9 @@ public static class UploadStagingEndpoints
         {
             uploadId = staged.UploadId,
             fileName = staged.OriginalFileName,
-            sizeBytes = staged.OriginalSizeBytes
+            sizeBytes = staged.OriginalSizeBytes,
+            // Whether a temporary direct link may serve this file inline; the browser never duplicates the allowlist.
+            directLinkEligible = ContentTypePolicy.Resolve(staged.OriginalFileName).Inline
         });
     }
 }

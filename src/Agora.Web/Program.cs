@@ -1582,6 +1582,12 @@ app.MapGet("/api/shares/{token}", async (ShareManager manager, string token, Can
         return Results.NotFound();
     }
 
+    // A direct link has no download page to summarize.
+    if (ShareModes.IsDirectLink(share.AccessMode))
+    {
+        return Results.NotFound();
+    }
+
     if (ShareManager.IsExpired(share, DateTime.UtcNow))
     {
         return Results.StatusCode(StatusCodes.Status410Gone);
@@ -1607,6 +1613,7 @@ app.MapGet("/api/shares/{token}", async (ShareManager manager, string token, Can
 
 
 app.MapPublicShareEndpoints();
+app.MapDirectLinkEndpoints();
 app.MapHub<ShareProgressHub>("/hubs/share-progress").RequireAuthorization();
 
 app.Run();

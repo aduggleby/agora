@@ -9,6 +9,7 @@ Agora is an ASP.NET Core 10 file sharing app for sending files with branded down
 - Optional download-page customization (title, text, background, layout)
 - Optional image and file previews for recipients
 - Expiring or indefinite share links
+- Temporary direct links: a single image, video, audio file, PDF or text file served at `/s/{token}` with no download page (for chats, forums or `<img src>`), gone after 30 minutes to 7 days
 - Download notifications (`none`, `once`, `every_time`)
 - Public upload links: let anyone send files to your account via a tokenized URL with a customizable 8-64 character alphanumeric code, with a dedicated success screen after submit
 - Public-upload completion emails use a dedicated "files were sent to you" template and include an on-behalf-of sender identity plus the sender message
@@ -334,6 +335,26 @@ scratch budget before it is read.
 already on disk), not only when the share is submitted, so an abandoned draft can never hold more than one share's worth
 of scratch. Submitting seals the draft: nothing more can be staged into it, a second submission is refused, and once the
 share is built everything the draft left in scratch (including files that were staged but not submitted) is removed.
+
+### Temporary direct links
+
+On the new-share page a signed-in user who has staged exactly one file can create a **temporary direct link**
+instead of a share link. The link uses the normal `/s/{token}` format, but opening it returns the file itself (an
+image shows as an image, a PDF as a PDF) with the usual user-content headers (`nosniff`, sandbox CSP), so it can be
+pasted into chats, forums or an `<img src>`.
+
+- Eligible files are the ones the content policy already serves inline: raster images, common video and audio,
+  PDF and plain text. Other types keep the button disabled with the reason as a tooltip.
+- Durations are fixed: 30 minutes, 6 hours, 1 day (default) or 7 days; the last choice is remembered in the browser.
+- No archive is built and no notification email is ever sent; every view counts as a download in "My shares".
+- After the chosen duration the link answers 410 and the stored file is purged by the next cleanup run (at most 30
+  minutes later). Direct links show a "Direct link" badge in "My shares", can be deleted early (a deleted direct
+  link answers 410 like an expired one), and cannot be re-enabled or password protected. They count toward the
+  same size and scratch limits as normal shares.
+- Creating a direct link finalizes the draft; the page continues on a fresh draft with the account-default page design.
+
+`POST /api/shares/direct-link` (JSON `{draftShareId, uploadId, duration}` with the CSRF token in the
+`X-CSRF-TOKEN` header) returns `{url, token, expiresAtUtc, nextDraftShareId}`.
 
 ### Scratch space
 
