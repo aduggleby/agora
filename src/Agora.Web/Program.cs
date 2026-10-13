@@ -1,3 +1,4 @@
+using System.Text;
 using System.Security.Claims;
 using Agora.Application.Abstractions;
 using Agora.Application.Models;
@@ -581,7 +582,7 @@ if (isE2E)
         var uploaderEmail = EmailAddress.Normalize(form["uploaderEmail"].ToString());
         if (!IsValidShareToken(token))
         {
-            return Results.BadRequest(new { error = "token must be 3-64 letters, numbers, hyphens, or underscores." });
+            return Results.BadRequest(new { error = "token must be 8-64 letters, numbers, hyphens, or underscores." });
         }
 
         if (string.IsNullOrWhiteSpace(uploaderEmail))
@@ -1043,8 +1044,9 @@ app.MapPost("/api/public-uploads/create-share", async (
     var form = await request.ReadFormAsync(ct);
     var uploadToken = form["uploadToken"].ToString().Trim();
     var draftShareId = form["draftShareId"].ToString().Trim();
-    var senderName = form["senderName"].ToString().Trim();
-    var senderEmail = EmailAddress.Normalize(form["senderEmail"].ToString());
+    // Sender text is stored (SenderName 200, SenderEmail 320 columns) and shown on the page and in mail.
+    var senderName = NormalizeSenderText(form["senderName"].ToString());
+    var senderEmail = EmailAddress.Normalize(NormalizeSenderText(form["senderEmail"].ToString()));
     var senderMessage = form["senderMessage"].ToString().Trim();
     if (string.IsNullOrWhiteSpace(uploadToken) || string.IsNullOrWhiteSpace(draftShareId))
     {
@@ -1056,7 +1058,12 @@ app.MapPost("/api/public-uploads/create-share", async (
         return Results.BadRequest("senderName is required.");
     }
 
-    if (!IsValidEmailAddress(senderEmail))
+    if (senderName.Length > 200)
+    {
+        return Results.BadRequest("senderName must be at most 200 characters.");
+    }
+
+    if (senderEmail.Length > 320 || !IsValidEmailAddress(senderEmail))
     {
         return Results.BadRequest("senderEmail must be a valid email address.");
     }
@@ -1345,7 +1352,7 @@ app.MapPost("/api/shares", async (
 
     if (!IsValidShareToken(shareToken))
     {
-        return Results.Redirect($"/shares/new?draftShareId={Uri.EscapeDataString(draftShareId)}&shareToken={Uri.EscapeDataString(shareToken)}&msg=Share%20link%20must%20be%203-64%20letters%2C%20numbers%2C%20hyphens%2C%20or%20underscores");
+        return Results.Redirect($"/shares/new?draftShareId={Uri.EscapeDataString(draftShareId)}&shareToken={Uri.EscapeDataString(shareToken)}&msg=Share%20link%20must%20be%208-64%20letters%2C%20numbers%2C%20hyphens%2C%20or%20underscores");
     }
 
     var isShareTokenAvailable = await manager.IsShareTokenAvailableAsync(shareToken, ct);
@@ -1544,10 +1551,11 @@ app.MapPost("/api/shares", async (
 }).RequireAuthorization()
   .WithMetadata(new UploadEndpointMetadata(RequiresHeaderCsrfToken: false), new RequestSizeLimitAttribute(configuredMaxTotalUploadBytes + 1024 * 1024));
 
+// Anonymous share summary: only what the download page itself shows. No uploader message, page text, or storage markers.
 app.MapGet("/api/shares/{token}", async (ShareManager manager, string token, CancellationToken ct) =>
 {
     var share = await manager.FindByTokenAsync(token, ct);
-    if (share is null)
+    if (share is null || ShareManager.IsDeleted(share))
     {
         return Results.NotFound();
     }
@@ -1557,6 +1565,12 @@ app.MapGet("/api/shares/{token}", async (ShareManager manager, string token, Can
         return Results.StatusCode(StatusCodes.Status410Gone);
     }
 
+    if (!string.IsNullOrWhiteSpace(share.DownloadPasswordHash))
+    {
+        // Nothing about the content until the password is presented on the download page.
+        return Results.Ok(new { RequiresPassword = true, share.ExpiresAtUtc });
+    }
+
     return Results.Ok(new
     {
         share.ZipDisplayName,
@@ -1564,19 +1578,8 @@ app.MapGet("/api/shares/{token}", async (ShareManager manager, string token, Can
         FileCount = share.Files.Count,
         share.ShareExperienceType,
         share.AccessMode,
-        RequiresPassword = !string.IsNullOrWhiteSpace(share.DownloadPasswordHash),
-        UploaderMessage = share.UploaderMessage,
-        Page = new
-        {
-            Title = share.PageTitle,
-            H1 = share.PageH1,
-            Description = share.PageDescription,
-            share.BackgroundImageUrl,
-            share.PageBackgroundColorHex,
-            share.PageContainerPosition
-        },
-        share.ExpiresAtUtc,
-        IsExpired = false
+        RequiresPassword = false,
+        share.ExpiresAtUtc
     });
 });
 
@@ -1594,7 +1597,9 @@ static string ClientAddress(HttpContext context) => UploadStagingEndpoints.Clien
 
 static bool IsValidShareToken(string token)
 {
-    if (string.IsNullOrWhiteSpace(token) || token.Length < 3 || token.Length > 64)
+    // Custom share tokens: at least 8 characters so short, guessable links cannot be enumerated (generated ones are 8).
+    const int MinShareTokenLength = 8;
+    if (string.IsNullOrWhiteSpace(token) || token.Length < MinShareTokenLength || token.Length > 64)
     {
         return false;
     }
@@ -1608,6 +1613,36 @@ static bool IsValidShareToken(string token)
     }
 
     return true;
+}
+
+// Strips control characters and collapses whitespace runs; sender text ends up in page markup and mail.
+static string NormalizeSenderText(string? raw)
+{
+    var builder = new StringBuilder((raw ?? string.Empty).Length);
+    var pendingSpace = false;
+    foreach (var ch in raw ?? string.Empty)
+    {
+        if (char.IsWhiteSpace(ch))
+        {
+            pendingSpace = builder.Length > 0;
+            continue;
+        }
+
+        if (char.IsControl(ch))
+        {
+            continue;
+        }
+
+        if (pendingSpace)
+        {
+            builder.Append(' ');
+            pendingSpace = false;
+        }
+
+        builder.Append(ch);
+    }
+
+    return builder.ToString();
 }
 
 static bool IsTruthy(string? raw)

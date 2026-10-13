@@ -305,7 +305,7 @@ public sealed class QueuedShareCreationJob(
         return lines.Count == 0 ? null : string.Join('\n', lines);
     }
 
-    private static AuthEmailMessage BuildCompletionEmailCore(Payload payload, string shareUrl, string recipientEmail, string configuredSenderDisplayName)
+    internal static AuthEmailMessage BuildCompletionEmailCore(Payload payload, string shareUrl, string recipientEmail, string configuredSenderDisplayName)
     {
         var senderIdentity = BuildSenderIdentity(payload);
         var senderMessage = (payload.SenderMessage ?? string.Empty).Trim();
@@ -315,6 +315,12 @@ public sealed class QueuedShareCreationJob(
                 ? "Agora"
                 : configuredSenderDisplayName.Trim();
             var onBehalfOf = $"{normalizedDisplayName} on behalf of {senderIdentity}";
+            // The From display name carries uploader-supplied text: strip header and address delimiters and cap it.
+            // The body keeps the full text (HTML-encoded by the template). An identity with nothing printable left
+            // falls back to the configured display name (null override).
+            var fromDisplayName = EmailDisplayName.Sanitize(senderIdentity).Length == 0
+                ? null
+                : EmailDisplayName.Sanitize(onBehalfOf);
             var intro = !string.IsNullOrWhiteSpace(senderMessage)
                 ? "The sender included this message:"
                 : "The upload was processed and the files are ready to open.";
@@ -331,7 +337,7 @@ public sealed class QueuedShareCreationJob(
                 ActionLabel: "Open share link",
                 ActionUrl: shareUrl,
                 SecondaryText: $"{onBehalfOf}. The upload has completed successfully.",
-                FromDisplayNameOverride: onBehalfOf);
+                FromDisplayNameOverride: fromDisplayName);
         }
 
         return new AuthEmailMessage(

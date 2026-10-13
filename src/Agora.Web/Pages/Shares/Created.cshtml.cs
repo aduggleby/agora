@@ -47,7 +47,7 @@ public class CreatedModel(PublicBaseUrlResolver publicBaseUrls, ShareManager man
             var sizeDisplay = share.ZipSizeBytes >= 1024 * 1024
                 ? $"{share.ZipSizeBytes / (1024.0 * 1024.0):F1} MB"
                 : $"{share.ZipSizeBytes / 1024.0:F0} KB";
-            var isExpired = ShareManager.IsExpired(share, DateTime.UtcNow);
+            var isExpired = !ShareManager.IsActive(share, DateTime.UtcNow);
             PreviewCard = new ShareLandingCardViewModel(
                 Title: share.PageH1,
                 Subtitle: share.PageTitle,

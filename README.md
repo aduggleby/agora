@@ -194,7 +194,15 @@ Switching providers does not migrate data.
 Token lookups are case-sensitive on PostgreSQL. Share links (`/s/{token}`) and upload links (`/u/{token}`) are matched
 exactly, so `/s/MyToken` and `/s/mytoken` are different links there. On SQL Server with the default case-insensitive
 collation they resolve to the same share. Generated tokens and user-chosen custom share tokens/upload codes may contain
-upper- and lower-case letters, so always use links exactly as Agora shows them.
+upper- and lower-case letters, so always use links exactly as Agora shows them. Custom share tokens must be 8 to 64
+letters, numbers, hyphens or underscores (generated ones are 8). The minimum does not make a custom link secret: it
+bounds guessing in combination with the per-IP limiters (`Agora__RateLimits__AnonymousPerMinute` and the per-share
+download limiter), so avoid dictionary words when the link should stay private.
+
+A share whose owner deleted it answers every public route (`/s/{token}` and everything below it, `/api/shares/{token}`)
+with 404, exactly like an unknown token; an expired share answers 410 (the download page still renders its "expired"
+view with that status). The anonymous summary at `/api/shares/{token}` returns only what the download page itself
+shows, and for a password-protected share nothing but `requiresPassword` and `expiresAtUtc`.
 
 ### Health endpoints
 
@@ -297,7 +305,7 @@ changed (see "Sessions").
 | `Agora__MaxFileSizeBytes` | `5368709120` | Per-file upload limit (5 GB) |
 | `Agora__MaxTotalUploadBytes` | `10737418240` | Per-share total upload limit (10 GB) |
 | `Agora__DownloadEventRetentionDays` | `90` | How long download-event records are kept |
-| `Agora__ZombieUploadRetentionHours` | `24` | Cleanup window for abandoned staged uploads, drafts and share-creation status files |
+| `Agora__ZombieUploadRetentionHours` | `24` | Cleanup window for abandoned staged uploads, drafts and share-creation status files; also the shortest interval at which recipients polling a download page can re-queue a missing preview (see Previews) |
 
 API clients may also post files directly in the multipart body of `POST /api/shares` (the UI always stages first);
 that request body is bounded by `Agora__MaxTotalUploadBytes` (plus 1 MB of form overhead) and reserved against the
@@ -352,6 +360,17 @@ over a budget is not decoded at all; the share shows the "preview unavailable" i
 | `Agora__Previews__MaxSourceBytes` | `67108864` | Largest image or PDF (64 MB) that is opened for a preview |
 | `Agora__Previews__MaxSourcePixels` | `50000000` | Largest image (width x height, 50 megapixels) that is decoded; checked from the file header before decoding |
 | `Agora__Previews__TimeoutSeconds` | `30` | Wall-clock budget for generating one preview or thumbnail |
+
+Preview generation jobs are queued when a share is created. A recipient's browser polling a public link enqueues a job
+again only when neither the preview nor a `.lock`/`.failed` marker exists and no job was queued for that file within
+`Agora__ZombieUploadRetentionHours` (a `.queued` marker in the scratch directory); the "retry" button on the page is
+rate limited and always queues one.
+
+The link-preview image (`/s/{token}/og-image`, the Open Graph image behind chat and social link cards) is rendered
+once per share, stored as `previews/<shareId>/og.png` next to the file previews and served with
+`Cache-Control: public, max-age=3600`. It is purged with the share's other previews when the share is deleted; download
+page settings cannot change after creation, so it is never regenerated. Password-protected shares get a generic
+"password-protected share" image that shows no title, file name or file count.
 
 Not configurable: images are decoded with SkiaSharp, which has no allocator cap of its own, so the pixel budget on the
 header dimensions is the memory bound. The decoded raster costs 4 bytes per pixel of the decoded size: a PNG or BMP

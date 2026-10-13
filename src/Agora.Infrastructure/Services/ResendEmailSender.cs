@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Agora.Application.Abstractions;
 using Agora.Application.Models;
+using Agora.Application.Utilities;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -61,21 +62,24 @@ public sealed class ResendEmailSender(
         }
     }
 
+    /// <summary>
+    /// One from-header builder for every send: the override (sanitised, falling back to the configured name when
+    /// nothing printable remains) is quoted by <see cref="EmailDisplayName.BuildFromHeader"/>.
+    /// </summary>
     private string BuildFromValue(string? fromDisplayNameOverride)
     {
         var address = (_options.FromAddress ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(address))
         {
-            return "no-reply@example.com";
+            address = "no-reply@example.com";
         }
 
-        var displayName = (fromDisplayNameOverride ?? _options.FromDisplayName ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(displayName))
+        var displayName = EmailDisplayName.Sanitize(fromDisplayNameOverride);
+        if (displayName.Length == 0)
         {
-            return address;
+            displayName = EmailDisplayName.Sanitize(_options.FromDisplayName);
         }
 
-        var escapedDisplay = displayName.Replace("\"", "'");
-        return $"\"{escapedDisplay}\" <{address}>";
+        return EmailDisplayName.BuildFromHeader(address, displayName);
     }
 }

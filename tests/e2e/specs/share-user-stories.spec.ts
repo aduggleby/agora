@@ -166,8 +166,9 @@ trailer
     await expect(page.getByText('This link has expired.')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Download' })).toBeDisabled();
 
+    // The download route redirects to the page, which renders its expired view with status 410.
     const expiredDownload = await page.request.get(`${shareUrl}/download`);
-    expect(expiredDownload.ok()).toBeTruthy();
+    expect(expiredDownload.status()).toBe(410);
     expect((expiredDownload.headers()['content-type'] || '')).toContain('text/html');
     const expiredBody = await expiredDownload.text();
     expect(expiredBody).toContain('This link has expired.');

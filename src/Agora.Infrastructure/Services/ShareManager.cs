@@ -403,12 +403,32 @@ public sealed class ShareManager(
         return $"{zipRelativePath[..zipRelativePath.LastIndexOf('/')]}/{Path.GetFileNameWithoutExtension(zipRelativePath)}-background{(string.IsNullOrWhiteSpace(extension) ? ".bin" : extension)}";
     }
 
+    /// <summary>
+    /// Token lookup for the public download routes (and the owner's created/status views): the share with its
+    /// files, never its download events. Event counts come from the owner dashboard projection.
+    /// </summary>
     public Task<Share?> FindByTokenAsync(string token, CancellationToken cancellationToken)
     {
         return db.Shares
             .Include(x => x.Files)
-            .Include(x => x.DownloadEvents)
             .SingleOrDefaultAsync(x => x.ShareToken == token, cancellationToken);
+    }
+
+    /// <summary>Fresh, untracked read of whether the share can still be served (not deleted, not expired).</summary>
+    public async Task<bool> IsShareActiveAsync(Guid shareId, CancellationToken cancellationToken)
+    {
+        var state = await db.Shares
+            .AsNoTracking()
+            .Where(x => x.Id == shareId)
+            .Select(x => new { x.DeletedAtUtc, x.ExpiresAtUtc })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (state is null)
+        {
+            return false;
+        }
+
+        var now = DateTime.UtcNow;
+        return state.DeletedAtUtc is null && (state.ExpiresAtUtc is null || now < state.ExpiresAtUtc.Value);
     }
 
     public Task<Share?> FindByTokenForUploaderAsync(string token, ShareOwner owner, CancellationToken cancellationToken)
@@ -585,15 +605,15 @@ public sealed class ShareManager(
         await DeleteShareContentFilesAsync(share, cancellationToken);
     }
 
-    public static bool IsExpired(Share share, DateTime utcNow)
-    {
-        if (share.DeletedAtUtc is not null)
-        {
-            return true;
-        }
+    /// <summary>Soft-deleted by the owner or purged after expiry. Public routes answer 404.</summary>
+    public static bool IsDeleted(Share share) => share.DeletedAtUtc is not null;
 
-        return share.ExpiresAtUtc is not null && utcNow >= share.ExpiresAtUtc.Value;
-    }
+    /// <summary>Past its expiry (deleted shares are a separate state, see <see cref="IsDeleted"/>). Public routes answer 410.</summary>
+    public static bool IsExpired(Share share, DateTime utcNow) =>
+        share.ExpiresAtUtc is not null && utcNow >= share.ExpiresAtUtc.Value;
+
+    /// <summary>Neither deleted nor expired: the share can be served.</summary>
+    public static bool IsActive(Share share, DateTime utcNow) => !IsDeleted(share) && !IsExpired(share, utcNow);
 
     public async Task RecordDownloadAsync(Share share, string token, string ipAddress, string userAgent, CancellationToken cancellationToken)
     {

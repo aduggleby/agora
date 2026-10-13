@@ -426,6 +426,65 @@ test.describe('Public upload intake', () => {
     await anonPage.close();
   });
 
+  test('rejects a sender name longer than 200 characters on create-share endpoint', async ({ browser, page, request }, testInfo) => {
+    const user = await createE2EUser(request, 'public-upload-long-name');
+    await login(page, user.email, user.password);
+
+    await page.goto('/account/settings');
+    const uploadUrl = await uploadUrlFromSettings(page);
+
+    const files = await createTempFiles(testInfo.outputPath('public-intake-long-name'), [
+      { name: 'long-name-check.txt', content: 'long sender name test' },
+    ]);
+
+    const anonPage = await browser.newPage();
+    await anonPage.goto(uploadUrl);
+
+    const uploadToken = await anonPage.locator('[data-public-upload-token]').inputValue();
+    const draftShareId = await anonPage.locator('[data-public-draft-share-id]').inputValue();
+    const csrfToken = await anonPage.evaluate(() => {
+      const tokenCookie = document.cookie
+        .split(';')
+        .map((part) => part.trim())
+        .find((part) => part.startsWith('agora.csrf.request='));
+      return tokenCookie ? decodeURIComponent(tokenCookie.slice('agora.csrf.request='.length)) : '';
+    });
+    expect(csrfToken).not.toBe('');
+
+    const stageResponse = await anonPage.request.post(`/api/public-uploads/stage?uploadToken=${encodeURIComponent(uploadToken)}&draftShareId=${encodeURIComponent(draftShareId)}`, {
+      headers: { 'X-CSRF-TOKEN': csrfToken },
+      multipart: {
+        file: {
+          name: path.basename(files[0]),
+          mimeType: 'text/plain',
+          buffer: await fs.readFile(files[0]),
+        },
+      },
+    });
+    expect(stageResponse.ok()).toBeTruthy();
+    const staged = await stageResponse.json() as { uploadId?: string };
+    expect(staged.uploadId).toBeTruthy();
+
+    const form = new URLSearchParams();
+    form.set('__RequestVerificationToken', csrfToken);
+    form.set('uploadToken', uploadToken);
+    form.set('draftShareId', draftShareId);
+    form.set('senderName', 'a'.repeat(201));
+    form.set('senderEmail', 'long.name@example.test');
+    form.set('senderMessage', 'Hello');
+    form.append('uploadedFileIds', staged.uploadId || '');
+
+    const createResponse = await anonPage.request.post('/api/public-uploads/create-share', {
+      data: form.toString(),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+    expect(createResponse.status()).toBe(400);
+    expect(await createResponse.text()).toContain('senderName must be at most 200 characters.');
+    await anonPage.close();
+  });
+
   test('stage endpoint refuses the file that would exceed max-per-share for a draft', async ({ browser, page, request }, testInfo) => {
     const user = await createE2EUser(request, 'public-upload-stage-limit');
     await login(page, user.email, user.password);

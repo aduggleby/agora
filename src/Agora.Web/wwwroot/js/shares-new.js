@@ -283,8 +283,8 @@
       else if (uploadedIds.size === 0) reason = "Upload at least one file first.";
       else if (shareTokenInput) {
         const token = (shareTokenInput.value || "").trim();
-        if (token.length < 3 || token.length > 64 || !/^[A-Za-z0-9_-]+$/.test(token)) {
-          reason = "Share link must be 3-64 letters, numbers, hyphens, or underscores.";
+        if (token.length < 8 || token.length > 64 || !/^[A-Za-z0-9_-]+$/.test(token)) {
+          reason = "Share link must be 8-64 letters, numbers, hyphens, or underscores.";
         }
       }
       if (!reason && downloadPasswordInput) {

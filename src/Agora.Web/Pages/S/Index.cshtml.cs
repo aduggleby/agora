@@ -46,12 +46,19 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
     {
         Token = token;
         Share = await manager.FindByTokenAsync(token, ct);
-        if (Share is null)
+        if (Share is null || ShareManager.IsDeleted(Share))
         {
+            // Deleted shares are indistinguishable from unknown tokens; nothing of them is rendered.
             return NotFound("Share not found.");
         }
 
         IsExpired = ShareManager.IsExpired(Share, DateTime.UtcNow);
+        if (IsExpired)
+        {
+            // The expired view is still rendered, but crawlers and clients see the share is gone.
+            Response.StatusCode = StatusCodes.Status410Gone;
+        }
+
         DisplayH1 = ResolveDisplayH1(Share.PageH1, Share.Files.Count);
         RequiresPassword = !string.IsNullOrWhiteSpace(Share.DownloadPasswordHash);
         var presentation = shareExperienceRendererResolver.Resolve(Share);

@@ -44,6 +44,105 @@ public sealed class SharePreviewJobService(
     public void QueueGeneration(Guid shareId, Guid fileId)
     {
         backgroundJobs.Enqueue<SharePreviewJobService>(x => x.GeneratePreviewAsync(shareId, fileId, CancellationToken.None, null));
+        TryWriteQueuedMarker(shareId, fileId);
+    }
+
+    /// <summary>
+    /// The enqueue path for anonymous viewers (preview image, thumbnail, status polling). Eligibility is independent
+    /// of the displayed state: a missing preview is re-queued unless a job runs (<c>.lock</c>), the source was rejected
+    /// (<c>.failed</c>), the type is unsupported, or a job was already claimed within the last
+    /// <see cref="AgoraOptions.ZombieUploadRetentionHours"/> (<c>.queued</c>). The claim is an atomic create-new of the
+    /// marker before the enqueue, so concurrent polls yield one job; a claim that cannot be written enqueues nothing.
+    /// Share creation and the rate-limited retry route enqueue unconditionally.
+    /// </summary>
+    public void QueueGenerationIfIdle(Share share, ShareFile file, Availability availability)
+    {
+        if (availability.State == "ready" || string.Equals(availability.Reason, "unsupported_type", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var root = _options.StorageRoot;
+        if (File.Exists(SharePreviewPaths.LockPath(root, share.Id, file.Id))
+            || File.Exists(SharePreviewPaths.FailedPath(root, share.Id, file.Id)))
+        {
+            return;
+        }
+
+        if (!TryClaimQueuedMarker(share.Id, file.Id, out var queuedPath))
+        {
+            return;
+        }
+
+        try
+        {
+            backgroundJobs.Enqueue<SharePreviewJobService>(x => x.GeneratePreviewAsync(share.Id, file.Id, CancellationToken.None, null));
+        }
+        catch
+        {
+            ScratchFiles.TryDelete(queuedPath);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Creates the <c>.queued</c> marker with <see cref="FileMode.CreateNew"/>. An existing marker younger than the
+    /// retention window means "already queued"; a stale one is removed and the claim retried once. Any other failure
+    /// to write the marker counts as not claimed (fail closed).
+    /// </summary>
+    private bool TryClaimQueuedMarker(Guid shareId, Guid fileId, out string queuedPath)
+    {
+        queuedPath = SharePreviewPaths.QueuedPath(_options.StorageRoot, shareId, fileId);
+        var window = TimeSpan.FromHours(Math.Max(1, _options.ZombieUploadRetentionHours));
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(queuedPath)!);
+                using var marker = new FileStream(queuedPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                using var writer = new StreamWriter(marker);
+                writer.Write(DateTime.UtcNow.ToString("O"));
+                return true;
+            }
+            catch (IOException) when (File.Exists(queuedPath))
+            {
+                if (DateTime.UtcNow - File.GetLastWriteTimeUtc(queuedPath) < window)
+                {
+                    return false;
+                }
+
+                try
+                {
+                    File.Delete(queuedPath);
+                }
+                catch (IOException)
+                {
+                    return false;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                logger.LogWarning(ex, "Could not claim preview queued marker for share={ShareId} file={FileId}; not enqueueing", shareId, fileId);
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private void TryWriteQueuedMarker(Guid shareId, Guid fileId)
+    {
+        try
+        {
+            var queuedPath = SharePreviewPaths.QueuedPath(_options.StorageRoot, shareId, fileId);
+            Directory.CreateDirectory(Path.GetDirectoryName(queuedPath)!);
+            File.WriteAllText(queuedPath, DateTime.UtcNow.ToString("O"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The marker only throttles anonymous re-enqueues; losing it costs at most one extra job.
+            logger.LogDebug(ex, "Could not write preview queued marker for share={ShareId} file={FileId}", shareId, fileId);
+        }
     }
 
     public async Task<Availability> GetAvailabilityAsync(Share share, ShareFile file, CancellationToken ct)
@@ -85,7 +184,7 @@ public sealed class SharePreviewJobService(
 
         if (availability.State != "unavailable")
         {
-            QueueGeneration(share.Id, file.Id);
+            QueueGenerationIfIdle(share, file, availability);
             var pending = await imageGenerator.GeneratePendingPreviewAsync(ct);
             return new ImagePayload("pending", pending, "image/jpeg", IsCacheable: false);
         }
@@ -290,7 +389,7 @@ public sealed class SharePreviewJobService(
     private async Task<bool> IsShareActiveAsync(Guid shareId, CancellationToken ct)
     {
         var share = await db.Shares.AsNoTracking().SingleOrDefaultAsync(x => x.Id == shareId, ct);
-        return share is not null && !ShareManager.IsExpired(share, DateTime.UtcNow);
+        return share is not null && ShareManager.IsActive(share, DateTime.UtcNow);
     }
 
     private async Task<byte[]?> ReadObjectAsync(string key, CancellationToken ct)

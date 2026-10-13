@@ -32,7 +32,7 @@ async function openNewShareDraft(page: Page): Promise<{ draftShareId: string; cs
   return { draftShareId, csrfToken: await readCsrfToken(page) };
 }
 
-async function createPreviewShare(page: Page, files: string[]): Promise<string> {
+async function createPreviewShare(page: Page, files: string[], extraFields: Record<string, string> = {}): Promise<string> {
   const { draftShareId, csrfToken } = await openNewShareDraft(page);
 
   const uploadIds: string[] = [];
@@ -63,6 +63,9 @@ async function createPreviewShare(page: Page, files: string[]): Promise<string> 
   form.append('showPreviews', '1');
   for (const uploadId of uploadIds) {
     form.append('uploadedFileIds', uploadId);
+  }
+  for (const [key, value] of Object.entries(extraFields)) {
+    form.append(key, value);
   }
   const createResponse = await page.request.post('/api/shares', {
     data: form.toString(),
@@ -184,4 +187,47 @@ test('svg backgrounds are rejected on both upload routes', async ({ page, reques
 
   const accountBackground = await page.request.get('/account/template/background');
   expect(accountBackground.status()).toBe(404);
+});
+
+// Public share metadata: password-protected shares reveal nothing but the password flag, the Open Graph image is a
+// cached, sandboxed PNG, and a deleted share is indistinguishable from an unknown token on every public route.
+test('share summary, og-image and deleted shares expose nothing beyond the download page', async ({ page, request }, testInfo) => {
+  const user = await createE2EUser(request, 'public-share-state');
+  await login(page, user.email, user.password);
+
+  const files = await createTempFiles(testInfo.outputPath('files-state'), [
+    { name: 'secret-report.txt', content: 'confidential' }
+  ]);
+  const token = await createPreviewShare(page, files, { downloadPassword: 'correct horse battery' });
+
+  const summary = await page.request.get(`/api/shares/${token}`);
+  expect(summary.status()).toBe(200);
+  const payload = await summary.json() as Record<string, unknown>;
+  expect(payload.requiresPassword).toBe(true);
+  expect(Object.keys(payload).sort()).toEqual(['expiresAtUtc', 'requiresPassword']);
+
+  // Link previews are fetched by anonymous crawlers; the owner's own session gets cookie-renewal no-store headers.
+  const ogImage = await request.get(`/s/${token}/og-image`);
+  expect(ogImage.status()).toBe(200);
+  expect(ogImage.headers()['content-type']).toContain('image/png');
+  expect(ogImage.headers()['cache-control']).toContain('max-age=3600');
+  expect(ogImage.headers()['x-content-type-options']).toBe('nosniff');
+  expect(ogImage.headers()['content-security-policy']).toBe(FULL_CSP);
+  const cachedOgImage = await request.get(`/s/${token}/og-image`);
+  expect(cachedOgImage.status()).toBe(200);
+  expect(cachedOgImage.headers()['etag']).toBe(ogImage.headers()['etag']);
+
+  await page.goto('/');
+  const deleteForm = page.locator('form[data-share-delete-form]').first();
+  const deleteAction = (await deleteForm.getAttribute('action')) || '';
+  expect(deleteAction).toMatch(/\/shares\/[0-9a-f-]{36}\/delete$/);
+  const deleteResponse = await page.request.post(deleteAction, {
+    form: { __RequestVerificationToken: await readCsrfToken(page) }
+  });
+  expect(deleteResponse.status()).toBeLessThan(400);
+
+  for (const route of [`/s/${token}`, `/s/${token}/og-image`, `/s/${token}/files`, `/s/${token}/download`, `/s/${token}/gallery`, `/s/${token}/background`, `/api/shares/${token}`]) {
+    const response = await page.request.get(route, { maxRedirects: 0 });
+    expect(response.status(), route).toBe(404);
+  }
 });

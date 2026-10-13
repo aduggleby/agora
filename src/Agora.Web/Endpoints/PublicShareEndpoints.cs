@@ -19,7 +19,7 @@ public static class PublicShareEndpoints
         {
             var logger = loggerFactory.CreateLogger("Agora.DownloadPageBackground");
             var share = await manager.FindByTokenAsync(token, ct);
-            if (share is null)
+            if (share is null || ShareManager.IsDeleted(share))
             {
                 logger.LogWarning("Background request for token {Token} failed: share not found.", token);
                 return Results.NotFound();
@@ -27,7 +27,7 @@ public static class PublicShareEndpoints
 
             if (ShareManager.IsExpired(share, DateTime.UtcNow))
             {
-                logger.LogInformation("Background request for token {Token} denied: share expired or deleted.", token);
+                logger.LogInformation("Background request for token {Token} denied: share expired.", token);
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
 
@@ -53,45 +53,66 @@ public static class PublicShareEndpoints
             return ObjectResults.UserContent(response, background, key);
         });
 
+        // The PNG is rendered once per share and cached under previews/{shareId}/og.png (purged with the share's
+        // other previews on deletion; page settings never change after creation). Password-protected shares get the
+        // generic image so no title, file name or count leaks before the password is entered. Concurrent misses
+        // render once (per-share lock), and a share deleted or expired while rendering gets its cache entry removed.
         app.MapGet("/s/{token}/og-image", async (
             ShareManager manager,
             IObjectStore objectStore,
             OgImageGenerator ogGenerator,
+            KeyedAsyncLock locks,
             string token,
             HttpResponse response,
             CancellationToken ct) =>
         {
             var share = await manager.FindByTokenAsync(token, ct);
-            if (share is null) return Results.NotFound();
+            if (share is null || ShareManager.IsDeleted(share))
+            {
+                return Results.NotFound();
+            }
 
-            // Streamed straight into the generator, which skips oversized or undecodable backgrounds.
-            var backgroundKey = ObjectKey.FromInternalMarker(share.BackgroundImageUrl);
-            var background = backgroundKey is null ? null : await objectStore.OpenReadAsync(backgroundKey, ct);
-            await using var backgroundStream = background?.Content;
+            if (ShareManager.IsExpired(share, DateTime.UtcNow))
+            {
+                return Results.StatusCode(StatusCodes.Status410Gone);
+            }
 
-            var isExpired = ShareManager.IsExpired(share, DateTime.UtcNow);
-            var sizeDisplay = share.ZipSizeBytes >= 1024 * 1024
-                ? $"{share.ZipSizeBytes / (1024.0 * 1024.0):F1} MB"
-                : $"{share.ZipSizeBytes / 1024.0:F0} KB";
+            var cacheKey = SharePreviewPaths.OgImageKey(share.Id);
+            var cached = await objectStore.OpenReadAsync(cacheKey, ct);
+            if (cached is null)
+            {
+                using (await locks.LockAsync($"og:{share.Id:N}", ct))
+                {
+                    cached = await objectStore.OpenReadAsync(cacheKey, ct);
+                    if (cached is null)
+                    {
+                        var imageBytes = await RenderOgImageAsync(share, objectStore, ogGenerator, ct);
+                        await objectStore.PutBytesAsync(cacheKey, imageBytes, "image/png", ct);
+                        if (!await manager.IsShareActiveAsync(share.Id, ct))
+                        {
+                            // Deleted or expired while rendering: the prefix purge may already have run, so remove our write.
+                            await objectStore.DeleteAsync(cacheKey, ct);
+                            return Results.NotFound();
+                        }
 
-            var imageBytes = await ogGenerator.GenerateShareOgImageAsync(
-                backgroundImage: backgroundStream,
-                backgroundColorHex: share.PageBackgroundColorHex,
-                title: share.PageH1,
-                subtitle: share.PageTitle,
-                fileName: share.ZipDisplayName,
-                fileCount: share.Files.Count,
-                sizeDisplay: sizeDisplay,
-                isExpired: isExpired);
+                        cached = await objectStore.OpenReadAsync(cacheKey, ct);
+                        if (cached is null)
+                        {
+                            ApplyOgImageHeaders(response);
+                            return Results.File(imageBytes, "image/png");
+                        }
+                    }
+                }
+            }
 
-            ObjectResults.ApplyUserContentHeaders(response);
-            return Results.File(imageBytes, "image/png");
-        });
+            ApplyOgImageHeaders(response);
+            return ObjectResults.UserContent(response, cached, "og.png");
+        }).RequireRateLimiting(RateLimitSetup.DownloadEndpoints);
 
         app.MapGet("/s/{token}/files", async (ShareManager manager, string token, CancellationToken ct) =>
         {
             var share = await manager.FindByTokenAsync(token, ct);
-            if (share is null)
+            if (share is null || ShareManager.IsDeleted(share))
             {
                 return Results.NotFound();
             }
@@ -124,7 +145,7 @@ public static class PublicShareEndpoints
         app.MapGet("/s/{token}/files/{fileId:guid}", async (ShareManager manager, IObjectStore objectStore, string token, Guid fileId, HttpRequest request, CancellationToken ct) =>
         {
             var share = await manager.FindByTokenAsync(token, ct);
-            if (share is null)
+            if (share is null || ShareManager.IsDeleted(share))
             {
                 return Results.NotFound();
             }
@@ -172,7 +193,7 @@ public static class PublicShareEndpoints
             CancellationToken ct) =>
         {
             var share = await manager.FindByTokenAsync(token, ct);
-            if (share is null)
+            if (share is null || ShareManager.IsDeleted(share))
             {
                 return Results.NotFound();
             }
@@ -211,7 +232,7 @@ public static class PublicShareEndpoints
             CancellationToken ct) =>
         {
             var share = await manager.FindByTokenAsync(token, ct);
-            if (share is null)
+            if (share is null || ShareManager.IsDeleted(share))
             {
                 return Results.NotFound();
             }
@@ -249,7 +270,7 @@ public static class PublicShareEndpoints
             CancellationToken ct) =>
         {
             var share = await manager.FindByTokenAsync(token, ct);
-            if (share is null)
+            if (share is null || ShareManager.IsDeleted(share))
             {
                 return Results.NotFound();
             }
@@ -271,10 +292,7 @@ public static class PublicShareEndpoints
             }
 
             var availability = await previewJobService.GetAvailabilityAsync(share, file, ct);
-            if (availability.State == "pending")
-            {
-                previewJobService.QueueGeneration(share.Id, file.Id);
-            }
+            previewJobService.QueueGenerationIfIdle(share, file, availability);
 
             return Results.Ok(new
             {
@@ -294,7 +312,7 @@ public static class PublicShareEndpoints
             CancellationToken ct) =>
         {
             var share = await manager.FindByTokenAsync(token, ct);
-            if (share is null)
+            if (share is null || ShareManager.IsDeleted(share))
             {
                 return Results.NotFound();
             }
@@ -325,24 +343,25 @@ public static class PublicShareEndpoints
             return Results.Accepted();
         }).RequireRateLimiting(RateLimitSetup.DownloadEndpoints);
 
-        app.MapGet("/s/{token}/gallery", (string token) => Results.Redirect($"/s/{token}"));
+        app.MapGet("/s/{token}/gallery", async (ShareManager manager, string token, CancellationToken ct) =>
+            await RedirectToSharePageAsync(manager, token, ct));
 
-        app.MapGet("/s/{token}/download", (string token) =>
-        {
-            return Results.Redirect($"/s/{token}");
-        }).RequireRateLimiting(RateLimitSetup.DownloadEndpoints);
+        // Expired shares redirect to the page, which renders its expired view with status 410.
+        app.MapGet("/s/{token}/download", async (ShareManager manager, string token, CancellationToken ct) =>
+            await RedirectToSharePageAsync(manager, token, ct))
+            .RequireRateLimiting(RateLimitSetup.DownloadEndpoints);
 
         app.MapPost("/s/{token}/download", async (ShareManager manager, IObjectStore objectStore, IOptions<AgoraOptions> options, string token, HttpRequest request, CancellationToken ct) =>
         {
             var share = await manager.FindByTokenAsync(token, ct);
-            if (share is null)
+            if (share is null || ShareManager.IsDeleted(share))
             {
                 return Results.NotFound();
             }
 
             if (ShareManager.IsExpired(share, DateTime.UtcNow))
             {
-                return Results.Redirect($"/s/{token}");
+                return Results.StatusCode(StatusCodes.Status410Gone);
             }
 
             if (!ShareManager.AllowsZipDownload(share))
@@ -409,6 +428,50 @@ public static class PublicShareEndpoints
         }).RequireRateLimiting(RateLimitSetup.DownloadEndpoints);
 
         return app;
+    }
+
+    private static async Task<IResult> RedirectToSharePageAsync(ShareManager manager, string token, CancellationToken ct)
+    {
+        var share = await manager.FindByTokenAsync(token, ct);
+        if (share is null || ShareManager.IsDeleted(share))
+        {
+            return Results.NotFound();
+        }
+
+        return Results.Redirect($"/s/{Uri.EscapeDataString(token)}");
+    }
+
+    private static async Task<byte[]> RenderOgImageAsync(Domain.Entities.Share share, IObjectStore objectStore, OgImageGenerator ogGenerator, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(share.DownloadPasswordHash))
+        {
+            return await ogGenerator.GenerateDefaultOgImageAsync("Password-protected share", "Enter the password on the download page to open the files.");
+        }
+
+        // Streamed straight into the generator, which skips oversized or undecodable backgrounds.
+        var backgroundKey = ObjectKey.FromInternalMarker(share.BackgroundImageUrl);
+        var background = backgroundKey is null ? null : await objectStore.OpenReadAsync(backgroundKey, ct);
+        await using var backgroundStream = background?.Content;
+
+        var sizeDisplay = share.ZipSizeBytes >= 1024 * 1024
+            ? $"{share.ZipSizeBytes / (1024.0 * 1024.0):F1} MB"
+            : $"{share.ZipSizeBytes / 1024.0:F0} KB";
+
+        return await ogGenerator.GenerateShareOgImageAsync(
+            backgroundImage: backgroundStream,
+            backgroundColorHex: share.PageBackgroundColorHex,
+            title: share.PageH1,
+            subtitle: share.PageTitle,
+            fileName: share.ZipDisplayName,
+            fileCount: share.Files.Count,
+            sizeDisplay: sizeDisplay,
+            isExpired: false);
+    }
+
+    private static void ApplyOgImageHeaders(HttpResponse response)
+    {
+        ObjectResults.ApplyUserContentHeaders(response);
+        response.Headers.CacheControl = "public, max-age=3600";
     }
 
     /// <summary>
