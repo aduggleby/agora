@@ -21,6 +21,7 @@ public class IndexModel(AuthService authService, IOptions<AgoraOptions> options)
 
     public async Task<IActionResult> OnGet(string token, CancellationToken ct)
     {
+        Response.Headers["Referrer-Policy"] = "same-origin";
         var uploadToken = (token ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(uploadToken))
         {

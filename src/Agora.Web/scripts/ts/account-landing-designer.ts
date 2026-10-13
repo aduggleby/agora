@@ -127,6 +127,33 @@
     if (file) applyFile(file);
   });
 
+  // The endpoint requires the CSRF header (sent by the fetch wrapper in csrf-client), so the form is submitted
+  // with fetch and the server's redirect is followed by navigating to its target.
+  let submitting = false;
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (submitting) return;
+    submitting = true;
+    uploadStatus.textContent = 'Saving template...';
+    try {
+      const response = await fetch(form.action, { method: 'POST', body: new FormData(form) });
+      if (response.redirected) {
+        window.location.assign(response.url);
+        return;
+      }
+      if (response.ok) {
+        window.location.assign('/account/landing-page-designer?msg=Template%20saved');
+        return;
+      }
+      const message = (await response.text()).trim();
+      uploadStatus.textContent = message || 'Saving the template failed. Please try again.';
+    } catch {
+      uploadStatus.textContent = 'Saving the template failed. Please try again.';
+    } finally {
+      submitting = false;
+    }
+  });
+
   refreshColorMode();
   if (initialBackgroundUrl) {
     uploadStatus.textContent = 'Uploaded background image selected.';

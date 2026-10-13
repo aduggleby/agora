@@ -23,7 +23,7 @@ test.describe('Share user stories', () => {
     await page.locator('[data-share-token]').fill(customSlug);
 
     await page.locator('[data-submit]').click();
-    await page.waitForURL(new RegExp(`/shares/created\\?token=${customSlug}$`));
+    await page.waitForURL(new RegExp(`/shares/created/${customSlug}$`));
 
     const shareUrlText = await page.locator('main').innerText();
     const shareUrl = extractShareUrl(shareUrlText, page.url());
@@ -54,7 +54,7 @@ test.describe('Share user stories', () => {
     await expect(createButton).toBeEnabled();
     await createButton.click();
 
-    await page.waitForURL(/\/shares\/created\?token=/);
+    await page.waitForURL(/\/shares\/created\/[^/?#]+$/);
     const messageText = await page.locator('main').innerText();
     const shareUrl = extractShareUrl(messageText, page.url());
     await waitForShareReady(page, shareUrl);
@@ -106,7 +106,7 @@ trailer
     await expect(uploadList.filter({ hasText: 'proof.pdf' })).toBeVisible();
 
     await page.locator('[data-submit]').click();
-    await page.waitForURL(/\/shares\/created\?token=/);
+    await page.waitForURL(/\/shares\/created\/[^/?#]+$/);
 
     const messageText = await page.locator('main').innerText();
     const shareUrl = extractShareUrl(messageText, page.url());
@@ -145,7 +145,7 @@ trailer
     await expect(page.locator('[data-upload-list] li')).toHaveCount(3);
 
     await page.locator('[data-submit]').click();
-    await page.waitForURL(/\/shares\/created\?token=/);
+    await page.waitForURL(/\/shares\/created\/[^/?#]+$/);
 
     const messageText = await page.locator('main').innerText();
     const shareUrl = extractShareUrl(messageText, page.url());

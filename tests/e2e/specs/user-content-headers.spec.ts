@@ -168,12 +168,12 @@ test('svg backgrounds are rejected on both upload routes', async ({ page, reques
   });
   expect(draftPng.status()).toBe(200);
 
-  // Account template route is a browser form post: it redirects back with the rejection message
-  // and must not store the file.
+  // Account template route (submitted by the designer script with the header token): it redirects back with
+  // the rejection message and must not store the file.
   const accountSvg = await page.request.post('/api/account/template', {
     maxRedirects: 0,
+    headers: { 'X-CSRF-TOKEN': csrfToken },
     multipart: {
-      __RequestVerificationToken: csrfToken,
       title: 'Title',
       h1: 'Heading',
       description: 'Description',

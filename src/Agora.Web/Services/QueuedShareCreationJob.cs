@@ -65,7 +65,7 @@ public sealed class QueuedShareCreationJob(
     public async Task ProcessAsync(Payload payload, CancellationToken ct, PerformContext? performContext = null)
     {
         var token = payload.ShareToken;
-        performContext?.WriteLine($"Starting queued share creation for token '{token}'.");
+        performContext?.WriteLine($"Starting queued share creation for share {LogSafe.Token(token)}.");
         performContext?.WriteLine(
             $"Payload summary: uploader='{payload.UploaderEmail}', draftShareId='{payload.DraftShareId}', files={payload.UploadedFileIds.Count}, showPreviews={payload.ShowPreviews}, notifyMode='{payload.NotifyMode}', expiryMode='{payload.ExpiryMode}'.");
         var processing = statusStore.MarkProcessing(token);
@@ -89,6 +89,9 @@ public sealed class QueuedShareCreationJob(
             performContext?.WriteLine("Validating queued request...");
             await broadcaster.BroadcastAsync(validateActive, ct);
 
+            // The draft was sealed (leased) when it was queued; renew the lease before reading the staged payloads so
+            // the zombie sweep never ages them out under this job (a long queue backlog could exceed the retention).
+            await manager.RenewProcessingLeaseAsync(ownerUserId, payload.DraftShareId, ct);
 
             var stagedUploads = await manager.ResolveStagedUploadsAsync(
                 ownerUserId,
@@ -183,6 +186,7 @@ public sealed class QueuedShareCreationJob(
                 performContext,
                 ct);
 
+            await manager.RenewProcessingLeaseAsync(ownerUserId, payload.DraftShareId, ct);
             var createDone = statusStore.UpdateStep(token, "create_share", "completed");
             await broadcaster.BroadcastAsync(createDone, ct);
 
@@ -236,25 +240,25 @@ public sealed class QueuedShareCreationJob(
             }
             catch (Exception emailEx)
             {
-                logger.LogWarning(emailEx, "Share-ready email failed for token {Token}", payload.ShareToken);
+                logger.LogWarning(emailEx, "Share-ready email failed for share {TokenRef}", LogSafe.Token(payload.ShareToken));
                 performContext?.WriteLine($"Ready-link email failed: {emailEx.Message}");
                 var notifyFailed = statusStore.UpdateStep(token, "notify_uploader", "completed", "Email delivery failed. You can still copy the link here.");
                 await broadcaster.BroadcastAsync(notifyFailed, ct);
             }
 
             var done = statusStore.MarkCompleted(token);
-            performContext?.WriteLine($"Completed queued share creation for token '{token}'.");
+            performContext?.WriteLine($"Completed queued share creation for share {LogSafe.Token(token)}.");
             await broadcaster.BroadcastAsync(done, ct);
 
             logger.LogInformation(
-                "Completed queued share creation token={Token} shareId={ShareId} uploader={Uploader}",
-                payload.ShareToken,
+                "Completed queued share creation share={TokenRef} shareId={ShareId} uploader={Uploader}",
+                LogSafe.Token(payload.ShareToken),
                 result.ShareId,
                 payload.UploaderEmail);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Queued share creation failed for token {Token}", token);
+            logger.LogError(ex, "Queued share creation failed for share {TokenRef}", LogSafe.Token(token));
             performContext?.WriteLine($"Queued share creation failed: {ex.Message}");
             performContext?.WriteLine($"Exception type: {ex.GetType().FullName}");
             if (ex.InnerException is not null)
@@ -276,11 +280,12 @@ public sealed class QueuedShareCreationJob(
     {
         try
         {
+            await manager.RenewProcessingLeaseAsync(ownerUserId, payload.DraftShareId, ct);
             await manager.FinalizeDraftAsync(ownerUserId, payload.DraftShareId, ct);
         }
         catch (Exception cleanupEx)
         {
-            logger.LogWarning(cleanupEx, "Unable to remove draft scratch for token {Token}; the zombie sweep will", payload.ShareToken);
+            logger.LogWarning(cleanupEx, "Unable to remove draft scratch for share {TokenRef}; the zombie sweep will", LogSafe.Token(payload.ShareToken));
         }
     }
 
@@ -396,8 +401,8 @@ public sealed class QueuedShareCreationJob(
         for (var attempt = 0; attempt < 4; attempt += 1)
         {
             var attemptNo = attempt + 1;
-            var attemptToken = requestedToken ?? "<auto>";
-            performContext?.WriteLine($"Create-share attempt {attemptNo}/4 using token '{attemptToken}'.");
+            var attemptToken = requestedToken is null ? "<auto>" : LogSafe.Token(requestedToken);
+            performContext?.WriteLine($"Create-share attempt {attemptNo}/4 using share {attemptToken}.");
             try
             {
                 if (requestedToken is not null)
@@ -440,25 +445,22 @@ public sealed class QueuedShareCreationJob(
                     ? await manager.CreateShareAsync(command, ct)
                     : await manager.CreateReceivedShareAsync(command, ct);
             }
-            catch (InvalidOperationException ex) when (
-                requestedToken is not null &&
-                ex.Message.Contains("already in use", StringComparison.OrdinalIgnoreCase) &&
-                attempt < 3)
+            catch (ShareTokenCollisionException ex) when (requestedToken is not null && attempt < 3)
             {
                 var collidedToken = requestedToken;
                 var conflict = await manager.GetShareTokenDiagnosticsAsync(collidedToken, ct);
                 requestedToken = await manager.GenerateUniqueShareTokenAsync(8, ct);
                 var replacement = await manager.GetShareTokenDiagnosticsAsync(requestedToken, ct);
-                performContext?.WriteLine($"Share token collision detected; retrying with token '{requestedToken}'.");
+                performContext?.WriteLine($"Share token collision detected; retrying with share {LogSafe.Token(requestedToken)}.");
                 performContext?.WriteLine(
-                    $"Collision diagnostics for '{collidedToken}': exists={conflict.Exists} caseSensitiveMatches={conflict.CaseSensitiveMatchCount} caseInsensitiveMatches={conflict.CaseInsensitiveMatchCount} existingShareId='{conflict.ExistingShareId}' existingUploader='{conflict.ExistingShareUploader}' createdAtUtc='{conflict.ExistingShareCreatedAtUtc}'.");
+                    $"Collision diagnostics for {LogSafe.Token(collidedToken)}: exists={conflict.Exists} caseSensitiveMatches={conflict.CaseSensitiveMatchCount} caseInsensitiveMatches={conflict.CaseInsensitiveMatchCount} existingShareId='{conflict.ExistingShareId}' existingUploader='{conflict.ExistingShareUploader}' createdAtUtc='{conflict.ExistingShareCreatedAtUtc}'.");
                 performContext?.WriteLine(
-                    $"Replacement token diagnostics for '{requestedToken}': exists={replacement.Exists} caseSensitiveMatches={replacement.CaseSensitiveMatchCount} caseInsensitiveMatches={replacement.CaseInsensitiveMatchCount} provider='{replacement.DatabaseProvider}'.");
+                    $"Replacement token diagnostics for {LogSafe.Token(requestedToken)}: exists={replacement.Exists} caseSensitiveMatches={replacement.CaseSensitiveMatchCount} caseInsensitiveMatches={replacement.CaseInsensitiveMatchCount} provider='{replacement.DatabaseProvider}'.");
                 logger.LogWarning(
                     ex,
-                    "Share token collision for queued token {Token}; retrying with {ReplacementToken}",
-                    payload.ShareToken,
-                    requestedToken);
+                    "Share token collision for queued share {TokenRef}; retrying with {ReplacementTokenRef}",
+                    LogSafe.Token(payload.ShareToken),
+                    LogSafe.Token(requestedToken));
             }
             catch (Exception ex)
             {

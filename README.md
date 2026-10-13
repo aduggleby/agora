@@ -10,7 +10,7 @@ Agora is an ASP.NET Core 10 file sharing app for sending files with branded down
 - Optional image and file previews for recipients
 - Expiring or indefinite share links
 - Download notifications (`none`, `once`, `every_time`)
-- Public upload links: let anyone send files to your account via a tokenized URL with a customizable 2-64 character alphanumeric code, with a dedicated success screen after submit
+- Public upload links: let anyone send files to your account via a tokenized URL with a customizable 8-64 character alphanumeric code, with a dedicated success screen after submit
 - Public-upload completion emails use a dedicated "files were sent to you" template and include an on-behalf-of sender identity plus the sender message
 - Account display name settings for upload pages and account menu
 - Share history for signed-in uploaders, with a separate "Received" section showing shares sent via public upload (sender name, email, and message)
@@ -69,6 +69,16 @@ docker run -d \
   -v agora_data:/app/data \
   agora:latest
 ```
+
+The container runs as the unprivileged `app` user (UID 1654, provided by the `aspnet` base image), not as root. A
+named volume such as `agora_data` picks up the right ownership from the image. A bind mount must be owned by UID 1654
+on the host before the first start, or the app cannot write its data directory:
+
+```bash
+sudo chown -R 1654:1654 /path/on/host/agora-data
+```
+
+Existing installs that ran an earlier (root) image must apply the same `chown` once to their data directory.
 
 ### Create Database and User
 
@@ -157,6 +167,9 @@ services:
     restart: unless-stopped
 ```
 
+The dataset mounted at `/app/data` must be owned by UID/GID 1654 (the container's `app` user); on TrueNAS set the
+dataset's owner to that numeric id (or run `chown -R 1654:1654` on it from the shell) before starting the app.
+
 ## Configuration
 
 Startup behavior:
@@ -227,6 +240,12 @@ For existing installs, the legacy `Serilog__WriteTo__0__Args__path` (for example
 `Serilog__WriteTo__0__Args__retainedFileCountLimit` are still honoured and take precedence over the `Agora__Logging__File__*`
 settings, so logs keep going to the same place with the same retention. As in Serilog, a legacy retention that is set but
 empty means unlimited, and legacy numbers are not capped (minimum 1); the 1-3650 range applies only to `Agora__Logging__File__RetainedDays`.
+
+Share, upload and confirmation tokens never appear in Agora's own log lines (they are referenced by a short hash), and
+a Serilog enricher rewrites `/s/{token}`, `/u/{token}`, `/shares/created/{token}` and `token=` style values in every
+string property of a log event (request paths, redirect targets) to that same reference. The framework's per-request
+"Request starting/finished" lines would print full URLs including such tokens, so they are switched off by default (`Serilog__MinimumLevel__Override__Microsoft.AspNetCore.Hosting.Diagnostics=Warning` in
+`appsettings.json`); re-enable them only with a sink you treat as sensitive.
 
 ### Temporary files
 
@@ -338,7 +357,8 @@ the FileSystem store are budgeted the same way.
 ### Public upload links
 
 Anyone with an account's upload link (`/u/<code>`) can send files without signing in, so every budget below is enforced
-server-side in addition to the per-file and per-share limits above. Received shares use the owner's default expiry
+server-side in addition to the per-file and per-share limits above. Generated codes are 12 alphanumeric characters and a
+custom code needs at least 8 (codes set before this minimum existed keep working until they are changed). Received shares use the owner's default expiry
 (Account > Share defaults); "indefinite" applies only when the owner chose it there.
 
 | Setting | Default | What it controls |
@@ -470,7 +490,14 @@ the directive and the blocked source.
   account, and with the password they chose themselves.
 - Emailed links (`/auth/confirm-email`, `/auth/confirm-email-change`, `/auth/confirm-password-change`, password reset)
   share the per-IP auth rate limit and answer one "invalid or expired" message whether the address is unknown, the
-  token is wrong or the link was already used.
+  token is wrong or the link was already used. Opening a link only shows a page with a confirm button; the action
+  runs when that button is pressed (a CSRF-protected POST), so mail scanners and link previews that fetch the link
+  cannot use up the token. A failed password-change confirmation no longer signs the visitor out.
+- Passwords are hashed with PBKDF2-HMAC-SHA256 (600,000 iterations) in a versioned format (`v2$...`). Hashes written by
+  earlier versions (100,000 iterations) keep working and are upgraded in place the next time the user signs in; nothing
+  else about the account (sessions, security stamp) changes. A wrong password costs the same for every kind of
+  account. Newly chosen passwords (registration, change, reset) are 8 to 128 characters; existing passwords of any
+  length keep working.
 - A confirmed email change is reported to both addresses: the previous address is told which address replaced it.
 - Any credential change (password change confirmed, password reset, email change confirmed) invalidates every pending
   token of the account (email confirmation, pending email change, pending password change, password reset), so an

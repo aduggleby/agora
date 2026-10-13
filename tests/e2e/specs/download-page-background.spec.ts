@@ -23,7 +23,7 @@ test('account default background image is shown on download page', async ({ page
   await page.setInputFiles('[data-file-input]', uploadFiles);
   await expect(page.locator('[data-upload-list] li')).toHaveCount(1);
   await page.locator('[data-submit]').click();
-  await page.waitForURL(/\/shares\/created\?token=/);
+  await page.waitForURL(/\/shares\/created\/[^/?#]+$/);
 
   const shareUrlText = await page.locator('main').innerText();
   const shareUrl = extractShareUrl(shareUrlText, page.url());
@@ -78,7 +78,7 @@ test('per-share custom background image is shown on download page', async ({ pag
   await expect(page.locator('[data-upload-list] li').filter({ hasText: 'proof-custom.txt' })).toBeVisible();
 
   await page.locator('[data-submit]').click();
-  await page.waitForURL(/\/shares\/created\?token=/);
+  await page.waitForURL(/\/shares\/created\/[^/?#]+$/);
 
   const shareUrlText = await page.locator('main').innerText();
   const shareUrl = extractShareUrl(shareUrlText, page.url());

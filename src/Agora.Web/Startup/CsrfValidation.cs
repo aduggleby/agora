@@ -72,15 +72,17 @@ public static class CsrfValidation
             }
             catch (AntiforgeryValidationException ex)
             {
+                // Route pattern and Referer origin only: paths such as /s/{token}/download and referring share
+                // pages carry tokens.
                 logger.LogWarning(
                     ex,
-                    "CSRF validation failed for {Method} {Path}. IsHttps={IsHttps} Host={Host} Origin={Origin} Referer={Referer}",
+                    "CSRF validation failed for {Method} {Route}. IsHttps={IsHttps} Host={Host} Origin={Origin} RefererOrigin={RefererOrigin}",
                     context.Request.Method,
-                    context.Request.Path,
+                    (context.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText ?? context.GetEndpoint()?.DisplayName ?? "<unmatched>",
                     context.Request.IsHttps,
                     context.Request.Host.Value,
                     context.Request.Headers.Origin.ToString(),
-                    context.Request.Headers.Referer.ToString());
+                    RefererOrigin(context.Request.Headers.Referer.ToString()));
                 context.Response.StatusCode = StatusCodes.Status400BadRequest;
                 await context.Response.WriteAsJsonAsync(new { error = "Invalid or missing CSRF token." });
                 return;
@@ -95,4 +97,16 @@ public static class CsrfValidation
 
     private static bool IsSafeHttpMethod(string method) =>
         HttpMethods.IsGet(method) || HttpMethods.IsHead(method) || HttpMethods.IsOptions(method) || HttpMethods.IsTrace(method);
+
+    private static string RefererOrigin(string referer)
+    {
+        if (string.IsNullOrWhiteSpace(referer))
+        {
+            return "<none>";
+        }
+
+        return Uri.TryCreate(referer, UriKind.Absolute, out var uri)
+            ? uri.GetLeftPart(UriPartial.Authority)
+            : "<invalid>";
+    }
 }

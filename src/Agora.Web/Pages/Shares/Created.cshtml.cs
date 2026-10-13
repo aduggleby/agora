@@ -1,3 +1,4 @@
+using Agora.Application.Utilities;
 using Agora.Infrastructure.Services;
 using Agora.Web.Auth;
 using Agora.Web.Pages.Shared;
@@ -20,22 +21,40 @@ public class CreatedModel(PublicBaseUrlResolver publicBaseUrls, ShareManager man
 
     public async Task<IActionResult> OnGet()
     {
-        var token = Request.Query["token"].ToString().Trim();
-        if (string.IsNullOrWhiteSpace(token))
+        // Read the route value directly: a bound handler parameter would also accept ?token= and hide the
+        // compatibility redirect below.
+        var token = RouteData.Values["token"]?.ToString();
+        // The token is a route segment, never a query string, and the page's outbound links send no path.
+        Response.Headers["Referrer-Policy"] = "same-origin";
+        if (!User.TryGetShareOwner(out var owner))
         {
             return Redirect("/");
+        }
+
+        // Lenient shape check only: tokens created before the current format rules (shorter, non-ASCII letters)
+        // must still open here; ownership is enforced below.
+        var fromRoute = !string.IsNullOrWhiteSpace(token);
+        token = (fromRoute ? token! : Request.Query["token"].ToString()).Trim();
+        if (token.Length is 0 or > ShareTokens.MaxLength || token.Any(char.IsControl))
+        {
+            return NotFound();
+        }
+
+        var share = await manager.FindByTokenAsync(token, HttpContext.RequestAborted);
+        if (!fromRoute)
+        {
+            // Compatibility with links that still carry ?token= (browser history, older emails): the owner is sent to
+            // the route form; anyone else learns nothing.
+            var owned = share is not null
+                ? owner.Owns(share.OwnerUserId)
+                : statusStore.Read(token)?.OwnerUserId == owner.UserId;
+            return owned ? Redirect($"/shares/created/{Uri.EscapeDataString(token)}") : NotFound();
         }
 
         Token = token;
         var baseUrl = publicBaseUrls.Resolve(Request);
         ShareUrl = $"{baseUrl}/s/{Uri.EscapeDataString(token)}";
 
-        if (!User.TryGetShareOwner(out var owner))
-        {
-            return Redirect("/");
-        }
-
-        var share = await manager.FindByTokenAsync(token, HttpContext.RequestAborted);
         if (share is not null)
         {
             if (!owner.Owns(share.OwnerUserId))

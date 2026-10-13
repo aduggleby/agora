@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http.Metadata;
 using System.Security.Claims;
 using Agora.Application.Models;
 using Agora.Application.Utilities;
@@ -48,9 +49,16 @@ public static class UploadStagingEndpoints
     public static string ClientAddress(HttpContext context) =>
         context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
-    /// <summary>Scratch the multipart buffer of a request can take, known before its body is read.</summary>
-    private static ScratchDemand RequestBufferDemand(HttpRequest request, long maxBodyBytes) =>
-        ScratchDemand.Scratch(Math.Min(request.ContentLength ?? maxBodyBytes, maxBodyBytes));
+    /// <summary>
+    /// Scratch the multipart buffer of a request can take, known before its body is read: min(Content-Length, limit),
+    /// or the full limit for a chunked body. The limit is the endpoint's own RequestSizeLimit (the most Kestrel lets
+    /// through), falling back to the configured maximum when an endpoint carries none.
+    /// </summary>
+    private static ScratchDemand RequestBufferDemand(HttpContext context, long fallbackMaxBodyBytes)
+    {
+        var limit = context.GetEndpoint()?.Metadata.GetMetadata<IRequestSizeLimitMetadata>()?.MaxRequestBodySize ?? fallbackMaxBodyBytes;
+        return ScratchDemand.Scratch(Math.Min(context.Request.ContentLength ?? limit, limit));
+    }
 
     private static async Task<IResult> StageShareFileAsync(
         HttpContext context,
@@ -202,7 +210,7 @@ public static class UploadStagingEndpoints
     /// </summary>
     public static void ReserveRequestBuffer(HttpContext context, ScratchSpaceMonitor scratchSpace, long maxBodyBytes)
     {
-        var reservation = scratchSpace.Reserve(RequestBufferDemand(context.Request, maxBodyBytes));
+        var reservation = scratchSpace.Reserve(RequestBufferDemand(context, maxBodyBytes));
         context.Response.RegisterForDispose(reservation);
     }
 

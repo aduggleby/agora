@@ -22,7 +22,7 @@ public sealed class AuthServiceUploadTokenTests
         var token = await service.GetOrCreateUploadTokenAsync(harness.UserId, CancellationToken.None);
 
         Assert.False(string.IsNullOrWhiteSpace(token));
-        Assert.Matches("^[A-Za-z0-9]{8}$", token!);
+        Assert.Matches("^[A-Za-z0-9]{12}$", token!);
         Assert.Equal(token, (await harness.Db.Users.SingleAsync(x => x.Email == "user@example.com")).UploadToken);
     }
 
@@ -36,7 +36,7 @@ public sealed class AuthServiceUploadTokenTests
         var second = await service.RegenerateUploadTokenAsync(harness.UserId, CancellationToken.None);
 
         Assert.False(string.IsNullOrWhiteSpace(second));
-        Assert.Matches("^[A-Za-z0-9]{8}$", second!);
+        Assert.Matches("^[A-Za-z0-9]{12}$", second!);
         Assert.NotEqual(first, second);
     }
 
@@ -53,6 +53,24 @@ public sealed class AuthServiceUploadTokenTests
         Assert.Equal("AbC123xY", (await harness.Db.Users.SingleAsync(x => x.Email == "user@example.com")).UploadToken);
     }
 
+    [Theory]
+    [InlineData("abcdefg", false)]
+    [InlineData("abcdefgh", true)]
+    [InlineData("Ab", false)]
+    public async Task SetUploadTokenAsync_RequiresAtLeastEightCharacters(string code, bool accepted)
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        var service = new AuthService(harness.Db, new NoopEmailSender());
+
+        var result = await service.SetUploadTokenAsync(harness.UserId, code, CancellationToken.None);
+
+        Assert.Equal(accepted, result.Success);
+        if (!accepted)
+        {
+            Assert.Equal("Upload code must be 8-64 letters or numbers.", result.Error);
+        }
+    }
+
     [Fact]
     public async Task SetUploadTokenAsync_RejectsInvalidFormat()
     {
@@ -62,7 +80,7 @@ public sealed class AuthServiceUploadTokenTests
         var result = await service.SetUploadTokenAsync(harness.UserId, "invalid-token", CancellationToken.None);
 
         Assert.False(result.Success);
-        Assert.Equal("Upload code must be 2-64 letters or numbers.", result.Error);
+        Assert.Equal("Upload code must be 8-64 letters or numbers.", result.Error);
     }
 
     [Fact]

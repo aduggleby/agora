@@ -1,5 +1,7 @@
 using Agora.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging;
 
 namespace Agora.Infrastructure.Persistence;
 
@@ -9,6 +11,17 @@ namespace Agora.Infrastructure.Persistence;
 /// </summary>
 public class AgoraDbContext : DbContext
 {
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        // EF Core logs a failed SaveChanges and the failing command at Error with the provider exception attached,
+        // whose text quotes the offending key (for a share-token collision: the token). The callers log such
+        // failures themselves with the sensitive parts removed, so EF's own copies are demoted to Debug.
+        optionsBuilder.ConfigureWarnings(warnings => warnings.Log(
+            (CoreEventId.SaveChangesFailed, LogLevel.Debug),
+            (RelationalEventId.CommandError, LogLevel.Debug)));
+        base.OnConfiguring(optionsBuilder);
+    }
+
     public AgoraDbContext(DbContextOptions<AgoraDbContext> options) : base(options)
     {
     }

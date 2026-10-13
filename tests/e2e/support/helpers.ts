@@ -149,8 +149,10 @@ export function extractShareUrl(text: string, fallbackPageUrl?: string): string 
   }
 
   if (fallbackPageUrl) {
+    // The created page is /shares/created/{token} (older builds used ?token=).
     const fallback = new URL(fallbackPageUrl);
-    const token = fallback.searchParams.get('token');
+    const routeToken = fallback.pathname.match(/\/shares\/created\/([^/?#]+)$/)?.[1];
+    const token = routeToken ? decodeURIComponent(routeToken) : fallback.searchParams.get('token');
     if (token) {
       return `${fallback.origin}/s/${token}`;
     }

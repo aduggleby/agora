@@ -34,6 +34,10 @@
 
   <ItemGroup>
     <Content Include="Fonts\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Runtime data that may exist next to the project (dev scratch, logs, mail sink, keys) is never content:
+         the Web SDK's **/*.json glob would otherwise publish staged upload metadata and the like. -->
+    <Content Remove="storage/**;logs/**;emails/**;keys/**;Temp/**" />
+    <None Remove="storage/**;logs/**;emails/**;keys/**;Temp/**" />
   </ItemGroup>
 
   <ItemGroup>

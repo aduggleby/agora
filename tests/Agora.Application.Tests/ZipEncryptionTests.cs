@@ -37,3 +37,23 @@ public sealed class ZipEncryptionTests
             ZipEncryption.DecryptAsync(encrypted, output, "wrong-password", CancellationToken.None));
     }
 }
+
+public sealed class ZipEncryptionHeaderTests
+{
+    [Fact]
+    public async Task DecryptRejectsHeadersWithExcessiveIterations()
+    {
+        await using var input = new MemoryStream("payload"u8.ToArray());
+        await using var encrypted = new MemoryStream();
+        await ZipEncryption.EncryptAsync(input, encrypted, "pw", CancellationToken.None);
+
+        var bytes = encrypted.ToArray();
+        // Header: magic(4) version(1) iterations(4 LE) ...
+        BitConverter.GetBytes(int.MaxValue).CopyTo(bytes, 5);
+
+        await using var tampered = new MemoryStream(bytes);
+        await using var output = new MemoryStream();
+        await Assert.ThrowsAnyAsync<CryptographicException>(() =>
+            ZipEncryption.DecryptAsync(tampered, output, "pw", CancellationToken.None));
+    }
+}

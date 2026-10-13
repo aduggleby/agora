@@ -57,6 +57,20 @@ public sealed class UploadStagingEndpointTests
     }
 
     [Fact]
+    public async Task Stage_without_content_length_reserves_the_endpoint_body_limit_not_the_file_maximum()
+    {
+        // Endpoint limit is 10 MiB (see MapUploadStagingEndpoints below) while MaxFileSizeBytes defaults to gigabytes:
+        // a chunked body must reserve the former, so it fits a 50 MiB scratch budget instead of answering 507.
+        await using var host = await Host.StartAsync(scratchMaxBytes: 50L * 1024 * 1024);
+        var body = Host.MultipartBody("hello");
+
+        var context = await host.PostStageAsync("/api/public-uploads/stage", new MemoryStream(body), contentLength: null, host.Csrf);
+
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        Assert.Single(Directory.EnumerateDirectories(Path.Combine(host.StorageRoot, "uploads", "staged")));
+    }
+
+    [Fact]
     public async Task Second_concurrent_stage_gets_507_before_buffering_when_only_one_fits()
     {
         var body = Host.MultipartBody("hello");
@@ -187,7 +201,7 @@ public sealed class UploadStagingEndpointTests
             "--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\n" +
             content + "\r\n--b--\r\n");
 
-        public Task<HttpContext> PostStageAsync(string path, Stream body, long contentLength, CsrfTokens csrf)
+        public Task<HttpContext> PostStageAsync(string path, Stream body, long? contentLength, CsrfTokens csrf)
         {
             return _app.GetTestServer().SendAsync(ctx =>
             {

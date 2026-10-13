@@ -15,6 +15,7 @@ public static class ZipEncryption
     private const int TagSize = 16;
     private const int DefaultChunkSize = 64 * 1024;
     private const int Pbkdf2Iterations = 600_000;
+    private const int MaxPbkdf2Iterations = 10_000_000;
 
     public static async Task EncryptFileAsync(string inputPath, string encryptedOutputPath, string password, CancellationToken cancellationToken)
     {
@@ -153,7 +154,7 @@ public static class ZipEncryption
         }
 
         var iterations = await ReadInt32Async(input, cancellationToken);
-        if (iterations < 100_000)
+        if (iterations < 100_000 || iterations > MaxPbkdf2Iterations)
         {
             throw new CryptographicException("Encrypted file format is invalid.");
         }

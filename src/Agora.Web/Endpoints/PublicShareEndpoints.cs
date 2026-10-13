@@ -21,13 +21,13 @@ public static class PublicShareEndpoints
             var share = await manager.FindByTokenAsync(token, ct);
             if (share is null || ShareManager.IsDeleted(share))
             {
-                logger.LogWarning("Background request for token {Token} failed: share not found.", token);
+                logger.LogWarning("Background request for share {TokenRef} failed: share not found.", LogSafe.Token(token));
                 return Results.NotFound();
             }
 
             if (ShareManager.IsExpired(share, DateTime.UtcNow))
             {
-                logger.LogInformation("Background request for token {Token} denied: share expired.", token);
+                logger.LogInformation("Background request for share {TokenRef} denied: share expired.", LogSafe.Token(token));
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
 
@@ -36,8 +36,8 @@ public static class PublicShareEndpoints
             if (key is null)
             {
                 logger.LogInformation(
-                    "Background request for token {Token} failed: share has no valid internal marker. Marker: {Marker}",
-                    token,
+                    "Background request for share {TokenRef} failed: share has no valid internal marker. Marker: {Marker}",
+                    LogSafe.Token(token),
                     marker.Length == 0 ? "<empty>" : marker);
                 return Results.NotFound();
             }
@@ -45,11 +45,11 @@ public static class PublicShareEndpoints
             var background = await objectStore.OpenReadAsync(key, ct);
             if (background is null)
             {
-                logger.LogWarning("Background request for token {Token} failed: object {Key} missing.", token, key);
+                logger.LogWarning("Background request for share {TokenRef} failed: object {Key} missing.", LogSafe.Token(token), key);
                 return Results.NotFound();
             }
 
-            logger.LogInformation("Background request for token {Token} served object {Key}.", token, key);
+            logger.LogDebug("Background request for share {TokenRef} served object {Key}.", LogSafe.Token(token), key);
             return ObjectResults.UserContent(response, background, key);
         });
 
@@ -369,10 +369,7 @@ public static class PublicShareEndpoints
                 return Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=download_disabled");
             }
 
-            var archive = ObjectKey.TryNormalize(share.ZipDiskPath, out var archiveKey)
-                ? await objectStore.OpenReadAsync(archiveKey, ct)
-                : null;
-            if (archive is null)
+            if (!ObjectKey.TryNormalize(share.ZipDiskPath, out var archiveKey))
             {
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
@@ -384,6 +381,12 @@ public static class PublicShareEndpoints
 
             if (string.IsNullOrWhiteSpace(share.DownloadPasswordHash))
             {
+                var archive = await objectStore.OpenReadAsync(archiveKey, ct);
+                if (archive is null)
+                {
+                    return Results.StatusCode(StatusCodes.Status410Gone);
+                }
+
                 try
                 {
                     await RecordDownloadAsync();
@@ -398,26 +401,34 @@ public static class PublicShareEndpoints
                 return Results.File(archive.Content, "application/zip", share.ZipDisplayName);
             }
 
-            await using (archive.Content)
+            // Password-protected: the stored object is not opened (not even its metadata) until the password
+            // verifies, so a wrong guess costs a hash check and nothing else.
+            var form = request.HasFormContentType
+                ? await request.ReadFormAsync(ct)
+                : null;
+            var downloadPassword = form?["downloadPassword"].ToString() ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(downloadPassword))
             {
-                var form = request.HasFormContentType
-                    ? await request.ReadFormAsync(ct)
-                    : null;
-                var downloadPassword = form?["downloadPassword"].ToString() ?? string.Empty;
+                return Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=password_required");
+            }
 
-                if (string.IsNullOrWhiteSpace(downloadPassword))
-                {
-                    return Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=password_required");
-                }
+            if (!PasswordHasher.Verify(downloadPassword, share.DownloadPasswordHash))
+            {
+                return Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=invalid_password");
+            }
 
-                if (!PasswordHasher.Verify(downloadPassword, share.DownloadPasswordHash))
-                {
-                    return Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=invalid_password");
-                }
+            var encryptedArchive = await objectStore.OpenReadAsync(archiveKey, ct);
+            if (encryptedArchive is null)
+            {
+                return Results.StatusCode(StatusCodes.Status410Gone);
+            }
 
+            await using (encryptedArchive.Content)
+            {
                 return await EncryptedArchiveDownload.ServeAsync(
                         request.HttpContext,
-                        archive.Content,
+                        encryptedArchive.Content,
                         downloadPassword,
                         options.Value.StorageRoot,
                         share.ZipDisplayName,

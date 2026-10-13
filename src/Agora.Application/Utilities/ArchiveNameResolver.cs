@@ -25,11 +25,48 @@ public static class ArchiveNameResolver
         return value.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) ? value : $"{value}.zip";
     }
 
+    /// <summary>
+    /// Reduces an untrusted name to a single path segment: backslashes count as separators on
+    /// every platform, directory parts (including leading slashes and ".." segments) are dropped,
+    /// and control characters are removed.
+    /// </summary>
     public static string Sanitize(string value)
     {
-        var fileName = Path.GetFileName(value).Trim();
+        var normalized = (value ?? string.Empty).Replace('\\', '/');
+        var fileName = normalized[(normalized.LastIndexOf('/') + 1)..].Trim();
         fileName = Regex.Replace(fileName, "[\\x00-\\x1F\\x7F]+", string.Empty);
+        // A colon would be a drive or alternate-data-stream separator for Windows extractors.
+        fileName = fileName.Replace(':', '_');
         fileName = fileName.TrimEnd('.', ' ');
-        return string.IsNullOrWhiteSpace(fileName) ? "archive" : fileName;
+        if (string.IsNullOrWhiteSpace(fileName) || fileName.All(c => c == '.'))
+        {
+            return "archive";
+        }
+
+        return fileName;
+    }
+
+    /// <summary>
+    /// Makes <paramref name="name"/> unique among <paramref name="taken"/> (case-insensitive, since
+    /// common extractors treat entry names that way) by appending " (2)", " (3)", ... before the
+    /// extension, and records the chosen name in <paramref name="taken"/>.
+    /// </summary>
+    public static string Deduplicate(string name, ISet<string> taken)
+    {
+        if (taken.Add(name))
+        {
+            return name;
+        }
+
+        var extension = Path.GetExtension(name);
+        var stem = name[..^extension.Length];
+        for (var i = 2; ; i++)
+        {
+            var candidate = $"{stem} ({i}){extension}";
+            if (taken.Add(candidate))
+            {
+                return candidate;
+            }
+        }
     }
 }

@@ -9,8 +9,8 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Agora.Application.Tests;
 
 /// <summary>
-/// The forgot-password, reset-password and confirm-email-required pages are Razor page handlers, not minimal
-/// endpoints, so they only share the per-IP "AuthEndpoints" limiter if the attribute on the PageModel ends up in
+/// The forgot-password, reset-password, confirm-email-required and emailed-link confirmation pages are Razor page
+/// handlers, not minimal endpoints, so they only share the per-IP "AuthEndpoints" limiter if the attribute on the PageModel ends up in
 /// the page's endpoint metadata. This checks the real routing table of the Agora.Web assembly.
 /// </summary>
 public sealed class AuthPageRateLimitTests
@@ -19,6 +19,9 @@ public sealed class AuthPageRateLimitTests
     [InlineData("forgot-password")]
     [InlineData("reset-password")]
     [InlineData("confirm-email-required")]
+    [InlineData("auth/confirm-email")]
+    [InlineData("auth/confirm-email-change")]
+    [InlineData("auth/confirm-password-change")]
     public async Task Auth_pages_carry_the_AuthEndpoints_rate_limit_policy(string route)
     {
         var builder = WebApplication.CreateBuilder();

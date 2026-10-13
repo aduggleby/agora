@@ -149,9 +149,17 @@ Alpine.start();
               : 'bg-ink-muted/40';
       const detail = (step.detail || '').trim();
 
+      // Label and detail come from the server (the detail can carry an exception message that embeds an uploaded
+      // file name), so they are set as text, never parsed as HTML.
       const item = document.createElement('li');
       item.className = 'flex items-start gap-2';
-      item.innerHTML = `<span class="mt-1.5 inline-block h-2.5 w-2.5 rounded-full ${dotClass}" aria-hidden="true"></span><span class="text-sm text-ink-light">${label}${detail ? ` - ${detail}` : ''}</span>`;
+      const dot = document.createElement('span');
+      dot.className = `mt-1.5 inline-block h-2.5 w-2.5 rounded-full ${dotClass}`;
+      dot.setAttribute('aria-hidden', 'true');
+      const text = document.createElement('span');
+      text.className = 'text-sm text-ink-light';
+      text.textContent = detail ? `${label} - ${detail}` : label;
+      item.append(dot, text);
       taskList.appendChild(item);
     });
   };

@@ -40,8 +40,9 @@ public sealed class AuthService(
     private static readonly TimeSpan FailedAttemptWindow = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan EmailConfirmationTokenLifetime = TimeSpan.FromHours(24);
     private static readonly TimeSpan PasswordResetTokenLifetime = TimeSpan.FromHours(2);
-    private const int UploadTokenLength = 8;
-    private static readonly Regex UploadTokenFormatRegex = new("^[A-Za-z0-9]{2,64}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    // Generated codes are 12 alphanumerics; custom codes need at least 8 so /u/{code} cannot be enumerated.
+    private const int UploadTokenLength = 12;
+    private static readonly Regex UploadTokenFormatRegex = new("^[A-Za-z0-9]{8,64}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public async Task<(bool Success, string Error)> RegisterAsync(string email, string password, string confirmEmailUrlBase, CancellationToken cancellationToken)
     {
@@ -56,9 +57,9 @@ public sealed class AuthService(
             return (false, "Enter a valid email address.");
         }
 
-        if (password.Length < 8)
+        if (!PasswordPolicy.IsAcceptableLength(password))
         {
-            return (false, "Password must be at least 8 characters.");
+            return (false, PasswordPolicy.LengthError);
         }
 
         var userCount = await db.Users.CountAsync(cancellationToken);
@@ -228,7 +229,15 @@ public sealed class AuthService(
         // Every failure path costs one password verification and ends in the same message: an unknown address,
         // a wrong password, a disabled account and a locked address are indistinguishable to the caller. Only a
         // caller who presented the correct password learns that the account still needs its email confirmed.
-        var passwordMatches = PasswordHasher.Verify(password ?? string.Empty, user?.PasswordHash ?? DummyPasswordHash);
+        var storedHash = user?.PasswordHash ?? DummyPasswordHash;
+        var passwordMatches = PasswordHasher.Verify(password ?? string.Empty, storedHash);
+        if (!passwordMatches && user is not null && PasswordHasher.NeedsRehash(storedHash))
+        {
+            // A legacy hash verifies at fewer iterations than the current format; spend the current cost as well so
+            // a wrong password costs the same for legacy, upgraded and unknown accounts.
+            PasswordHasher.Verify(password ?? string.Empty, DummyPasswordHash);
+        }
+
         if (user is null)
         {
             return (false, LoginFailedError, null);
@@ -285,6 +294,14 @@ public sealed class AuthService(
         if (string.IsNullOrEmpty(user.SecurityStamp))
         {
             user.SecurityStamp = SecurityStamps.New();
+            changed = true;
+        }
+
+        // Hashes stored in an older format (or with fewer iterations) are upgraded transparently on a successful
+        // sign-in. The password is already known to be correct, and nothing else about the account changes.
+        if (PasswordHasher.NeedsRehash(user.PasswordHash))
+        {
+            user.PasswordHash = PasswordHasher.Hash(password!);
             changed = true;
         }
 
@@ -613,7 +630,7 @@ public sealed class AuthService(
         var normalizedToken = NormalizeUploadToken(requestedToken);
         if (!IsValidUploadToken(normalizedToken))
         {
-            return (false, "Upload code must be 2-64 letters or numbers.", null);
+            return (false, "Upload code must be 8-64 letters or numbers.", null);
         }
 
         var user = await db.Users.SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
@@ -963,9 +980,9 @@ public sealed class AuthService(
             return (false, "New password is required.");
         }
 
-        if (newPassword.Length < 8)
+        if (!PasswordPolicy.IsAcceptableLength(newPassword))
         {
-            return (false, "New password must be at least 8 characters.");
+            return (false, "New password must be 8-128 characters.");
         }
 
         var user = await db.Users.SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
@@ -1081,9 +1098,9 @@ public sealed class AuthService(
             return (false, PasswordResetLinkError);
         }
 
-        if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Length < 8)
+        if (string.IsNullOrWhiteSpace(newPassword) || !PasswordPolicy.IsAcceptableLength(newPassword))
         {
-            return (false, "Password must be at least 8 characters.");
+            return (false, PasswordPolicy.LengthError);
         }
 
         var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);

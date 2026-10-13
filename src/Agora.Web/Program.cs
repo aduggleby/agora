@@ -76,6 +76,7 @@ builder.Host.UseSerilog((context, services, loggerConfig) =>
         .ReadFrom.Configuration(WithoutSerilogSinks(context.Configuration))
         .ReadFrom.Services(services)
         .Enrich.FromLogContext()
+        .Enrich.With(new TokenRedactionEnricher())
         .WriteTo.Console(outputTemplate: outputTemplate);
     if (logFile.Enabled)
     {
@@ -412,7 +413,6 @@ app.MapPost("/register", async (HttpContext httpContext, AuthService authService
     return Results.Redirect("/login?msg=Check%20your%20email%20to%20confirm%20your%20account");
 }).RequireRateLimiting(RateLimitSetup.AuthEndpoints);
 
-app.MapAuthConfirmationEndpoints();
 
 app.MapPost("/auth/resend-confirmation", async (HttpContext httpContext, AuthService authService, PublicBaseUrlResolver publicBaseUrls, CancellationToken ct) =>
 {
@@ -782,7 +782,7 @@ app.MapPost("/shares/{id:guid}/show-link", async (Guid id, HttpContext context, 
         return Results.Redirect("/?msg=Unable%20to%20open%20share%20link");
     }
 
-    return Results.Redirect($"/shares/created?token={Uri.EscapeDataString(token)}");
+    return Results.Redirect($"/shares/created/{Uri.EscapeDataString(token)}");
 }).RequireAuthorization();
 
 app.MapGet("/api/shares/{token}/status", async (string token, HttpContext context, ShareManager manager, ShareCreationStatusStore statusStore, CancellationToken ct) =>
@@ -830,19 +830,30 @@ app.MapGet("/api/shares/{token}/status", async (string token, HttpContext contex
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/account/template", async (HttpContext context, ShareManager manager, HttpRequest request, CancellationToken ct) =>
+app.MapPost("/api/account/template", async (HttpContext context, ShareManager manager, IOptions<AgoraOptions> agoraOptions, ScratchSpaceMonitor scratchSpace, HttpRequest request, CancellationToken ct) =>
 {
     if (!request.HasFormContentType)
     {
         return Results.BadRequest("Expected multipart/form-data");
     }
 
-    var form = await request.ReadFormAsync(ct);
     if (!context.User.TryGetShareOwner(out var owner))
     {
         return Results.Unauthorized();
     }
 
+    var cfg = agoraOptions.Value;
+    // Like the stage endpoints: the multipart body is buffered into scratch, so that space is reserved before it is read.
+    try
+    {
+        UploadStagingEndpoints.ReserveRequestBuffer(context, scratchSpace, cfg.MaxFileSizeBytes);
+    }
+    catch (UploadLimitException ex)
+    {
+        return Results.Redirect($"/account/landing-page-designer?msg={Uri.EscapeDataString(ex.Message)}");
+    }
+
+    var form = await request.ReadFormAsync(ct);
     var existingTemplate = await manager.GetAccountTemplateAsync(owner, ct);
     var backgroundImageUrl = existingTemplate.BackgroundImageUrl;
     var backgroundColorMode = form["backgroundColorMode"].ToString();
@@ -858,6 +869,11 @@ app.MapPost("/api/account/template", async (HttpContext context, ShareManager ma
             return Results.Redirect("/account/landing-page-designer?msg=Only%20JPG%2C%20PNG%2C%20or%20WEBP%20images%20are%20allowed");
         }
 
+        if (backgroundImageFile.Length > cfg.MaxFileSizeBytes)
+        {
+            return Results.Redirect("/account/landing-page-designer?msg=The%20background%20image%20is%20too%20large");
+        }
+
         var safeName = ArchiveNameResolver.Sanitize(backgroundImageFile.FileName);
         var extension = Path.GetExtension(safeName);
         if (string.IsNullOrWhiteSpace(extension))
@@ -866,9 +882,8 @@ app.MapPost("/api/account/template", async (HttpContext context, ShareManager ma
         }
 
         var key = $"uploads/templates/general/{Guid.NewGuid():N}{extension}";
-        var storageRoot = context.RequestServices.GetRequiredService<IOptions<AgoraOptions>>().Value.StorageRoot;
+        var storageRoot = cfg.StorageRoot;
         // Scratch copy plus, with the FileSystem store, the durable object on the same volume.
-        var scratchSpace = context.RequestServices.GetRequiredService<ScratchSpaceMonitor>();
         ScratchReservation backgroundReservation;
         try
         {
@@ -908,7 +923,8 @@ app.MapPost("/api/account/template", async (HttpContext context, ShareManager ma
         containerPosition), ct);
 
     return Results.Redirect("/account/landing-page-designer?msg=Template%20saved");
-}).RequireAuthorization();
+}).RequireAuthorization()
+  .WithMetadata(new UploadEndpointMetadata(RequiresHeaderCsrfToken: true), new RequestSizeLimitAttribute(stageRequestBodyLimit));
 
 app.MapPost("/api/share-drafts/{draftShareId}/template", async (HttpContext context, ShareManager manager, string draftShareId, HttpRequest request, CancellationToken ct) =>
 {
@@ -1553,7 +1569,7 @@ app.MapPost("/api/shares", async (
         return UploadLimitText(ex);
     }
 
-    return Results.Redirect($"/shares/created?token={Uri.EscapeDataString(shareToken)}");
+    return Results.Redirect($"/shares/created/{Uri.EscapeDataString(shareToken)}");
 }).RequireAuthorization()
   .WithMetadata(new UploadEndpointMetadata(RequiresHeaderCsrfToken: false), new RequestSizeLimitAttribute(configuredMaxTotalUploadBytes + 1024 * 1024));
 
@@ -1601,25 +1617,8 @@ static IResult UploadLimitText(UploadLimitException ex) => UploadStagingEndpoint
 
 static string ClientAddress(HttpContext context) => UploadStagingEndpoints.ClientAddress(context);
 
-static bool IsValidShareToken(string token)
-{
-    // Custom share tokens: at least 8 characters so short, guessable links cannot be enumerated (generated ones are 8).
-    const int MinShareTokenLength = 8;
-    if (string.IsNullOrWhiteSpace(token) || token.Length < MinShareTokenLength || token.Length > 64)
-    {
-        return false;
-    }
-
-    foreach (var ch in token)
-    {
-        if (!char.IsLetterOrDigit(ch) && ch is not '-' and not '_')
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
+// Custom share tokens: at least 8 ASCII letters, digits, '-' or '_' so short, guessable links cannot be enumerated.
+static bool IsValidShareToken(string token) => ShareTokens.IsValid(token);
 
 // Strips control characters and collapses whitespace runs; sender text ends up in page markup and mail.
 static string NormalizeSenderText(string? raw)

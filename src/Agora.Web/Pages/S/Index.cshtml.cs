@@ -1,3 +1,4 @@
+using Agora.Application.Utilities;
 using Agora.Infrastructure.Services;
 using Agora.Web.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -44,6 +45,8 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
 
     public async Task<IActionResult> OnGet(string token, CancellationToken ct)
     {
+        // The token is the share's access key: never let it leave in a Referer when the page links out.
+        Response.Headers["Referrer-Policy"] = "same-origin";
         Token = token;
         Share = await manager.FindByTokenAsync(token, ct);
         if (Share is null || ShareManager.IsDeleted(Share))
@@ -93,11 +96,11 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
             : Share.BackgroundImageUrl.StartsWith("internal:", StringComparison.OrdinalIgnoreCase)
                 ? $"/s/{token}/background"
                 : Share.BackgroundImageUrl;
-        logger.LogInformation(
-            "Download page load for token {Token}: marker {BackgroundMarker}, resolved background URL {BackgroundUrl}",
-            token,
+        logger.LogDebug(
+            "Download page load for share {TokenRef}: marker {BackgroundMarker}, background {BackgroundKind}",
+            LogSafe.Token(token),
             string.IsNullOrWhiteSpace(Share.BackgroundImageUrl) ? "<empty>" : Share.BackgroundImageUrl,
-            string.IsNullOrWhiteSpace(BackgroundImageUrl) ? "<none>" : BackgroundImageUrl);
+            string.IsNullOrWhiteSpace(BackgroundImageUrl) ? "none" : BackgroundImageUrl.StartsWith("/s/", StringComparison.Ordinal) ? "internal" : "external");
         SizeDisplay = FormatSize(Share.ZipSizeBytes);
         var containerPosition = ShareManager.NormalizeContainerPosition(Share.PageContainerPosition);
         (ContainerAlignItems, ContainerJustifyContent) = containerPosition switch

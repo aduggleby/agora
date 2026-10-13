@@ -10,6 +10,7 @@ using Hangfire.Common;
 using Hangfire.States;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -77,6 +78,24 @@ public sealed class ShareManagerTokenTests
     }
 
     [Fact]
+    public async Task CreateShareAsync_TokenCollisionNeverReachesTheLogAtErrorLevel()
+    {
+        var logs = new RecordingLoggerProvider();
+        await using var harness = await TestHarness.CreateAsync(logs);
+        var firstFile = await harness.CreateUploadFileAsync("a.txt", "one");
+        var secondFile = await harness.CreateUploadFileAsync("b.txt", "two");
+        await harness.Manager.CreateShareAsync(CreateCommand("dup_token", firstFile), CancellationToken.None);
+
+        await Assert.ThrowsAsync<ShareTokenCollisionException>(() =>
+            harness.Manager.CreateShareAsync(CreateCommand("dup_token", secondFile), CancellationToken.None));
+
+        // EF's own SaveChangesFailed/CommandError events carry the provider exception (which quotes the key) and
+        // are demoted below Information; nothing written at Warning or above mentions the token.
+        Assert.DoesNotContain(logs.Entries, e => e.Category.StartsWith("Microsoft.EntityFrameworkCore", StringComparison.Ordinal) && e.Level >= LogLevel.Information && e.Exception is not null);
+        Assert.DoesNotContain(logs.Entries, e => e.Level >= LogLevel.Warning && (e.Message.Contains("dup_token") || (e.Exception?.ToString().Contains("dup_token") ?? false)));
+    }
+
+    [Fact]
     public async Task CreateShareAsync_WhenRequestedTokenAlreadyExists_Throws()
     {
         await using var harness = await TestHarness.CreateAsync();
@@ -87,10 +106,11 @@ public sealed class ShareManagerTokenTests
             CreateCommand("dup_token", firstFile),
             CancellationToken.None);
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var ex = await Assert.ThrowsAsync<ShareTokenCollisionException>(() =>
             harness.Manager.CreateShareAsync(CreateCommand("dup_token", secondFile), CancellationToken.None));
 
         Assert.Contains("already in use", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("dup_token", ex.ToString());
     }
 
     [Fact]
@@ -250,13 +270,17 @@ public sealed class ShareManagerTokenTests
             Manager = manager;
         }
 
-        public static async Task<TestHarness> CreateAsync()
+        public static async Task<TestHarness> CreateAsync(RecordingLoggerProvider? logs = null)
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
-            var options = new DbContextOptionsBuilder<AgoraDbContext>()
-                .UseSqlite(connection)
-                .Options;
+            var optionsBuilder = new DbContextOptionsBuilder<AgoraDbContext>().UseSqlite(connection);
+            if (logs is not null)
+            {
+                optionsBuilder.UseLoggerFactory(LoggerFactory.Create(b => b.AddProvider(logs).SetMinimumLevel(LogLevel.Trace)));
+            }
+
+            var options = optionsBuilder.Options;
             var db = new AgoraDbContext(options);
             await db.Database.EnsureCreatedAsync();
             db.Users.Add(TestUsers.Seed(UploaderId, "uploader@example.com"));
@@ -306,6 +330,32 @@ public sealed class ShareManagerTokenTests
             if (Directory.Exists(_storageRoot))
             {
                 Directory.Delete(_storageRoot, recursive: true);
+            }
+        }
+    }
+
+    internal sealed record LogEntry(string Category, LogLevel Level, string Message, Exception? Exception);
+
+    internal sealed class RecordingLoggerProvider : ILoggerProvider
+    {
+        public List<LogEntry> Entries { get; } = [];
+
+        public ILogger CreateLogger(string categoryName) => new Logger(categoryName, Entries);
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class Logger(string category, List<LogEntry> entries) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => true;
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            {
+                lock (entries)
+                {
+                    entries.Add(new LogEntry(category, logLevel, formatter(state, exception), exception));
+                }
             }
         }
     }

@@ -93,7 +93,8 @@ public sealed class ShareManager(
         string? BackgroundUploadId,
         string? BackgroundColorHex,
         string? ContainerPosition,
-        bool PublicUpload = false);
+        bool PublicUpload = false,
+        DateTime? ProcessingLeaseUtc = null);
 
     private readonly AgoraOptions _options = options.Value;
 
@@ -263,18 +264,21 @@ public sealed class ShareManager(
                 }
                 catch (DbUpdateException ex) when (IsShareTokenConflict(ex))
                 {
+                    // The database error text quotes the duplicate key (the token), so neither it nor the exception is
+                    // logged or rethrown: only the constraint name travels on.
+                    var constraintName = ShareTokenConflictConstraint(ex);
                     logger.LogWarning(
-                        ex,
-                        "Share token conflict while creating share. token={Token} uploader={Uploader} requestedToken={RequestedToken} hasRequestedToken={HasRequestedToken} provider={Provider}",
-                        token,
+                        "Share token conflict while creating share. share={TokenRef} uploader={Uploader} requestedToken={RequestedTokenRef} hasRequestedToken={HasRequestedToken} provider={Provider} constraint={Constraint}",
+                        LogSafe.Token(token),
                         command.UploaderEmail,
-                        requestedToken ?? "<none>",
+                        hasRequestedToken ? LogSafe.Token(requestedToken) : "<none>",
                         hasRequestedToken,
-                        db.Database.ProviderName ?? "<unknown>");
+                        db.Database.ProviderName ?? "<unknown>",
+                        constraintName);
                     db.Entry(share).State = EntityState.Detached;
                     if (hasRequestedToken)
                     {
-                        throw new InvalidOperationException("Share token is already in use.", ex);
+                        throw new ShareTokenCollisionException(constraintName);
                     }
 
                     // Random collision on generated token; retry with a new token.
@@ -899,10 +903,15 @@ public sealed class ShareManager(
 
         foreach (var rawId in uploadIds)
         {
-            var uploadId = (rawId ?? string.Empty).Trim();
-            if (uploadId.Length == 0)
+            if (string.IsNullOrWhiteSpace(rawId))
             {
                 continue;
+            }
+
+            // Only a GUID ever reaches Path.Combine: anything else (traversal, absolute paths) is refused here.
+            if (!UploadIds.TryNormalize(rawId, out var uploadId))
+            {
+                throw new InvalidOperationException("Uploaded file id is invalid.");
             }
 
             var stagingDirectory = Path.Combine(GetStagingRoot(normalizedPurpose), uploadId);
@@ -1030,54 +1039,55 @@ public sealed class ShareManager(
         string uploadId,
         CancellationToken cancellationToken)
     {
-        var normalizedUploadId = (uploadId ?? string.Empty).Trim();
-        if (normalizedUploadId.Length == 0)
+        // Both ids are validated before they form a path; only share-file uploads of the caller's own, still open
+        // draft can be removed through this route (a template background is never a share file).
+        if (!UploadIds.TryNormalize(uploadId, out var normalizedUploadId) ||
+            !TryNormalizeDraftShareId(draftShareId, out var normalizedDraftShareId))
         {
             return false;
         }
 
-        var stagingDirectory = Path.Combine(GetStagingRoot(UploadPurposeShareFile), normalizedUploadId);
-        var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
-        var payloadPath = Path.Combine(stagingDirectory, "payload.bin");
-        if (!Directory.Exists(stagingDirectory) || !File.Exists(metadataPath) || !File.Exists(payloadPath))
+        using (await draftLocks.LockAsync(DraftLockKey(normalizedDraftShareId), cancellationToken))
         {
-            return false;
-        }
+            if (IsDraftSealed(normalizedDraftShareId))
+            {
+                // Submitted: the queued job owns these files now.
+                return false;
+            }
 
-        StagedUploadMetadata? metadata;
-        try
-        {
-            var json = await File.ReadAllTextAsync(metadataPath, cancellationToken);
-            metadata = JsonSerializer.Deserialize<StagedUploadMetadata>(json);
-        }
-        catch
-        {
-            metadata = null;
-        }
+            var stagingDirectory = Path.Combine(GetStagingRoot(UploadPurposeShareFile), normalizedUploadId);
+            var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
+            var payloadPath = Path.Combine(stagingDirectory, "payload.bin");
+            if (!Directory.Exists(stagingDirectory) || !File.Exists(metadataPath) || !File.Exists(payloadPath))
+            {
+                return false;
+            }
 
-        if (metadata is null)
-        {
-            return false;
-        }
+            StagedUploadMetadata? metadata;
+            try
+            {
+                var json = await File.ReadAllTextAsync(metadataPath, cancellationToken);
+                metadata = JsonSerializer.Deserialize<StagedUploadMetadata>(json);
+            }
+            catch
+            {
+                metadata = null;
+            }
 
-        if (metadata.OwnerUserId != ownerUserId)
-        {
-            return false;
-        }
+            if (metadata is null ||
+                metadata.OwnerUserId != ownerUserId ||
+                !string.Equals(NormalizeUploadPurpose(metadata.UploadPurpose), UploadPurposeShareFile, StringComparison.Ordinal) ||
+                !TryNormalizeDraftShareId(metadata.DraftShareId, out var metadataDraftShareId) ||
+                !string.Equals(metadataDraftShareId, normalizedDraftShareId, StringComparison.Ordinal))
+            {
+                return false;
+            }
 
-        if (!string.Equals(metadata.DraftShareId, draftShareId, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        Directory.Delete(stagingDirectory, recursive: true);
-        if (TryNormalizeDraftShareId(draftShareId, out var normalizedDraftShareId))
-        {
+            Directory.Delete(stagingDirectory, recursive: true);
             // Free the per-draft slot right away instead of waiting for the next count to notice.
             ScratchFiles.TryDelete(Path.Combine(GetDraftStagedIndexDirectory(normalizedDraftShareId), normalizedUploadId));
+            return true;
         }
-
-        return true;
     }
 
     private sealed record DraftStagedTotals(int Count, long Bytes);
@@ -1241,6 +1251,10 @@ public sealed class ShareManager(
                 return false;
             }
 
+            // Submission starts the processing lease: the sweep keeps a sealed draft while its lease is fresh, and the
+            // queued job renews it at every stage.
+            var sealedAt = DateTime.UtcNow;
+            await WriteDraftMetadataAsync(metadata with { LastActivityUtc = sealedAt, ProcessingLeaseUtc = sealedAt }, cancellationToken);
             await File.WriteAllTextAsync(GetDraftSealPath(normalizedId), DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture), cancellationToken);
             return true;
         }
@@ -1327,6 +1341,29 @@ public sealed class ShareManager(
     {
         var hours = publicUpload ? _options.PublicUploads.DraftRetentionHours : _options.ZombieUploadRetentionHours;
         return TimeSpan.FromHours(Math.Abs(hours));
+    }
+
+    /// <summary>
+    /// Renews the processing lease of a sealed draft. The queued job calls this at each stage (start, after the share
+    /// is persisted, before scratch cleanup); the sweep leaves a sealed draft alone while its lease is younger than
+    /// the retention window, whatever the age of its uploads.
+    /// </summary>
+    public async Task RenewProcessingLeaseAsync(Guid ownerUserId, string draftShareId, CancellationToken cancellationToken)
+    {
+        if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId))
+        {
+            return;
+        }
+
+        using (await draftLocks.LockAsync(DraftLockKey(normalizedId), cancellationToken))
+        {
+            var metadata = await ReadDraftMetadataAsync(normalizedId, cancellationToken);
+            if (metadata is not null && metadata.OwnerUserId == ownerUserId)
+            {
+                var now = DateTime.UtcNow;
+                await WriteDraftMetadataAsync(metadata with { LastActivityUtc = now, ProcessingLeaseUtc = now }, cancellationToken);
+            }
+        }
     }
 
     /// <summary>Refreshes the draft's last activity (caller holds the draft lock).</summary>
@@ -1504,29 +1541,37 @@ public sealed class ShareManager(
                 cancellationToken.ThrowIfCancellationRequested();
 
                 var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
-                var payloadPath = Path.Combine(stagingDirectory, "payload.bin");
                 var createdAtUtc = Directory.GetCreationTimeUtc(stagingDirectory);
 
                 if (File.Exists(metadataPath))
                 {
+                    StagedUploadMetadata? metadata = null;
                     try
                     {
                         var json = await File.ReadAllTextAsync(metadataPath, cancellationToken);
-                        var metadata = JsonSerializer.Deserialize<StagedUploadMetadata>(json);
-                        if (metadata is not null)
-                        {
-                            createdAtUtc = metadata.CreatedAtUtc;
-                        }
+                        metadata = JsonSerializer.Deserialize<StagedUploadMetadata>(json);
                     }
                     catch
                     {
                         // Keep fallback timestamp when metadata cannot be parsed.
                     }
+
+                    if (metadata is not null)
+                    {
+                        createdAtUtc = metadata.CreatedAtUtc;
+                        // A complete upload that still has its draft lives and dies with that draft: the stale-draft
+                        // sweep above removes it under the draft lock once the draft is idle (a queued job that is
+                        // reading it keeps the draft active). Only orphans (draft gone) are aged out here.
+                        if (TryNormalizeDraftShareId(metadata.DraftShareId, out var draftShareId) &&
+                            Directory.Exists(GetDraftDirectory(draftShareId)))
+                        {
+                            continue;
+                        }
+                    }
                 }
 
                 // A directory without metadata is either an upload still streaming in (payload first, metadata last)
-                // or a crashed one; only age tells them apart, so incomplete directories are swept by age like the
-                // rest. Uploads of stale drafts were already removed together with their draft, under its lock.
+                // or a crashed one; only age tells them apart, so incomplete directories are swept by age.
                 if (createdAtUtc <= cutoff)
                 {
                     Directory.Delete(stagingDirectory, recursive: true);
@@ -1931,7 +1976,19 @@ public sealed class ShareManager(
                 var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
                 var lastActivityUtc = metadata?.LastActivityUtc ?? Directory.GetLastWriteTimeUtc(draftDirectory);
                 var retention = DraftRetention(metadata?.PublicUpload ?? false);
-                if (lastActivityUtc > DateTime.UtcNow - retention)
+                var reference = lastActivityUtc;
+                if (IsDraftSealed(draftShareId))
+                {
+                    // Submitted: judged by its processing lease (renewed by the queued job at every stage) with the
+                    // longer retention, so a job that is still reading the uploads is never swept from under it.
+                    retention = TimeSpan.FromTicks(Math.Max(retention.Ticks, DraftRetention(false).Ticks));
+                    if (metadata?.ProcessingLeaseUtc is { } lease && lease > reference)
+                    {
+                        reference = lease;
+                    }
+                }
+
+                if (reference > DateTime.UtcNow - retention)
                 {
                     continue;
                 }
@@ -1948,6 +2005,9 @@ public sealed class ShareManager(
 
         return removed;
     }
+
+    private static string ShareTokenConflictConstraint(DbUpdateException ex) =>
+        ex.InnerException is PostgresException { ConstraintName: { Length: > 0 } name } ? name : "IX_Shares_ShareToken";
 
     internal static bool IsShareTokenConflict(DbUpdateException ex)
     {

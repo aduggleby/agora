@@ -27,9 +27,16 @@ ENV DataProtection__KeysPath=/app/data/keys
 ENV Email__Resend__ApiUrl=https://api.resend.com
 ENV Email__Resend__ApiToken=
 ENV Email__Resend__FromAddress=no-reply@example.com
+# Only used with Email__Provider=filesystem; keeps the one writable location under /app/data.
+ENV Email__FileSystem__OutputDirectory=/app/data/emails
 
+# The app runs as the unprivileged "app" user (UID 1654) that the aspnet base image provides. The data directory is
+# created and owned before VOLUME so a fresh named volume inherits that ownership; bind mounts must be owned by
+# UID 1654 on the host (see README).
+RUN mkdir -p /app/data && chown app:app /app/data
 VOLUME ["/app/data"]
 EXPOSE 18080
 
 COPY --from=build /app/publish .
+USER app
 ENTRYPOINT ["dotnet", "Agora.Web.dll"]

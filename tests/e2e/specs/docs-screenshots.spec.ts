@@ -12,7 +12,7 @@ const screenshotFiles = {
   download: 'download-page.png',
   designer: 'landing-page-editor.png',
   password: 'new-share-password-option.png',
-  gallery: 'account-password-settings.png',
+  accountSettings: 'account-password-settings.png',
   mixed: 'new-share-gallery-option.png',
   galleryReal: 'gallery-real-photos.png',
   filePreviewPdf: 'file-preview-sample-pdf.png'
@@ -93,7 +93,9 @@ async function isWithinPreviewBudget(filePath: string): Promise<boolean> {
     && dimensions.width * dimensions.height <= MAX_SAMPLE_PIXELS;
 }
 
-async function loadImageSamples(tempRoot: string, required: number): Promise<string[]> {
+type ImageSamples = { files: string[]; real: boolean };
+
+async function loadImageSamples(tempRoot: string, required: number): Promise<ImageSamples> {
   const picturesRoot = path.join(os.homedir(), 'Pictures');
   const entries = await fs.readdir(picturesRoot, { withFileTypes: true }).catch(() => []);
   const candidates = entries
@@ -112,7 +114,7 @@ async function loadImageSamples(tempRoot: string, required: number): Promise<str
   }
 
   if (pictureImages.length >= required) {
-    return pictureImages.slice(0, required);
+    return { files: pictureImages.slice(0, required), real: true };
   }
 
   const fallback: string[] = [...pictureImages];
@@ -121,7 +123,7 @@ async function loadImageSamples(tempRoot: string, required: number): Promise<str
     await writePlaceholderImage(filePath, i);
     fallback.push(filePath);
   }
-  return fallback;
+  return { files: fallback, real: false };
 }
 
 async function writePdf(filePath: string, label: string): Promise<void> {
@@ -376,7 +378,8 @@ test('remake docs screenshots', async ({ page, request }) => {
   const thisDir = path.dirname(fileURLToPath(import.meta.url));
   const docsRoot = path.resolve(thisDir, '../../..', 'docs', 'screenshots');
 
-  const images = await loadImageSamples(tempRoot, 6);
+  const imageSamples = await loadImageSamples(tempRoot, 6);
+  const images = imageSamples.files;
 
   const textA = path.join(tempRoot, 'notes-a.txt');
   const textB = path.join(tempRoot, 'notes-b.txt');
@@ -426,17 +429,26 @@ test('remake docs screenshots', async ({ page, request }) => {
     path: path.join(docsRoot, screenshotFiles.password)
   });
 
-  const galleryToken = await createShareAndGetToken(page, images, {
-    showPreviews: true
-  });
-  await waitForShareReady(page, galleryToken);
-  await openPublicShareAndWaitForSelector(page, galleryToken, '.mosaic-grid');
-  await waitForMosaicPreviewsReady(page);
+  // The gallery shot is only worth keeping with real photos (from ~/Pictures); with generated placeholders the
+  // hand-picked README image must stay as it is.
+  if (imageSamples.real) {
+    const galleryToken = await createShareAndGetToken(page, images, {
+      showPreviews: true
+    });
+    await waitForShareReady(page, galleryToken);
+    await openPublicShareAndWaitForSelector(page, galleryToken, '.mosaic-grid');
+    await waitForMosaicPreviewsReady(page);
+    await page.screenshot({
+      path: path.join(docsRoot, screenshotFiles.galleryReal)
+    });
+  } else {
+    console.log('No real photos in ~/Pictures: keeping the existing gallery-real-photos.png.');
+  }
+
+  await page.goto('/account/settings');
+  await page.waitForSelector('#uploadToken');
   await page.screenshot({
-    path: path.join(docsRoot, screenshotFiles.gallery)
-  });
-  await page.screenshot({
-    path: path.join(docsRoot, screenshotFiles.galleryReal)
+    path: path.join(docsRoot, screenshotFiles.accountSettings)
   });
 
   const mixedToken = await createShareAndGetToken(page, [images[0], images[1], textA, textB, pdfA, pdfB], {

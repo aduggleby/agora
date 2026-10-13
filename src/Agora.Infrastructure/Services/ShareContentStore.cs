@@ -14,13 +14,16 @@ public sealed partial class ShareContentStore(IObjectStore objectStore) : IShare
     {
         var contentRoot = $"shares/{nowUtc:yyyy}/{nowUtc:MM}/{Guid.NewGuid():N}";
         var storedFiles = new List<StoredShareContentFile>(files.Count);
+        // Entry names are unique within a share (case-insensitively, as most extractors treat them): the same
+        // value names the zip entry and the file on the download page.
+        var takenEntryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
         {
             foreach (var file in files)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var entryName = ArchiveNameResolver.Sanitize(file.OriginalFileName);
+                var entryName = ArchiveNameResolver.Deduplicate(ArchiveNameResolver.Sanitize(file.OriginalFileName), takenEntryNames);
                 var key = $"{contentRoot}/{Guid.NewGuid():N}{Path.GetExtension(entryName)}";
                 await objectStore.PutFileAsync(key, file.TempPath, file.ContentType, cancellationToken);
                 storedFiles.Add(new StoredShareContentFile(entryName, key, file.TempPath, file.OriginalSizeBytes, file.ContentType));

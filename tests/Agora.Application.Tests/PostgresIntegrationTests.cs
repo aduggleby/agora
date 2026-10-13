@@ -207,7 +207,7 @@ public sealed class PostgresIntegrationTests(PostgresFixture fixture) : IClassFi
             var filePath = Path.Combine(storageRoot, "upload.txt");
             await File.WriteAllTextAsync(filePath, "hello");
 
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => manager.CreateShareAsync(new CreateShareCommand
+            var ex = await Assert.ThrowsAsync<ShareTokenCollisionException>(() => manager.CreateShareAsync(new CreateShareCommand
             {
                 UploaderEmail = "Uploader@Example.com",
                 OwnerUserId = UploaderId,

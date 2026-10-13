@@ -672,6 +672,135 @@ public sealed class UploadQuotaTests
         Assert.Contains(freshDraft, markers);
     }
 
+    [Fact]
+    public async Task DeleteStagedUploadAsync_RefusesTraversalIntoAnotherStagingRoot()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var draftId = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
+        var background = await harness.Manager.StageUploadAsync(
+            OwnerId, draftId, "bg.png", 3, new MemoryStream("png"u8.ToArray()), CancellationToken.None, ShareManager.UploadPurposeTemplateBackground);
+        var backgroundDirectory = Path.Combine(harness.StorageRoot, "uploads", "staged-template-backgrounds", background.UploadId);
+        Assert.True(Directory.Exists(backgroundDirectory));
+
+        // The share-file removal route must not reach the template-background root through a relative id.
+        Assert.False(await harness.Manager.DeleteStagedUploadAsync(OwnerId, draftId, $"../staged-template-backgrounds/{background.UploadId}", CancellationToken.None));
+        Assert.False(await harness.Manager.DeleteStagedUploadAsync(OwnerId, draftId, $"..\\staged-template-backgrounds\\{background.UploadId}", CancellationToken.None));
+        // Nor may a background be removed as if it were a share file even with its real id.
+        Assert.False(await harness.Manager.DeleteStagedUploadAsync(OwnerId, draftId, background.UploadId, CancellationToken.None));
+        Assert.True(Directory.Exists(backgroundDirectory));
+
+        var file = await harness.StageAsync(draftId, "a.txt", 3);
+        Assert.True(await harness.Manager.DeleteStagedUploadAsync(OwnerId, Guid.Parse(draftId).ToString("D"), file.UploadId.ToUpperInvariant(), CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("../staged-template-backgrounds/0123456789abcdef0123456789abcdef")]
+    [InlineData("..")]
+    [InlineData("/tmp")]
+    [InlineData("not-a-guid")]
+    public async Task ResolveStagedUploadsAsync_RejectsIdsThatAreNotGuids(string uploadId)
+    {
+        await using var harness = await Harness.CreateAsync();
+        var draftId = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            harness.Manager.ResolveStagedUploadsAsync(OwnerId, [uploadId], draftId, CancellationToken.None));
+        Assert.Equal("Uploaded file id is invalid.", ex.Message);
+    }
+
+    [Fact]
+    public async Task DeleteStagedUploadAsync_RefusesOnceTheDraftIsSealed()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var draftId = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
+        var file = await harness.StageAsync(draftId, "a.txt", 3);
+        Assert.True(await harness.Manager.SealDraftAsync(OwnerId, draftId, CancellationToken.None));
+
+        Assert.False(await harness.Manager.DeleteStagedUploadAsync(OwnerId, draftId, file.UploadId, CancellationToken.None));
+        Assert.True(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "staged", file.UploadId)));
+    }
+
+    [Fact]
+    public async Task Sweep_KeepsASealedDraftAndItsUploadsUntilTheLongerRetention()
+    {
+        await using var harness = await Harness.CreateAsync(o =>
+        {
+            o.ZombieUploadRetentionHours = 24;
+            o.PublicUploads.DraftRetentionHours = 1;
+        });
+        var draftId = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        var file = await harness.StageAsync(draftId, "a.txt", 3);
+        var uploadDirectory = Path.Combine(harness.StorageRoot, "uploads", "staged", file.UploadId);
+        Assert.True(await harness.Manager.SealDraftAsync(OwnerId, draftId, CancellationToken.None));
+
+        // Idle past the public-draft retention and the upload itself older than the zombie cutoff: a sealed draft
+        // (queued or being read by the job) still gets the full retention, and its upload is not aged out alone.
+        harness.BackdateDraft(draftId, TimeSpan.FromHours(2));
+        harness.BackdateStagedUpload(file.UploadId, TimeSpan.FromHours(30));
+        await harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
+        Assert.True(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "drafts", draftId)));
+        Assert.True(Directory.Exists(uploadDirectory));
+
+        // The job touching the draft resets the clock.
+        harness.BackdateDraft(draftId, TimeSpan.FromHours(25));
+        await harness.Manager.RenewProcessingLeaseAsync(OwnerId, draftId, CancellationToken.None);
+        await harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
+        Assert.True(Directory.Exists(uploadDirectory));
+
+        // Sealed with activity and lease beyond the long retention: swept together with the draft, under its lock.
+        harness.BackdateDraft(draftId, TimeSpan.FromHours(25));
+        harness.BackdateDraftLease(draftId, TimeSpan.FromHours(25));
+        await harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
+        Assert.False(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "drafts", draftId)));
+        Assert.False(Directory.Exists(uploadDirectory));
+    }
+
+    [Fact]
+    public async Task Sweep_KeepsASealedDraftWithAFreshLeaseAtAnyAge()
+    {
+        await using var harness = await Harness.CreateAsync(o =>
+        {
+            o.ZombieUploadRetentionHours = 24;
+            o.PublicUploads.DraftRetentionHours = 1;
+        });
+        var draftId = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        var file = await harness.StageAsync(draftId, "a.txt", 3);
+        var uploadDirectory = Path.Combine(harness.StorageRoot, "uploads", "staged", file.UploadId);
+        var draftDirectory = Path.Combine(harness.StorageRoot, "uploads", "drafts", draftId);
+        Assert.True(await harness.Manager.SealDraftAsync(OwnerId, draftId, CancellationToken.None));
+
+        // Activity and uploads far older than any retention, but the processing lease (set by sealing) is fresh.
+        harness.BackdateDraft(draftId, TimeSpan.FromHours(400));
+        harness.BackdateStagedUpload(file.UploadId, TimeSpan.FromHours(400));
+        await harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
+        Assert.True(Directory.Exists(draftDirectory));
+        Assert.True(Directory.Exists(uploadDirectory));
+
+        // A stale lease (job never renewed it) lets the sweep take the draft and its uploads.
+        harness.BackdateDraftLease(draftId, TimeSpan.FromHours(25));
+        await harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
+        Assert.False(Directory.Exists(draftDirectory));
+        Assert.False(Directory.Exists(uploadDirectory));
+    }
+
+    [Fact]
+    public async Task Sweep_AgesOutOrphanedUploadsWhoseDraftIsGone()
+    {
+        await using var harness = await Harness.CreateAsync(o => o.ZombieUploadRetentionHours = 1);
+        var draftId = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
+        var file = await harness.StageAsync(draftId, "a.txt", 3);
+        var uploadDirectory = Path.Combine(harness.StorageRoot, "uploads", "staged", file.UploadId);
+        Directory.Delete(Path.Combine(harness.StorageRoot, "uploads", "drafts", draftId), recursive: true);
+
+        harness.BackdateStagedUpload(file.UploadId, TimeSpan.FromMinutes(30));
+        await harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
+        Assert.True(Directory.Exists(uploadDirectory));
+
+        harness.BackdateStagedUpload(file.UploadId, TimeSpan.FromHours(2));
+        await harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
+        Assert.False(Directory.Exists(uploadDirectory));
+    }
+
     private static string NewId() => Guid.NewGuid().ToString("N");
 
     private static Share ReceivedShare(string owner, DateTime createdAtUtc, params long[] fileSizes) => ReceivedShare(OwnerId, owner, createdAtUtc, fileSizes);
@@ -788,6 +917,22 @@ public sealed class UploadQuotaTests
         }
 
         /// <summary>Rewrites the draft's last-activity timestamp as if nothing touched it for <paramref name="age"/>.</summary>
+        public void BackdateDraftLease(string draftId, TimeSpan age)
+        {
+            var path = Path.Combine(StorageRoot, "uploads", "drafts", draftId, "draft.json");
+            var node = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+            node["ProcessingLeaseUtc"] = (DateTime.UtcNow - age).ToString("O");
+            File.WriteAllText(path, node.ToJsonString());
+        }
+
+        public void BackdateStagedUpload(string uploadId, TimeSpan age)
+        {
+            var metadataPath = Path.Combine(StorageRoot, "uploads", "staged", uploadId, "metadata.json");
+            var node = JsonNode.Parse(File.ReadAllText(metadataPath))!.AsObject();
+            node["CreatedAtUtc"] = (DateTime.UtcNow - age).ToString("O");
+            File.WriteAllText(metadataPath, node.ToJsonString());
+        }
+
         public void BackdateDraft(string draftId, TimeSpan age)
         {
             var path = Path.Combine(StorageRoot, "uploads", "drafts", draftId, "draft.json");

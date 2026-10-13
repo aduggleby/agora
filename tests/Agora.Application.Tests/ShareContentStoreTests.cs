@@ -33,6 +33,26 @@ public sealed class ShareContentStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task PersistShareFiles_sanitises_and_deduplicates_entry_names()
+    {
+        IShareContentStore store = new ShareContentStore(new FileSystemObjectStore(Path.Combine(_root, "store")));
+        var sourcePath = Path.Combine(_root, "input.txt");
+        await File.WriteAllTextAsync(sourcePath, "hello");
+        var now = new DateTime(2026, 10, 13, 0, 0, 0, DateTimeKind.Utc);
+
+        var result = await store.PersistShareFilesAsync(
+        [
+            new UploadSourceFile(sourcePath, "a.txt", 5, "text/plain"),
+            new UploadSourceFile(sourcePath, "A.TXT", 5, "text/plain"),
+            new UploadSourceFile(sourcePath, "..\\evil.txt", 5, "text/plain"),
+            new UploadSourceFile(sourcePath, "../../evil.txt", 5, "text/plain"),
+        ], now, CancellationToken.None);
+
+        Assert.Equal(["a.txt", "A (2).TXT", "evil.txt", "evil (2).txt"], result.Files.Select(x => x.EntryName).ToArray());
+        Assert.All(result.Files, f => Assert.DoesNotContain("..", f.StoredRelativePath));
+    }
+
+    [Fact]
     public async Task PersistShareFiles_removes_partial_uploads_on_failure()
     {
         var storeRoot = Path.Combine(_root, "store");

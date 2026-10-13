@@ -742,7 +742,7 @@ test.describe('Public upload intake', () => {
     });
 
     await page.waitForURL(/\/account\/settings\?msg=/);
-    await expect(page.getByText('Upload code must be 2-64 letters or numbers.')).toBeVisible();
+    await expect(page.getByText('Upload code must be 8-64 letters or numbers.')).toBeVisible();
   });
 
 });

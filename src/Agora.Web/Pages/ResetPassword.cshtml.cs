@@ -19,6 +19,8 @@ public class ResetPasswordModel(AuthService authService) : PageModel
             return Redirect("/");
         }
 
+        // The emailed link carries the token in the query string: do not pass it on in a Referer.
+        Response.Headers["Referrer-Policy"] = "no-referrer";
         Email = Request.Query["email"].ToString();
         Token = Request.Query["token"].ToString();
         CanSubmit = !string.IsNullOrWhiteSpace(Email) && !string.IsNullOrWhiteSpace(Token);
@@ -29,6 +31,7 @@ public class ResetPasswordModel(AuthService authService) : PageModel
 
     public async Task<IActionResult> OnPostAsync(CancellationToken ct)
     {
+        Response.Headers["Referrer-Policy"] = "no-referrer";
         var email = Request.Form["email"].ToString();
         var token = Request.Form["token"].ToString();
         var newPassword = Request.Form["newPassword"].ToString();
@@ -36,15 +39,26 @@ public class ResetPasswordModel(AuthService authService) : PageModel
 
         if (!string.Equals(newPassword, confirmPassword, StringComparison.Ordinal))
         {
-            return RedirectToPage("/ResetPassword", new { email, token, msg = "Passwords do not match" });
+            return RetryPage(email, token, "Passwords do not match");
         }
 
         var result = await authService.ResetPasswordAsync(email, token, newPassword, ct);
         if (!result.Success)
         {
-            return RedirectToPage("/ResetPassword", new { email, token, msg = result.Error });
+            return RetryPage(email, token, result.Error);
         }
 
         return Redirect("/login?msg=Password%20updated.%20You%20can%20sign%20in");
+    }
+
+    // Re-render with the token in the hidden form field rather than round-tripping it through a redirect URL.
+    private IActionResult RetryPage(string email, string token, string message)
+    {
+        Email = email;
+        Token = token;
+        CanSubmit = !string.IsNullOrWhiteSpace(Email) && !string.IsNullOrWhiteSpace(Token);
+        ViewData["Title"] = "Reset Password";
+        ViewData["Message"] = message;
+        return Page();
     }
 }
