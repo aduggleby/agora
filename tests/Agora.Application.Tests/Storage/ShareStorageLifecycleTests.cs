@@ -462,13 +462,19 @@ public sealed class ShareStorageLifecycleTests : IAsyncLifetime
             }
         };
 
-    private ShareManager CreateManager() => new(
-        _db,
-        Options.Create(new AgoraOptions { StorageRoot = StorageRoot }),
-        new ShareContentStore(_store),
-        _store,
-        new NoopBackgroundJobClient(),
-        NullLogger<ShareManager>.Instance);
+    private ShareManager CreateManager()
+    {
+        var options = new AgoraOptions { StorageRoot = StorageRoot };
+        return new ShareManager(
+            _db,
+            Options.Create(options),
+            new ShareContentStore(_store),
+            _store,
+            new NoopBackgroundJobClient(),
+            new KeyedAsyncLock(),
+            new ScratchSpaceMonitor(options, StorageProvider.FileSystem, _ => long.MaxValue, _ => 0, TimeProvider.System),
+            NullLogger<ShareManager>.Instance);
+    }
 
     private SharePreviewJobService CreatePreviewService(IBackgroundJobClient? jobs = null, AgoraPreviewOptions? previews = null)
     {

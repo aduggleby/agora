@@ -1,4 +1,7 @@
+using System.Globalization;
 using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Agora.Application.Abstractions;
 using Agora.Application.Models;
@@ -24,6 +27,8 @@ public sealed class ShareManager(
     IShareContentStore contentStore,
     IObjectStore objectStore,
     IBackgroundJobClient backgroundJobs,
+    KeyedAsyncLock draftLocks,
+    ScratchSpaceMonitor scratchSpace,
     ILogger<ShareManager> logger)
 {
     public const string UploadPurposeShareFile = "share_file";
@@ -87,7 +92,8 @@ public sealed class ShareManager(
         string? BackgroundImageUrl,
         string? BackgroundUploadId,
         string? BackgroundColorHex,
-        string? ContainerPosition);
+        string? ContainerPosition,
+        bool PublicUpload = false);
 
     private readonly AgoraOptions _options = options.Value;
 
@@ -114,6 +120,12 @@ public sealed class ShareManager(
         var downloadPassword = string.IsNullOrWhiteSpace(command.DownloadPassword)
             ? null
             : command.DownloadPassword;
+        // The archive (and its encrypted copy) is built in scratch, and with the FileSystem store the originals and
+        // the archive land on the same volume: hold that demand against the budget for the whole build.
+        using var scratchReservation = scratchSpace.Reserve(scratchSpace.ArchiveDemand(
+            command.Files.Sum(x => Math.Max(0, x.OriginalSizeBytes)),
+            downloadPassword is not null,
+            command.TemplateMode == TemplateMode.PerUpload ? command.TemplateBackgroundFile?.OriginalSizeBytes ?? 0 : 0));
         // Every durable object written below is tracked so a failure at any step (including the DB save and
         // cancellation) removes it again; scratch files are always deleted.
         string? shareContentRelativePath = null;
@@ -294,6 +306,28 @@ public sealed class ShareManager(
     /// A save can commit even though it reports a failure (lost acknowledgement), so compensation first checks with a
     /// fresh context whether any attempted share row exists. True when one exists or the check itself fails.
     /// </summary>
+    /// <summary>
+    /// Creates a share received through the owner's upload link. The owner's daily quota is re-checked against the
+    /// committed shares under a per-owner lock that is held until this share is committed too, so the endpoint's
+    /// fast-path check cannot be raced by submissions that were admitted before an earlier job finished.
+    /// </summary>
+    public async Task<CreateShareResult> CreateReceivedShareAsync(CreateShareCommand command, CancellationToken cancellationToken)
+    {
+        var owner = EmailAddress.Normalize(command.UploaderEmail);
+        var incomingBytes = command.Files.Sum(x => Math.Max(0, x.OriginalSizeBytes));
+        using (await draftLocks.LockAsync($"received-quota:{owner}", cancellationToken))
+        {
+            var usage = await GetReceivedShareUsageAsync(owner, DateTime.UtcNow.AddHours(-24), cancellationToken);
+            var error = PublicUploadPolicy.CheckDailyQuota(usage.Count, usage.Bytes, incomingBytes, _options.PublicUploads);
+            if (error is not null)
+            {
+                throw new UploadLimitException(UploadLimitKind.DailyQuotaExceeded, error);
+            }
+
+            return await CreateShareAsync(command, cancellationToken);
+        }
+    }
+
     private async Task<bool> IsAnyShareCommittedAsync(IReadOnlyList<Guid> shareIds)
     {
         if (shareIds.Count == 0)
@@ -685,31 +719,113 @@ public sealed class ShareManager(
         string uploadPurpose = UploadPurposeShareFile)
     {
         var normalizedPurpose = NormalizeUploadPurpose(uploadPurpose);
+        var isShareFile = string.Equals(normalizedPurpose, UploadPurposeShareFile, StringComparison.Ordinal);
+        if (!TryNormalizeDraftShareId(draftShareId, out draftShareId))
+        {
+            throw new InvalidOperationException("draftShareId is invalid.");
+        }
+
+        // The whole stage runs under the draft lock, for every purpose: the draft is re-validated here because the
+        // request was admitted before its body was buffered and the draft may have been finalized or swept since;
+        // per-draft count and bytes are enforced on what is already on disk; the slot marker is claimed before the
+        // payload is written; and the sweep (same lock) can never remove the draft underneath an upload.
+        using (await draftLocks.LockAsync(DraftLockKey(draftShareId), cancellationToken))
+        {
+            var draft = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
+            if (draft is null || !string.Equals(draft.UploaderEmail, uploaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                throw new UploadLimitException(UploadLimitKind.DraftClosed, "This upload is no longer open; reload the page to start a new one.");
+            }
+
+            if (IsDraftSealed(draftShareId))
+            {
+                throw new UploadLimitException(UploadLimitKind.DraftSealed, "This upload was already submitted; start a new one to send more files.");
+            }
+
+            string? markerDirectory = null;
+            if (isShareFile)
+            {
+                var totals = ReadDraftStagedTotals(draftShareId, GetStagingRoot(normalizedPurpose));
+                if (totals.Count >= _options.MaxFilesPerShare)
+                {
+                    throw new UploadLimitException(
+                        UploadLimitKind.TooManyFiles,
+                        $"Too many files. Max {_options.MaxFilesPerShare} per share.");
+                }
+
+                if (totals.Bytes + originalSizeBytes > _options.MaxTotalUploadBytes)
+                {
+                    throw new UploadLimitException(
+                        UploadLimitKind.TooManyBytes,
+                        $"Total upload size exceeds the limit of {FormatBytes(_options.MaxTotalUploadBytes)} per share.");
+                }
+
+                markerDirectory = GetDraftStagedIndexDirectory(draftShareId);
+            }
+
+            var staged = await WriteStagedUploadAsync(uploaderEmail, draftShareId, originalFileName, originalSizeBytes, source, normalizedPurpose, markerDirectory, cancellationToken);
+            await TouchDraftAsync(draftShareId, cancellationToken);
+            return staged;
+        }
+    }
+
+    /// <summary>Reserves scratch, streams the payload and writes metadata last (metadata present = upload complete).</summary>
+    private async Task<StagedUploadFile> WriteStagedUploadAsync(
+        string uploaderEmail,
+        string draftShareId,
+        string originalFileName,
+        long originalSizeBytes,
+        Stream source,
+        string normalizedPurpose,
+        string? draftMarkerDirectory,
+        CancellationToken cancellationToken)
+    {
+        using var reservation = scratchSpace.Reserve(originalSizeBytes);
+
         var uploadId = Guid.NewGuid().ToString("N");
         var stagingDirectory = Path.Combine(GetStagingRoot(normalizedPurpose), uploadId);
-        Directory.CreateDirectory(stagingDirectory);
-
         var sanitizedName = ArchiveNameResolver.Sanitize(originalFileName);
         var payloadPath = Path.Combine(stagingDirectory, "payload.bin");
         var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
+        var draftMarkerPath = draftMarkerDirectory is null ? null : Path.Combine(draftMarkerDirectory, uploadId);
 
-        await using (var destination = File.Create(payloadPath))
+        StagedUploadMetadata metadata;
+        try
         {
-            await source.CopyToAsync(destination, cancellationToken);
+            Directory.CreateDirectory(stagingDirectory);
+            if (draftMarkerPath is not null)
+            {
+                // The marker is valid while the staging directory exists; it holds the declared size.
+                Directory.CreateDirectory(draftMarkerDirectory!);
+                await File.WriteAllTextAsync(draftMarkerPath, originalSizeBytes.ToString(CultureInfo.InvariantCulture), cancellationToken);
+            }
+
+            await using (var destination = File.Create(payloadPath))
+            {
+                await source.CopyToAsync(destination, cancellationToken);
+            }
+
+            metadata = new StagedUploadMetadata(
+                UploadId: uploadId,
+                UploaderEmail: uploaderEmail.Trim(),
+                DraftShareId: draftShareId,
+                OriginalFileName: sanitizedName,
+                OriginalSizeBytes: originalSizeBytes,
+                // Derived from the extension only; the multipart Content-Type the client sent is never trusted.
+                ContentType: ContentTypePolicy.FromFileName(sanitizedName),
+                CreatedAtUtc: DateTime.UtcNow,
+                UploadPurpose: normalizedPurpose);
+
+            await File.WriteAllTextAsync(metadataPath, JsonSerializer.Serialize(metadata), cancellationToken);
+            reservation.Commit();
         }
-
-        var metadata = new StagedUploadMetadata(
-            UploadId: uploadId,
-            UploaderEmail: uploaderEmail.Trim(),
-            DraftShareId: draftShareId,
-            OriginalFileName: sanitizedName,
-            OriginalSizeBytes: originalSizeBytes,
-            // Derived from the extension only; the multipart Content-Type the client sent is never trusted.
-            ContentType: ContentTypePolicy.FromFileName(sanitizedName),
-            CreatedAtUtc: DateTime.UtcNow,
-            UploadPurpose: normalizedPurpose);
-
-        await File.WriteAllTextAsync(metadataPath, JsonSerializer.Serialize(metadata), cancellationToken);
+        catch
+        {
+            // Release the claimed slot and partial payload; the sweep would otherwise hold them for the retention.
+            TryDeleteDirectory(stagingDirectory);
+            ScratchFiles.TryDelete(draftMarkerPath);
+            throw;
+        }
 
         return new StagedUploadFile(
             UploadId: uploadId,
@@ -913,7 +1029,352 @@ public sealed class ShareManager(
         }
 
         Directory.Delete(stagingDirectory, recursive: true);
+        if (TryNormalizeDraftShareId(draftShareId, out var normalizedDraftShareId))
+        {
+            // Free the per-draft slot right away instead of waiting for the next count to notice.
+            ScratchFiles.TryDelete(Path.Combine(GetDraftStagedIndexDirectory(normalizedDraftShareId), normalizedUploadId));
+        }
+
         return true;
+    }
+
+    private sealed record DraftStagedTotals(int Count, long Bytes);
+
+    /// <summary>
+    /// Files and bytes currently staged for a draft, read from the per-draft slot markers. A marker whose staging
+    /// directory is gone (removed, swept or finalized) is dropped on the spot.
+    /// </summary>
+    private DraftStagedTotals ReadDraftStagedTotals(string draftShareId, string stagingRoot)
+    {
+        var indexDirectory = GetDraftStagedIndexDirectory(draftShareId);
+        if (!Directory.Exists(indexDirectory))
+        {
+            return new DraftStagedTotals(0, 0);
+        }
+
+        var count = 0;
+        long bytes = 0;
+        foreach (var markerPath in Directory.EnumerateFiles(indexDirectory))
+        {
+            var uploadId = Path.GetFileName(markerPath);
+            if (!Guid.TryParseExact(uploadId, "N", out _) || !Directory.Exists(Path.Combine(stagingRoot, uploadId)))
+            {
+                ScratchFiles.TryDelete(markerPath);
+                continue;
+            }
+
+            count++;
+            try
+            {
+                if (long.TryParse(File.ReadAllText(markerPath), NumberStyles.Integer, CultureInfo.InvariantCulture, out var size))
+                {
+                    bytes += Math.Max(0, size);
+                }
+            }
+            catch (IOException)
+            {
+                // Unreadable marker: the file still counts, its bytes do not.
+            }
+        }
+
+        return new DraftStagedTotals(count, bytes);
+    }
+
+    /// <summary>
+    /// Opens (or touches) the draft an anonymous visitor stages into through an upload link. A new draft counts
+    /// against the open-draft caps of the upload code and of the client address; an existing draft is just touched.
+    /// </summary>
+    public async Task<string> EnsurePublicUploadDraftAsync(
+        string uploaderEmail,
+        string? requestedDraftShareId,
+        string uploadToken,
+        string clientAddress,
+        CancellationToken cancellationToken)
+    {
+        var normalizedUploader = uploaderEmail.Trim();
+        if (TryNormalizeDraftShareId(requestedDraftShareId, out var existingId) &&
+            await ReadDraftMetadataAsync(existingId, cancellationToken) is { } existing &&
+            existing.LastActivityUtc > DateTime.UtcNow - DraftRetention(existing.PublicUpload))
+        {
+            // Already open and counted; this also verifies ownership and refuses sealed drafts. A draft idle for
+            // longer than the retention is not counted any more, so reviving it goes through admission again.
+            return await EnsureDraftShareAsync(normalizedUploader, existingId, cancellationToken, publicUpload: true);
+        }
+
+        var tokenHash = Sha256Hex(uploadToken.Trim());
+        var addressHash = Sha256Hex(string.IsNullOrWhiteSpace(clientAddress) ? "unknown" : clientAddress.Trim());
+        var limits = _options.PublicUploads;
+        using (await draftLocks.LockAsync("public-upload-drafts", cancellationToken))
+        {
+            if (limits.MaxOpenDraftsPerToken > 0 &&
+                await CountOpenDraftsAsync(GetDraftIndexDirectory("token", tokenHash), cancellationToken) >= limits.MaxOpenDraftsPerToken)
+            {
+                throw new UploadLimitException(
+                    UploadLimitKind.TooManyOpenDrafts,
+                    "This upload link has too many uploads in progress. Please try again later.");
+            }
+
+            if (limits.MaxOpenDraftsPerIp > 0 &&
+                await CountOpenDraftsAsync(GetDraftIndexDirectory("ip", addressHash), cancellationToken) >= limits.MaxOpenDraftsPerIp)
+            {
+                throw new UploadLimitException(
+                    UploadLimitKind.TooManyOpenDrafts,
+                    "Too many uploads are in progress from your network. Please try again later.");
+            }
+
+            var draftShareId = await EnsureDraftShareAsync(normalizedUploader, requestedDraftShareId, cancellationToken, publicUpload: true);
+            WriteDraftIndexMarker("token", tokenHash, draftShareId);
+            WriteDraftIndexMarker("ip", addressHash, draftShareId);
+            return draftShareId;
+        }
+    }
+
+    /// <summary>Shares this account received through its upload link since <paramref name="sinceUtc"/>, with their total original bytes.</summary>
+    public async Task<ReceivedShareUsage> GetReceivedShareUsageAsync(string ownerEmail, DateTime sinceUtc, CancellationToken cancellationToken)
+    {
+        var normalizedOwner = EmailAddress.Normalize(ownerEmail);
+        // Received shares are the ones carrying a sender address; deleted ones still count (the cost was incurred).
+        var received = db.Shares.Where(x => x.UploaderEmail == normalizedOwner && x.SenderEmail != null && x.CreatedAtUtc >= sinceUtc);
+        var count = await received.CountAsync(cancellationToken);
+        if (count == 0)
+        {
+            return new ReceivedShareUsage(0, 0);
+        }
+
+        var bytes = await received.SelectMany(x => x.Files).SumAsync(x => x.OriginalSizeBytes, cancellationToken);
+        return new ReceivedShareUsage(count, bytes);
+    }
+
+    public sealed record ReceivedShareUsage(int Count, long Bytes);
+
+    private async Task<int> CountOpenDraftsAsync(string indexDirectory, CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(indexDirectory))
+        {
+            return 0;
+        }
+
+        var cutoff = DateTime.UtcNow - DraftRetention(publicUpload: true);
+        var open = 0;
+        foreach (var markerPath in Directory.EnumerateFiles(indexDirectory))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var draftShareId = Path.GetFileName(markerPath);
+            if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId) || !Directory.Exists(GetDraftDirectory(normalizedId)))
+            {
+                ScratchFiles.TryDelete(markerPath);
+                continue;
+            }
+
+            var metadata = await ReadDraftMetadataAsync(normalizedId, cancellationToken);
+            var lastActivityUtc = metadata?.LastActivityUtc ?? Directory.GetLastWriteTimeUtc(GetDraftDirectory(normalizedId));
+            if (lastActivityUtc > cutoff)
+            {
+                open++;
+            }
+        }
+
+        return open;
+    }
+
+    /// <summary>
+    /// Marks the draft as submitted: nothing can be staged into it afterwards and a second submission is refused.
+    /// Returns false when it was already sealed.
+    /// </summary>
+    public async Task<bool> SealDraftAsync(string uploaderEmail, string draftShareId, CancellationToken cancellationToken)
+    {
+        if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId))
+        {
+            throw new InvalidOperationException("draftShareId is invalid.");
+        }
+
+        using (await draftLocks.LockAsync(DraftLockKey(normalizedId), cancellationToken))
+        {
+            var metadata = await ReadDraftMetadataAsync(normalizedId, cancellationToken);
+            if (metadata is null || !string.Equals(metadata.UploaderEmail, uploaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Draft share does not belong to the current user.");
+            }
+
+            if (IsDraftSealed(normalizedId))
+            {
+                return false;
+            }
+
+            await File.WriteAllTextAsync(GetDraftSealPath(normalizedId), DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture), cancellationToken);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Seals the draft and runs <paramref name="enqueue"/> (the Hangfire enqueue). Returns false when the draft was
+    /// already submitted. If enqueueing throws the seal is removed again so the sender can retry, and the failure is
+    /// reported as a retryable 503.
+    /// </summary>
+    public async Task<bool> SealDraftForSubmissionAsync(string uploaderEmail, string draftShareId, Func<Task> enqueue, CancellationToken cancellationToken)
+    {
+        if (!await SealDraftAsync(uploaderEmail, draftShareId, cancellationToken))
+        {
+            return false;
+        }
+
+        try
+        {
+            await enqueue();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Queueing share creation for draft {DraftShareId} failed; the draft was unsealed for a retry", draftShareId);
+            await UnsealDraftAsync(uploaderEmail, draftShareId, CancellationToken.None);
+            throw new UploadLimitException(
+                UploadLimitKind.QueueUnavailable,
+                "The upload could not be queued for processing right now. Please try again in a moment.");
+        }
+    }
+
+    public async Task UnsealDraftAsync(string uploaderEmail, string draftShareId, CancellationToken cancellationToken)
+    {
+        if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId))
+        {
+            return;
+        }
+
+        using (await draftLocks.LockAsync(DraftLockKey(normalizedId), cancellationToken))
+        {
+            var metadata = await ReadDraftMetadataAsync(normalizedId, cancellationToken);
+            if (metadata is not null && string.Equals(metadata.UploaderEmail, uploaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                ScratchFiles.TryDelete(GetDraftSealPath(normalizedId));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Removes everything a draft left in scratch: every staged upload that references it (submitted or not, any
+    /// purpose), its slot markers and the draft directory itself. Open-draft index markers go stale and are swept.
+    /// </summary>
+    public async Task<int> FinalizeDraftAsync(string uploaderEmail, string draftShareId, CancellationToken cancellationToken)
+    {
+        if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId))
+        {
+            return 0;
+        }
+
+        using (await draftLocks.LockAsync(DraftLockKey(normalizedId), cancellationToken))
+        {
+            var removed = await DeleteStagedUploadsForDraftAsync(uploaderEmail, normalizedId, cancellationToken);
+            var metadata = await ReadDraftMetadataAsync(normalizedId, cancellationToken);
+            if (metadata is not null && string.Equals(metadata.UploaderEmail, uploaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                TryDeleteDirectory(GetDraftDirectory(normalizedId));
+            }
+
+            return removed;
+        }
+    }
+
+    public bool IsDraftSealed(string draftShareId)
+    {
+        return TryNormalizeDraftShareId(draftShareId, out var normalizedId) && File.Exists(GetDraftSealPath(normalizedId));
+    }
+
+    private string GetDraftSealPath(string draftShareId) => Path.Combine(GetDraftDirectory(draftShareId), "sealed");
+
+    private static string DraftLockKey(string draftShareId) => $"draft:{draftShareId}";
+
+    private TimeSpan DraftRetention(bool publicUpload)
+    {
+        var hours = publicUpload ? _options.PublicUploads.DraftRetentionHours : _options.ZombieUploadRetentionHours;
+        return TimeSpan.FromHours(Math.Abs(hours));
+    }
+
+    /// <summary>Refreshes the draft's last activity (caller holds the draft lock).</summary>
+    private async Task TouchDraftAsync(string draftShareId, CancellationToken cancellationToken)
+    {
+        var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
+        if (metadata is not null)
+        {
+            await WriteDraftMetadataAsync(metadata with { LastActivityUtc = DateTime.UtcNow }, cancellationToken);
+        }
+    }
+
+    private string GetDraftIndexDirectory(string kind, string hash)
+    {
+        return Path.Combine(_options.StorageRoot, "uploads", "draft-index", kind, hash);
+    }
+
+    private void WriteDraftIndexMarker(string kind, string hash, string draftShareId)
+    {
+        var directory = Directory.CreateDirectory(GetDraftIndexDirectory(kind, hash)).FullName;
+        File.WriteAllText(Path.Combine(directory, draftShareId), string.Empty);
+    }
+
+    /// <summary>Removes draft-index markers whose draft is gone and the hash directories left empty by that.</summary>
+    private int SweepDraftIndex(CancellationToken cancellationToken)
+    {
+        var indexRoot = Path.Combine(_options.StorageRoot, "uploads", "draft-index");
+        if (!Directory.Exists(indexRoot))
+        {
+            return 0;
+        }
+
+        var removed = 0;
+        foreach (var kindDirectory in Directory.EnumerateDirectories(indexRoot))
+        {
+            foreach (var hashDirectory in Directory.EnumerateDirectories(kindDirectory))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                foreach (var markerPath in Directory.EnumerateFiles(hashDirectory))
+                {
+                    var draftShareId = Path.GetFileName(markerPath);
+                    if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId) || !Directory.Exists(GetDraftDirectory(normalizedId)))
+                    {
+                        ScratchFiles.TryDelete(markerPath);
+                        removed++;
+                    }
+                }
+
+                if (!Directory.EnumerateFileSystemEntries(hashDirectory).Any())
+                {
+                    TryDeleteDirectory(hashDirectory);
+                }
+            }
+        }
+
+        return removed;
+    }
+
+    private static string Sha256Hex(string value)
+    {
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        const long gb = 1024L * 1024 * 1024;
+        const long mb = 1024L * 1024;
+        return bytes >= gb
+            ? $"{bytes / (double)gb:0.#} GB"
+            : $"{Math.Max(1, bytes / mb)} MB";
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+            // Swept later by the zombie cleanup.
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     public async Task<int> DeleteStagedUploadsForDraftAsync(
@@ -982,7 +1443,7 @@ public sealed class ShareManager(
 
     public async Task<int> CleanupZombieUploadsAsync(CancellationToken cancellationToken)
     {
-        var staleDraftIds = await CleanupStaleDraftSharesAsync(cancellationToken);
+        var staleDrafts = await CleanupStaleDraftSharesAsync(cancellationToken);
         var cutoff = DateTime.UtcNow.AddHours(-Math.Abs(_options.ZombieUploadRetentionHours));
         var removed = 0;
         foreach (var stagingRoot in GetAllStagingRoots())
@@ -1017,9 +1478,10 @@ public sealed class ShareManager(
                     }
                 }
 
-                var isInvalid = !File.Exists(metadataPath) || !File.Exists(payloadPath);
-                var isStaleDraftUpload = metadataPath is not null && IsUploadForStaleDraft(metadataPath, staleDraftIds, cancellationToken);
-                if (isInvalid || isStaleDraftUpload || createdAtUtc <= cutoff)
+                // A directory without metadata is either an upload still streaming in (payload first, metadata last)
+                // or a crashed one; only age tells them apart, so incomplete directories are swept by age like the
+                // rest. Uploads of stale drafts were already removed together with their draft, under its lock.
+                if (createdAtUtc <= cutoff)
                 {
                     Directory.Delete(stagingDirectory, recursive: true);
                     removed++;
@@ -1027,18 +1489,19 @@ public sealed class ShareManager(
             }
         }
 
-        return removed + staleDraftIds.Count + SweepStaleScratchFiles(cutoff, cancellationToken);
+        return removed + staleDrafts + SweepStaleScratchFiles(cutoff, cancellationToken) + SweepDraftIndex(cancellationToken);
     }
 
     /// <summary>
-    /// Deletes scratch files (under tmp/, including ASP.NET's tmp/aspnet buffers) and preview .lock markers older than
-    /// the cutoff. Only files are removed, so in-use directories such as tmp/aspnet survive.
+    /// Deletes scratch files (under tmp/, including ASP.NET's tmp/aspnet buffers), share-creation status files and
+    /// preview .lock markers older than the cutoff. Only files are removed, so in-use directories such as tmp/aspnet survive.
     /// </summary>
     private int SweepStaleScratchFiles(DateTime cutoffUtc, CancellationToken cancellationToken)
     {
         var candidates = new[]
         {
             (Root: ScratchFiles.Root(_options.StorageRoot), Pattern: "*"),
+            (Root: Path.Combine(_options.StorageRoot, "uploads", "share-create-status"), Pattern: "*.json"),
             (Root: Path.Combine(_options.StorageRoot, "previews"), Pattern: "*.lock")
         };
 
@@ -1064,36 +1527,49 @@ public sealed class ShareManager(
         return removed;
     }
 
-    public async Task<string> EnsureDraftShareAsync(string uploaderEmail, string? requestedDraftShareId, CancellationToken cancellationToken)
+    public async Task<string> EnsureDraftShareAsync(
+        string uploaderEmail,
+        string? requestedDraftShareId,
+        CancellationToken cancellationToken,
+        bool publicUpload = false)
     {
         var normalizedUploader = uploaderEmail.Trim();
         var draftShareId = TryNormalizeDraftShareId(requestedDraftShareId, out var normalizedId)
             ? normalizedId
             : Guid.NewGuid().ToString("N");
-        var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
-        if (metadata is not null && !string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+        using (await draftLocks.LockAsync(DraftLockKey(draftShareId), cancellationToken))
         {
-            throw new InvalidOperationException("Draft share does not belong to the current user.");
+            var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
+            if (metadata is not null && !string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Draft share does not belong to the current user.");
+            }
+
+            if (metadata is not null && IsDraftSealed(draftShareId))
+            {
+                throw new UploadLimitException(UploadLimitKind.DraftSealed, "This upload was already submitted; start a new one to send more files.");
+            }
+
+            var now = DateTime.UtcNow;
+            var next = metadata is null
+                ? new DraftShareMetadata(
+                    DraftShareId: draftShareId,
+                    UploaderEmail: normalizedUploader,
+                    LastActivityUtc: now,
+                    TemplateMode: "account_default",
+                    Title: string.Empty,
+                    H1: string.Empty,
+                    Description: string.Empty,
+                    BackgroundImageUrl: null,
+                    BackgroundUploadId: null,
+                    BackgroundColorHex: null,
+                    ContainerPosition: "center",
+                    PublicUpload: publicUpload)
+                : metadata with { LastActivityUtc = now };
+
+            await WriteDraftMetadataAsync(next, cancellationToken);
+            return draftShareId;
         }
-
-        var now = DateTime.UtcNow;
-        var next = metadata is null
-            ? new DraftShareMetadata(
-                DraftShareId: draftShareId,
-                UploaderEmail: normalizedUploader,
-                LastActivityUtc: now,
-                TemplateMode: "account_default",
-                Title: string.Empty,
-                H1: string.Empty,
-                Description: string.Empty,
-                BackgroundImageUrl: null,
-                BackgroundUploadId: null,
-                BackgroundColorHex: null,
-                ContainerPosition: "center")
-            : metadata with { LastActivityUtc = now };
-
-        await WriteDraftMetadataAsync(next, cancellationToken);
-        return draftShareId;
     }
 
     public async Task<DraftTemplateState> GetDraftTemplateAsync(string uploaderEmail, string draftShareId, CancellationToken cancellationToken)
@@ -1105,7 +1581,11 @@ public sealed class ShareManager(
         }
 
         var updated = metadata with { LastActivityUtc = DateTime.UtcNow };
-        await WriteDraftMetadataAsync(updated, cancellationToken);
+        using (await draftLocks.LockAsync(DraftLockKey(updated.DraftShareId), cancellationToken))
+        {
+            await WriteDraftMetadataAsync(updated, cancellationToken);
+        }
+
         return new DraftTemplateState(
             draftShareId,
             string.IsNullOrWhiteSpace(updated.TemplateMode) ? "account_default" : updated.TemplateMode,
@@ -1127,40 +1607,53 @@ public sealed class ShareManager(
         CancellationToken cancellationToken)
     {
         var normalizedUploader = uploaderEmail.Trim();
-        var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
-        if (metadata is not null && !string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+        if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId))
         {
-            throw new InvalidOperationException("Draft share does not belong to the current user.");
+            throw new InvalidOperationException("draftShareId is invalid.");
         }
 
-        var next = new DraftShareMetadata(
-            DraftShareId: draftShareId,
-            UploaderEmail: normalizedUploader,
-            LastActivityUtc: DateTime.UtcNow,
-            TemplateMode: string.Equals(templateMode, "per_upload", StringComparison.OrdinalIgnoreCase) ? "per_upload" : "account_default",
-            Title: template.Title,
-            H1: template.H1,
-            Description: template.Description,
-            BackgroundImageUrl: template.BackgroundImageUrl,
-            BackgroundUploadId: string.IsNullOrWhiteSpace(backgroundUploadId) ? null : backgroundUploadId.Trim(),
-            BackgroundColorHex: template.BackgroundColorHex,
-            ContainerPosition: NormalizeContainerPosition(template.ContainerPosition));
+        using (await draftLocks.LockAsync(DraftLockKey(normalizedId), cancellationToken))
+        {
+            var metadata = await ReadDraftMetadataAsync(normalizedId, cancellationToken);
+            if (metadata is not null && !string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Draft share does not belong to the current user.");
+            }
 
-        await WriteDraftMetadataAsync(next, cancellationToken);
+            var next = new DraftShareMetadata(
+                DraftShareId: normalizedId,
+                UploaderEmail: normalizedUploader,
+                LastActivityUtc: DateTime.UtcNow,
+                TemplateMode: string.Equals(templateMode, "per_upload", StringComparison.OrdinalIgnoreCase) ? "per_upload" : "account_default",
+                Title: template.Title,
+                H1: template.H1,
+                Description: template.Description,
+                BackgroundImageUrl: template.BackgroundImageUrl,
+                BackgroundUploadId: string.IsNullOrWhiteSpace(backgroundUploadId) ? null : backgroundUploadId.Trim(),
+                BackgroundColorHex: template.BackgroundColorHex,
+                ContainerPosition: NormalizeContainerPosition(template.ContainerPosition),
+                PublicUpload: metadata?.PublicUpload ?? false);
+
+            await WriteDraftMetadataAsync(next, cancellationToken);
+        }
     }
 
     public async Task DeleteDraftShareAsync(string uploaderEmail, string draftShareId, CancellationToken cancellationToken)
     {
-        var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
-        if (metadata is null || !string.Equals(metadata.UploaderEmail, uploaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
+        if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId))
         {
             return;
         }
 
-        var draftDirectory = GetDraftDirectory(draftShareId);
-        if (Directory.Exists(draftDirectory))
+        using (await draftLocks.LockAsync(DraftLockKey(normalizedId), cancellationToken))
         {
-            Directory.Delete(draftDirectory, recursive: true);
+            var metadata = await ReadDraftMetadataAsync(normalizedId, cancellationToken);
+            if (metadata is null || !string.Equals(metadata.UploaderEmail, uploaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            TryDeleteDirectory(GetDraftDirectory(normalizedId));
         }
     }
 
@@ -1308,6 +1801,12 @@ public sealed class ShareManager(
         return Path.Combine(GetDraftDirectory(draftShareId), "draft.json");
     }
 
+    /// <summary>One marker per staged file of the draft, named by upload id and holding the declared size.</summary>
+    private string GetDraftStagedIndexDirectory(string draftShareId)
+    {
+        return Path.Combine(GetDraftDirectory(draftShareId), "staged");
+    }
+
     private static bool TryNormalizeDraftShareId(string? raw, out string normalized)
     {
         normalized = string.Empty;
@@ -1358,55 +1857,51 @@ public sealed class ShareManager(
         await File.WriteAllTextAsync(metadataPath, json, cancellationToken);
     }
 
-    private async Task<HashSet<string>> CleanupStaleDraftSharesAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Removes drafts idle for longer than their retention together with the uploads staged for them, in one locked
+    /// section per draft: nothing staged into a draft revived after this section can be mistaken for stale.
+    /// </summary>
+    private async Task<int> CleanupStaleDraftSharesAsync(CancellationToken cancellationToken)
     {
         var draftsRoot = GetDraftsRoot();
         if (!Directory.Exists(draftsRoot))
         {
-            return [];
+            return 0;
         }
 
-        var staleCutoff = DateTime.UtcNow.AddHours(-24);
-        var removedDraftIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var removed = 0;
         foreach (var draftDirectory in Directory.EnumerateDirectories(draftsRoot))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var draftShareId = Path.GetFileName(draftDirectory);
-            var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
-            var lastActivityUtc = metadata?.LastActivityUtc ?? Directory.GetLastWriteTimeUtc(draftDirectory);
-            if (lastActivityUtc <= staleCutoff)
+            // Same lock as stage/refresh/finalize: activity is re-read under it, so an upload in progress or a
+            // refresh that happened while this sweep was waiting keeps the draft.
+            using (await draftLocks.LockAsync(DraftLockKey(draftShareId), cancellationToken))
             {
-                removedDraftIds.Add(draftShareId);
+                if (!Directory.Exists(draftDirectory))
+                {
+                    continue;
+                }
+
+                var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
+                var lastActivityUtc = metadata?.LastActivityUtc ?? Directory.GetLastWriteTimeUtc(draftDirectory);
+                var retention = DraftRetention(metadata?.PublicUpload ?? false);
+                if (lastActivityUtc > DateTime.UtcNow - retention)
+                {
+                    continue;
+                }
+
+                if (metadata is not null)
+                {
+                    removed += await DeleteStagedUploadsForDraftAsync(metadata.UploaderEmail, draftShareId, cancellationToken);
+                }
+
                 Directory.Delete(draftDirectory, recursive: true);
+                removed++;
             }
         }
 
-        return removedDraftIds;
-    }
-
-    private bool IsUploadForStaleDraft(string metadataPath, HashSet<string> staleDraftIds, CancellationToken cancellationToken)
-    {
-        if (staleDraftIds.Count == 0)
-        {
-            return false;
-        }
-
-        try
-        {
-            var json = File.ReadAllText(metadataPath);
-            var metadata = JsonSerializer.Deserialize<StagedUploadMetadata>(json);
-            if (metadata is null)
-            {
-                return false;
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-            return staleDraftIds.Contains(metadata.DraftShareId);
-        }
-        catch
-        {
-            return false;
-        }
+        return removed;
     }
 
     internal static bool IsShareTokenConflict(DbUpdateException ex)
@@ -1479,7 +1974,7 @@ public sealed class ShareManager(
             return null;
         }
 
-        if (await objectStore.GetInfoAsync(sourceKey, cancellationToken) is null)
+        if (await objectStore.GetInfoAsync(sourceKey, cancellationToken) is not { } sourceInfo)
         {
             logger.LogWarning(
                 "Cannot copy background marker because source object does not exist. Marker: {BackgroundMarker}",
@@ -1489,6 +1984,8 @@ public sealed class ShareManager(
 
         var backgroundKey = ShareBackgroundKey(zipRelativePath, sourceKey);
         uploadedKeys.Add(backgroundKey);
+        // With the FileSystem store the copy lands on the StorageRoot volume: budget it before writing.
+        using var backgroundReservation = scratchSpace.Reserve(scratchSpace.DurableDemand(sourceInfo.Length));
         await objectStore.CopyAsync(sourceKey, backgroundKey, cancellationToken);
         logger.LogInformation("Copied internal background from {SourceKey} to {TargetKey}", sourceKey, backgroundKey);
         return $"internal:{backgroundKey}";

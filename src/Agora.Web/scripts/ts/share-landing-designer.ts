@@ -108,7 +108,7 @@
     formData.append('file', file, file.name);
     formData.append('draftShareId', draftShareIdInput.value);
 
-    fetch('/api/uploads/stage-template-background', { method: 'POST', body: formData })
+    fetch(`/api/uploads/stage-template-background?draftShareId=${encodeURIComponent(draftShareIdInput.value)}`, { method: 'POST', body: formData })
       .then((response) => (response.ok ? response.json() : Promise.reject()))
       .then((json: { uploadId?: string; fileName?: string }) => {
         backgroundUploadIdInput.value = json.uploadId || '';

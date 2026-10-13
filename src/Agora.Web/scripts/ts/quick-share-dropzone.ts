@@ -89,7 +89,8 @@ import { readLimitsFromElement, validateFileSelection, showLimitDialog } from '.
     return new Promise<string>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       activeXhr = xhr;
-      xhr.open('POST', '/api/uploads/stage');
+      // Draft id travels in the query string so the server can run admission checks before reading the body.
+      xhr.open('POST', `/api/uploads/stage?draftShareId=${encodeURIComponent(draftShareId)}`);
       xhr.responseType = 'json';
 
       xhr.upload.addEventListener('progress', (event) => {

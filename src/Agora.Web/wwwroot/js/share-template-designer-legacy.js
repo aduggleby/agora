@@ -46,7 +46,8 @@
       if (draftShareIdInput?.value) {
         formData.append("draftShareId", draftShareIdInput.value);
       }
-      fetch("/api/uploads/stage-template-background", { method: "POST", body: formData }).then((response) => response.ok ? response.json() : Promise.reject(new Error("Upload failed"))).then((json) => {
+      const draftQuery = draftShareIdInput?.value ? `?draftShareId=${encodeURIComponent(draftShareIdInput.value)}` : "";
+      fetch(`/api/uploads/stage-template-background${draftQuery}`, { method: "POST", body: formData }).then((response) => response.ok ? response.json() : Promise.reject(new Error("Upload failed"))).then((json) => {
         const backgroundUploadId = json.uploadId || "";
         backgroundUploadIdInput.value = backgroundUploadId;
         if (uploadedPreviewUrl) URL.revokeObjectURL(uploadedPreviewUrl);

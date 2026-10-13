@@ -21,6 +21,53 @@ public sealed class AgoraOptions
     public AgoraAuthOptions Auth { get; set; } = new();
     public AgoraGeoLookupOptions GeoLookup { get; set; } = new();
     public AgoraRateLimitOptions RateLimits { get; set; } = new();
+    public AgoraPublicUploadOptions PublicUploads { get; set; } = new();
+    public AgoraScratchOptions Scratch { get; set; } = new();
+}
+
+/// <summary>
+/// Budgets for anonymous uploads through a personal upload link (/u/{code}). Every limit is enforced server-side
+/// before a byte is staged or a share is queued; the per-file and per-share limits above apply as well.
+/// </summary>
+public sealed class AgoraPublicUploadOptions
+{
+    /// <summary>Drafts one upload code may have open (staged but not yet submitted, younger than the zombie retention) at once.</summary>
+    public int MaxOpenDraftsPerToken { get; set; } = 20;
+
+    /// <summary>Open drafts one client IP address may have across all upload codes.</summary>
+    public int MaxOpenDraftsPerIp { get; set; } = 10;
+
+    /// <summary>
+    /// Hours an anonymous draft (and its staged files) is kept after its last activity. Shorter than
+    /// ZombieUploadRetentionHours, which still applies to drafts of signed-in users.
+    /// </summary>
+    public int DraftRetentionHours { get; set; } = 6;
+
+    /// <summary>Received shares one account may get through its upload code in any 24 hour window.</summary>
+    public int MaxSharesPerCodePerDay { get; set; } = 50;
+
+    /// <summary>Bytes of received shares one account may get through its upload code in any 24 hour window.</summary>
+    public long MaxBytesPerCodePerDay { get; set; } = 20L * 1024 * 1024 * 1024;
+
+    /// <summary>
+    /// Expiry of a received share when the owner's account default expiry cannot be resolved. Received shares use the
+    /// owner's default expiry (including "indefinite" when the owner chose it explicitly), never an implicit indefinite.
+    /// </summary>
+    public int DefaultExpiryDays { get; set; } = 30;
+}
+
+/// <summary>
+/// Limits for the local scratch area under StorageRoot (staged uploads, drafts, tmp). Checked before a request body
+/// is read and reserved while an upload is written or an archive is built; a request over a limit is rejected with
+/// 507 Insufficient Storage.
+/// </summary>
+public sealed class AgoraScratchOptions
+{
+    /// <summary>Largest total size of the scratch area; 0 = unlimited. Operators with a bounded volume should set it.</summary>
+    public long MaxBytes { get; set; } = 0;
+
+    /// <summary>Free space that must remain on the StorageRoot volume after the request; 0 disables the check.</summary>
+    public long MinFreeBytes { get; set; } = 1L * 1024 * 1024 * 1024;
 }
 
 /// <summary>

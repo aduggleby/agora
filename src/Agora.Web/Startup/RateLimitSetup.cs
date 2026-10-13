@@ -114,6 +114,12 @@ public static class RateLimitSetup
 
         options.AddPolicy(PublicUploadEndpoints, httpContext =>
         {
+            // E2E suites stage far more files from one address than a real client; don't throttle them.
+            if (isE2E)
+            {
+                return RateLimitPartition.GetNoLimiter("public-upload:e2e");
+            }
+
             return RateLimitPartition.GetFixedWindowLimiter(
                 partitionKey: $"public-upload:{ClientIp(httpContext)}",
                 factory: _ => new FixedWindowRateLimiterOptions

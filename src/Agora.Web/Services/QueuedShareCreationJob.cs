@@ -168,22 +168,8 @@ public sealed class QueuedShareCreationJob(
             var createDone = statusStore.UpdateStep(token, "create_share", "completed");
             await broadcaster.BroadcastAsync(createDone, ct);
 
-            try
-            {
-                foreach (var directoryPath in stagedUploads.Select(x => x.DirectoryPath).Distinct(StringComparer.Ordinal))
-                {
-                    if (Directory.Exists(directoryPath))
-                    {
-                        Directory.Delete(directoryPath, recursive: true);
-                    }
-                }
-            }
-            catch (Exception cleanupEx)
-            {
-                logger.LogWarning(cleanupEx, "Unable to delete one or more staged upload directories for token {Token}", payload.ShareToken);
-            }
-
-            await manager.DeleteDraftShareAsync(payload.UploaderEmail, payload.DraftShareId, ct);
+            // The draft is sealed, so everything it left in scratch (submitted or not) can go now.
+            await CleanupDraftScratchAsync(payload, ct);
             if (payload.ShowPreviews)
             {
                 var queuePreviewsActive = statusStore.UpdateStep(token, "queue_previews", "active", "Queuing preview generation...");
@@ -244,8 +230,26 @@ public sealed class QueuedShareCreationJob(
             {
                 performContext?.WriteLine($"Inner exception: {ex.InnerException.GetType().FullName}: {ex.InnerException.Message}");
             }
+            if (ex is UploadLimitException)
+            {
+                // Refused by a budget: nothing will ever be built from this draft, so free its scratch right away.
+                await CleanupDraftScratchAsync(payload, CancellationToken.None);
+            }
+
             var failed = statusStore.MarkFailed(token, ex.Message);
             await broadcaster.BroadcastAsync(failed, ct);
+        }
+    }
+
+    private async Task CleanupDraftScratchAsync(Payload payload, CancellationToken ct)
+    {
+        try
+        {
+            await manager.FinalizeDraftAsync(payload.UploaderEmail, payload.DraftShareId, ct);
+        }
+        catch (Exception cleanupEx)
+        {
+            logger.LogWarning(cleanupEx, "Unable to remove draft scratch for token {Token}; the zombie sweep will", payload.ShareToken);
         }
     }
 
@@ -366,7 +370,7 @@ public sealed class QueuedShareCreationJob(
                         $"Pre-attempt token diagnostics: exists={before.Exists} caseSensitiveMatches={before.CaseSensitiveMatchCount} caseInsensitiveMatches={before.CaseInsensitiveMatchCount} provider='{before.DatabaseProvider}' existingShareId='{before.ExistingShareId}' existingUploader='{before.ExistingShareUploader}'.");
                 }
 
-                return await manager.CreateShareAsync(new CreateShareCommand
+                var command = new CreateShareCommand
                 {
                     UploaderEmail = payload.UploaderEmail,
                     ShareToken = requestedToken,
@@ -390,7 +394,13 @@ public sealed class QueuedShareCreationJob(
                     TemplateContainerPosition = payload.TemplateContainerPosition,
                     TemplateBackgroundFile = templateBackgroundFile,
                     Files = uploadFiles
-                }, ct);
+                };
+
+                // Received shares (sent through the owner's upload link) are gated by the owner's daily quota, which the
+                // worker re-checks authoritatively under a per-owner lock.
+                return string.IsNullOrWhiteSpace(payload.SenderEmail)
+                    ? await manager.CreateShareAsync(command, ct)
+                    : await manager.CreateReceivedShareAsync(command, ct);
             }
             catch (InvalidOperationException ex) when (
                 requestedToken is not null &&

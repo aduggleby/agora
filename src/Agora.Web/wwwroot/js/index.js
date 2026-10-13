@@ -312,7 +312,7 @@
       return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         activeXhr = xhr;
-        xhr.open("POST", "/api/uploads/stage");
+        xhr.open("POST", `/api/uploads/stage?draftShareId=${encodeURIComponent(draftShareId)}`);
         xhr.responseType = "json";
         xhr.upload.addEventListener("progress", (event) => {
           if (!event.lengthComputable) return;

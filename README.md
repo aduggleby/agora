@@ -291,7 +291,50 @@ changed (see "Sessions").
 | `Agora__MaxFileSizeBytes` | `5368709120` | Per-file upload limit (5 GB) |
 | `Agora__MaxTotalUploadBytes` | `10737418240` | Per-share total upload limit (10 GB) |
 | `Agora__DownloadEventRetentionDays` | `90` | How long download-event records are kept |
-| `Agora__ZombieUploadRetentionHours` | `24` | Cleanup window for abandoned staged uploads |
+| `Agora__ZombieUploadRetentionHours` | `24` | Cleanup window for abandoned staged uploads, drafts and share-creation status files |
+
+API clients may also post files directly in the multipart body of `POST /api/shares` (the UI always stages first);
+that request body is bounded by `Agora__MaxTotalUploadBytes` (plus 1 MB of form overhead) and reserved against the
+scratch budget before it is read.
+
+`MaxFilesPerShare` and `MaxTotalUploadBytes` are enforced while files are staged (per draft, counted from what is
+already on disk), not only when the share is submitted, so an abandoned draft can never hold more than one share's worth
+of scratch. Submitting seals the draft: nothing more can be staged into it, a second submission is refused, and once the
+share is built everything the draft left in scratch (including files that were staged but not submitted) is removed.
+
+### Scratch space
+
+Staged uploads, drafts and archive building live on the local `StorageRoot` volume (also in S3 mode). Both checks run
+before a request body is read and the space is reserved while the upload is written or the archive is built; a request
+over a limit gets `507 Insufficient Storage`. With `Storage__Provider=FileSystem` the originals and the archive land on
+the same volume, so building a share is budgeted at three times its size (four with a download password); in S3 mode
+only the scratch zip (and the encrypted copy) is local.
+
+ASP.NET buffers each multipart upload to `<StorageRoot>/tmp/aspnet` before the file is copied into staging. One stage
+request is capped at `MaxFileSizeBytes` plus 1 MB and reserves its buffer against the scratch budget before the body is
+read, so the transient cost of that buffering is at most `MaxFileSizeBytes x concurrent uploads` on top of the staged
+files themselves, and bounded by `Scratch__MaxBytes` when set; size the volume for it. Background images copied into
+the FileSystem store are budgeted the same way.
+
+| Setting | Default | What it controls |
+| --- | --- | --- |
+| `Agora__Scratch__MaxBytes` | `0` (unlimited) | High-water mark for the scratch area (`uploads/staged*`, `uploads/drafts`, `tmp`). Operators with a bounded data volume should set it to what the volume can spare after durable content and logs; the size is re-measured at most every 30 s |
+| `Agora__Scratch__MinFreeBytes` | `1073741824` | Free space (1 GB) that must remain on the `StorageRoot` volume after the request; `0` disables the check |
+
+### Public upload links
+
+Anyone with an account's upload link (`/u/<code>`) can send files without signing in, so every budget below is enforced
+server-side in addition to the per-file and per-share limits above. Received shares use the owner's default expiry
+(Account > Share defaults); "indefinite" applies only when the owner chose it there.
+
+| Setting | Default | What it controls |
+| --- | --- | --- |
+| `Agora__PublicUploads__MaxOpenDraftsPerToken` | `20` | Drafts one upload code may have open at once (files staged but not submitted, younger than `ZombieUploadRetentionHours`) |
+| `Agora__PublicUploads__MaxOpenDraftsPerIp` | `10` | Open drafts one client IP address may have across all upload codes (addresses are indexed as SHA-256 hashes) |
+| `Agora__PublicUploads__DraftRetentionHours` | `6` | How long an anonymous draft and its staged files are kept after the last activity (drafts of signed-in users keep `ZombieUploadRetentionHours`). A draft idle for longer is no longer counted as open, and resuming it goes through the open-draft caps again |
+| `Agora__PublicUploads__MaxSharesPerCodePerDay` | `50` | Received shares one account may get through its upload link in any 24 hour window; `0` disables. Checked when the upload is submitted and again, authoritatively, by the worker before the share is committed |
+| `Agora__PublicUploads__MaxBytesPerCodePerDay` | `21474836480` | Bytes (20 GB) of received shares one account may get in any 24 hour window; `0` disables. Both daily budgets are counted per account, so rotating the code does not reset them |
+| `Agora__PublicUploads__DefaultExpiryDays` | `30` | Expiry of a received share when the owner's default expiry cannot be resolved (every account has one, 7 days unless changed, so this is a fallback) |
 
 ### Previews
 

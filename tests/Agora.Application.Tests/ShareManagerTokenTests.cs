@@ -1,5 +1,6 @@
 using Agora.Application.Abstractions;
 using Agora.Application.Models;
+using Agora.Application.Utilities;
 using Agora.Domain.Entities;
 using Agora.Infrastructure.Persistence;
 using Agora.Infrastructure.Services;
@@ -94,6 +95,7 @@ public sealed class ShareManagerTokenTests
         await using var harness = await TestHarness.CreateAsync();
         const string draftShareId = "11111111111111111111111111111111";
         const string uploader = "uploader@example.com";
+        await harness.Manager.EnsureDraftShareAsync(uploader, draftShareId, CancellationToken.None);
         using var fileStream = await harness.CreateUploadStreamAsync("document.txt", "hello");
         using var backgroundStream = await harness.CreateUploadStreamAsync("bg.png", "png-data");
 
@@ -128,6 +130,7 @@ public sealed class ShareManagerTokenTests
         await using var harness = await TestHarness.CreateAsync();
         const string draftShareId = "22222222222222222222222222222222";
         const string uploader = "uploader@example.com";
+        await harness.Manager.EnsureDraftShareAsync(uploader, draftShareId, CancellationToken.None);
         using var backgroundStream = await harness.CreateUploadStreamAsync("bg.webp", "webp-data");
 
         var stagedBackground = await harness.Manager.StageUploadAsync(
@@ -162,6 +165,7 @@ public sealed class ShareManagerTokenTests
         await using var harness = await TestHarness.CreateAsync();
         const string draftShareId = "33333333333333333333333333333333";
         const string uploader = "uploader@example.com";
+        await harness.Manager.EnsureDraftShareAsync(uploader, draftShareId, CancellationToken.None);
         using var htmlAsPng = await harness.CreateUploadStreamAsync("evil.png", "<script>alert(1)</script>");
         using var htmlFile = await harness.CreateUploadStreamAsync("page.html", "<html></html>");
         using var noExtension = await harness.CreateUploadStreamAsync("README", "plain");
@@ -261,10 +265,16 @@ public sealed class ShareManagerTokenTests
                 new ShareContentStore(objectStore),
                 objectStore,
                 new NoopBackgroundJobClient(),
+                new KeyedAsyncLock(),
+                UnlimitedScratch(appOptions.Value),
                 NullLogger<ShareManager>.Instance);
 
             return new TestHarness(connection, storageRoot, db, manager);
         }
+
+        // Temp volumes can be small; the scratch budget is tested on its own with injected providers.
+        private static ScratchSpaceMonitor UnlimitedScratch(AgoraOptions options) =>
+            new(options, StorageProvider.FileSystem, _ => long.MaxValue, _ => 0, TimeProvider.System);
 
         public async Task<UploadSourceFile> CreateUploadFileAsync(string fileName, string content)
         {

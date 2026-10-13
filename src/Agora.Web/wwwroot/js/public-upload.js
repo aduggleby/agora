@@ -202,7 +202,7 @@
       const ui = createRow(file);
       return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open("POST", "/api/public-uploads/stage");
+        xhr.open("POST", `/api/public-uploads/stage?uploadToken=${encodeURIComponent(uploadToken)}&draftShareId=${encodeURIComponent(draftShareId)}`);
         xhr.responseType = "json";
         xhr.upload.addEventListener("progress", (event) => {
           if (!event.lengthComputable) return;

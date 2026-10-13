@@ -429,7 +429,7 @@
       refreshState();
       const xhr = new XMLHttpRequest();
       activeRequests.add(xhr);
-      xhr.open("POST", "/api/uploads/stage");
+      xhr.open("POST", `/api/uploads/stage?draftShareId=${encodeURIComponent(draftShareIdInput.value)}`);
       xhr.responseType = "json";
       let settled = false;
       const finalize = () => {

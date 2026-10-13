@@ -37,10 +37,9 @@ async function createPreviewShare(page: Page, files: string[]): Promise<string> 
 
   const uploadIds: string[] = [];
   for (const filePath of files) {
-    const response = await page.request.post('/api/uploads/stage', {
+    const response = await page.request.post(`/api/uploads/stage?draftShareId=${encodeURIComponent(draftShareId)}`, {
+      headers: { 'X-CSRF-TOKEN': csrfToken },
       multipart: {
-        __RequestVerificationToken: csrfToken,
-        draftShareId,
         file: {
           name: path.basename(filePath),
           // Deliberately wrong on purpose: the server must ignore the declared type.
@@ -149,20 +148,18 @@ test('svg backgrounds are rejected on both upload routes', async ({ page, reques
   const { draftShareId, csrfToken } = await openNewShareDraft(page);
 
   // Share draft route: JSON 400.
-  const draftSvg = await page.request.post('/api/uploads/stage-template-background', {
+  const draftSvg = await page.request.post(`/api/uploads/stage-template-background?draftShareId=${encodeURIComponent(draftShareId)}`, {
+    headers: { 'X-CSRF-TOKEN': csrfToken },
     multipart: {
-      __RequestVerificationToken: csrfToken,
-      draftShareId,
       file: { name: 'bg.svg', mimeType: 'image/png', buffer: svgBuffer }
     }
   });
   expect(draftSvg.status()).toBe(400);
   expect(await draftSvg.text()).toContain('Only JPG, PNG, or WEBP');
 
-  const draftPng = await page.request.post('/api/uploads/stage-template-background', {
+  const draftPng = await page.request.post(`/api/uploads/stage-template-background?draftShareId=${encodeURIComponent(draftShareId)}`, {
+    headers: { 'X-CSRF-TOKEN': csrfToken },
     multipart: {
-      __RequestVerificationToken: csrfToken,
-      draftShareId,
       file: { name: 'bg.png', mimeType: 'image/svg+xml', buffer: await fs.readFile(pngPath) }
     }
   });

@@ -80,7 +80,7 @@
       const formData = new FormData();
       formData.append("file", file, file.name);
       formData.append("draftShareId", draftShareIdInput.value);
-      fetch("/api/uploads/stage-template-background", { method: "POST", body: formData }).then((response) => response.ok ? response.json() : Promise.reject()).then((json) => {
+      fetch(`/api/uploads/stage-template-background?draftShareId=${encodeURIComponent(draftShareIdInput.value)}`, { method: "POST", body: formData }).then((response) => response.ok ? response.json() : Promise.reject()).then((json) => {
         backgroundUploadIdInput.value = json.uploadId || "";
         if (uploadedPreviewUrl && uploadedPreviewUrl.startsWith("blob:")) {
           URL.revokeObjectURL(uploadedPreviewUrl);

@@ -289,11 +289,9 @@ test.describe('Public upload intake', () => {
 
     const uploadedIds: string[] = [];
     for (const filePath of files) {
-      const stageResponse = await anonPage.request.post('/api/public-uploads/stage', {
+      const stageResponse = await anonPage.request.post(`/api/public-uploads/stage?uploadToken=${encodeURIComponent(uploadToken)}&draftShareId=${encodeURIComponent(draftShareId)}`, {
+        headers: { 'X-CSRF-TOKEN': csrfToken },
         multipart: {
-          __RequestVerificationToken: csrfToken,
-          uploadToken,
-          draftShareId,
           file: {
             name: path.basename(filePath),
             mimeType: 'text/plain',
@@ -340,8 +338,13 @@ test.describe('Public upload intake', () => {
 
     const shareResponse = await request.get(`/api/shares/${encodeURIComponent(shareToken)}`);
     expect(shareResponse.ok()).toBeTruthy();
-    const sharePayload = await shareResponse.json() as { fileCount?: number };
+    const sharePayload = await shareResponse.json() as { fileCount?: number; expiresAtUtc?: string | null };
     expect(sharePayload.fileCount).toBe(2);
+    // Received shares follow the owner's default expiry (7 days for a new account), never an implicit indefinite.
+    expect(sharePayload.expiresAtUtc).toBeTruthy();
+    const expiresInMs = new Date(sharePayload.expiresAtUtc as string).getTime() - Date.now();
+    expect(expiresInMs).toBeGreaterThan(6 * 24 * 60 * 60 * 1000);
+    expect(expiresInMs).toBeLessThan(8 * 24 * 60 * 60 * 1000);
 
     const resolvedActionUrl = new URL(actionUrl, anonPage.url()).toString();
     await anonPage.goto(resolvedActionUrl, { waitUntil: 'domcontentloaded' });
@@ -389,11 +392,9 @@ test.describe('Public upload intake', () => {
     });
     expect(csrfToken).not.toBe('');
 
-    const stageResponse = await anonPage.request.post('/api/public-uploads/stage', {
+    const stageResponse = await anonPage.request.post(`/api/public-uploads/stage?uploadToken=${encodeURIComponent(uploadToken)}&draftShareId=${encodeURIComponent(draftShareId)}`, {
+      headers: { 'X-CSRF-TOKEN': csrfToken },
       multipart: {
-        __RequestVerificationToken: csrfToken,
-        uploadToken,
-        draftShareId,
         file: {
           name: path.basename(files[0]),
           mimeType: 'text/plain',
@@ -422,6 +423,57 @@ test.describe('Public upload intake', () => {
     });
     expect(createResponse.status()).toBe(400);
     expect(await createResponse.text()).toContain('senderEmail must be a valid email address.');
+    await anonPage.close();
+  });
+
+  test('stage endpoint refuses the file that would exceed max-per-share for a draft', async ({ browser, page, request }, testInfo) => {
+    const user = await createE2EUser(request, 'public-upload-stage-limit');
+    await login(page, user.email, user.password);
+
+    await page.goto('/account/settings');
+    const uploadUrl = await uploadUrlFromSettings(page);
+
+    const files = await createTempFiles(
+      testInfo.outputPath('public-intake-stage-limit-files'),
+      Array.from({ length: 21 }, (_, index) => ({
+        name: `stage-limit-${index + 1}.txt`,
+        content: `file-${index + 1}`
+      })));
+
+    const anonPage = await browser.newPage();
+    await anonPage.goto(uploadUrl);
+    const uploadToken = await anonPage.locator('[data-public-upload-token]').inputValue();
+    const draftShareId = await anonPage.locator('[data-public-draft-share-id]').inputValue();
+    const csrfToken = await anonPage.evaluate(() => {
+      const tokenCookie = document.cookie
+        .split(';')
+        .map((part) => part.trim())
+        .find((part) => part.startsWith('agora.csrf.request='));
+      return tokenCookie ? decodeURIComponent(tokenCookie.slice('agora.csrf.request='.length)) : '';
+    });
+    expect(csrfToken).not.toBe('');
+
+    const stage = async (filePath: string) => anonPage.request.post(`/api/public-uploads/stage?uploadToken=${encodeURIComponent(uploadToken)}&draftShareId=${encodeURIComponent(draftShareId)}`, {
+      headers: { 'X-CSRF-TOKEN': csrfToken },
+      multipart: {
+        file: {
+          name: path.basename(filePath),
+          mimeType: 'text/plain',
+          buffer: await fs.readFile(filePath),
+        },
+      },
+    });
+
+    for (const filePath of files.slice(0, 20)) {
+      const response = await stage(filePath);
+      expect(response.status()).toBe(200);
+    }
+
+    // The 21st file is refused server-side regardless of what the page's own picker would allow.
+    const rejected = await stage(files[20]);
+    expect(rejected.status()).toBe(400);
+    const payload = await rejected.json() as { error?: string };
+    expect(payload.error).toContain('Too many files');
     await anonPage.close();
   });
 

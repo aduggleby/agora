@@ -186,10 +186,9 @@ async function createShareAndGetToken(
   for (const filePath of files) {
     const fileName = path.basename(filePath);
     const buffer = await fs.readFile(filePath);
-    const response = await page.request.post('/api/uploads/stage', {
+    const response = await page.request.post(`/api/uploads/stage?draftShareId=${encodeURIComponent(draftShareId)}`, {
+      headers: { 'X-CSRF-TOKEN': csrfToken },
       multipart: {
-        __RequestVerificationToken: csrfToken,
-        draftShareId,
         file: {
           name: fileName,
           mimeType: guessContentType(fileName),

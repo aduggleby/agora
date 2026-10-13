@@ -1,13 +1,12 @@
 using Agora.Application.Models;
 using Agora.Infrastructure.Auth;
-using Agora.Infrastructure.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.Extensions.Options;
 
 namespace Agora.Web.Pages.U;
 
-public class IndexModel(AuthService authService, ShareManager manager, IOptions<AgoraOptions> options) : PageModel
+public class IndexModel(AuthService authService, IOptions<AgoraOptions> options) : PageModel
 {
     private readonly AgoraOptions _options = options.Value;
 
@@ -49,7 +48,9 @@ public class IndexModel(AuthService authService, ShareManager manager, IOptions<
 
         if (!IsSubmissionSuccess)
         {
-            DraftShareId = await manager.EnsureDraftShareAsync(user.Email, null, ct);
+            // Only an id: the draft is created (under the open-draft caps) when the first file is staged, so an
+            // anonymous page view writes nothing to disk.
+            DraftShareId = Guid.NewGuid().ToString("N");
         }
 
         ViewData["Title"] = IsSubmissionSuccess ? "Upload scheduled" : "Send files";

@@ -348,7 +348,8 @@ public sealed class PostgresIntegrationTests(PostgresFixture fixture) : IClassFi
     {
         var options = Options.Create(new AgoraOptions { StorageRoot = storageRoot });
         var objectStore = new FileSystemObjectStore(storageRoot);
-        return new ShareManager(db, options, new ShareContentStore(objectStore), objectStore, jobs, NullLogger<ShareManager>.Instance);
+        var scratch = new ScratchSpaceMonitor(options.Value, StorageProvider.FileSystem, _ => long.MaxValue, _ => 0, TimeProvider.System);
+        return new ShareManager(db, options, new ShareContentStore(objectStore), objectStore, jobs, new KeyedAsyncLock(), scratch, NullLogger<ShareManager>.Instance);
     }
 
     private static Share NewShare(string token, DateTime createdAtUtc) => new()

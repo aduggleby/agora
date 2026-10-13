@@ -134,8 +134,8 @@ Anonymous users can send files to a registered user through a personal upload li
 1. Each account has an `UploadToken` (generated at registration, customizable to a 2-64 character alphanumeric code from Settings).
 2. Visitor opens `/u/{token}`, which resolves the token to a `UserAccount`.
 3. Page renders an upload form with sender name, email, optional message, and file picker.
-4. Files are staged individually via `POST /api/public-uploads/stage` (same staging pipeline as authenticated uploads).
-5. On submit, `POST /api/public-uploads/create-share` validates inputs, resolves staged files, and queues share creation using the account owner's default expiry/notify settings and template.
+4. Files are staged individually via `POST /api/public-uploads/stage?uploadToken=&draftShareId=` (same staging pipeline as authenticated uploads). Identity comes from the query string and the CSRF token from the `X-CSRF-TOKEN` header, so the upload-link lookup, the open-draft caps per upload code and per client address (`Agora__PublicUploads__MaxOpenDrafts*`) and the scratch preflight (`Agora__Scratch__*`, using the request length) all run before the multipart body is buffered, and a scratch reservation for the buffer (request length, capped at `MaxFileSizeBytes`) is held until the request completes; the request body is capped at `MaxFileSizeBytes` plus 1 MB. After the body is read the draft is re-validated under its lock (exists, owned, unsealed) for every purpose, so a draft finalized or swept meanwhile cannot be recreated by a late request (409). The page only hands out a draft id; the draft is created on the first staged file. `MaxFilesPerShare` and `MaxTotalUploadBytes` are enforced per draft under the draft lock, which the whole stage, every draft refresh, the seal and the zombie sweep share. A draft idle longer than `DraftRetentionHours` stops counting as open and is re-admitted on its next request.
+5. On submit, `POST /api/public-uploads/create-share` validates inputs, resolves staged files, preflights scratch for the archive build, checks the owner's daily received-share quota (`MaxSharesPerCodePerDay`, `MaxBytesPerCodePerDay`, counted from `Shares` rows with a `SenderEmail`) as a fast path, seals the draft and queues share creation (further staging and a second submission get 409; if enqueueing fails the seal is removed and the sender gets a retryable 503) using the owner's default notify mode and a per-upload template. The expiry is the owner's default expiry mode; "indefinite" only when the owner chose it, and `Agora__PublicUploads__DefaultExpiryDays` when the mode cannot be resolved. The worker re-checks the daily quota under a per-owner lock held until the share is committed (`ShareManager.CreateReceivedShareAsync`), reserves the archive's scratch (and, with the FileSystem store, durable) bytes for the build, and afterwards removes the whole draft from scratch, submitted or not.
 6. The created `Share` stores `SenderName`, `SenderEmail`, and `SenderMessage` for attribution.
 7. After submission, the user is redirected back to `/u/{token}?submitted=1`, which renders a dedicated success screen (skipping draft creation and the upload form).
 8. Both endpoints are rate-limited under the `PublicUploadEndpoints` policy.
@@ -214,8 +214,10 @@ Relative to `StorageRoot` (`Agora__StorageRoot`):
 
 - `uploads/staged/*`: temporary uploaded files before share creation
 - `uploads/staged-template-backgrounds/*`: temporary background uploads (purpose-isolated)
+- `uploads/drafts/{draft-id}/draft.json`: draft template state (`PublicUpload` selects the shorter anonymous retention); `uploads/drafts/{draft-id}/staged/{upload-id}` are the per-draft slot markers (declared size) the stage-time quota counts; `uploads/drafts/{draft-id}/sealed` marks a submitted draft
+- `uploads/draft-index/{token|ip}/{sha256}/{draft-id}`: open-draft markers per upload code and client address (anonymous uploads only)
 - `uploads/templates/*`: account template background assets
-- `uploads/share-create-status/*`: hashed token keyed JSON progress status files
+- `uploads/share-create-status/*`: hashed token keyed JSON progress status files (swept after `ZombieUploadRetentionHours`)
 - `shares/YYYY/MM/{share-guid}/...`: persisted per-share source files
 - `zips/YYYY/MM/*.zip|*.agz`: downloadable archives
 - preview assets under paths derived by `SharePreviewPaths`
@@ -234,6 +236,7 @@ Important invariant: template background uploads are purpose-separated so they d
 
 - Antiforgery token emitted on safe methods.
 - Validation required on unsafe methods except explicitly allowed E2E test routes and Hangfire dashboard path.
+- The middleware lives in `Startup/CsrfValidation.cs`. Endpoints carry `UploadEndpointMetadata`; the three stage endpoints (`Endpoints/UploadStagingEndpoints.cs`) require the token in the `X-CSRF-TOKEN` header (the bundled CSRF client sets it on every XHR/fetch) and are refused before anything reads the form, so validation never buffers a multipart body. The decision keys on the resolved endpoint's metadata, not on the path, so trailing slashes or case variants cannot bypass it. The submit endpoints carry the marker with a 1 MB body limit.
 
 ## 7.3 Password and Token Handling
 
@@ -267,6 +270,7 @@ Bound option classes:
 High-impact settings:
 
 - size limits (`MaxFileSizeBytes`, `MaxTotalUploadBytes`, `MaxFilesPerShare`)
+- scratch budget (`Scratch:MaxBytes`, `Scratch:MinFreeBytes`) and anonymous upload budgets (`PublicUploads:*`)
 - retention windows (`DownloadEventRetentionDays`, `ZombieUploadRetentionHours`)
 - storage root and public base URL
 - email provider mode and provider credentials

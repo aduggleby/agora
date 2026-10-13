@@ -25,6 +25,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
@@ -50,6 +51,11 @@ var initialUploadLimits = builder.Configuration.GetSection(AgoraOptions.Section)
 var configuredMaxFileSizeBytes = initialUploadLimits.GetValue<long?>("MaxFileSizeBytes") ?? (5L * 1024 * 1024 * 1024);
 var configuredMaxTotalUploadBytes = initialUploadLimits.GetValue<long?>("MaxTotalUploadBytes") ?? (10L * 1024 * 1024 * 1024);
 var maxRequestBodySize = Math.Max(configuredMaxFileSizeBytes, configuredMaxTotalUploadBytes);
+// One stage request carries one file; cap its body at that file size plus multipart overhead so a single request can
+// never buffer more than one file's worth into tmp/aspnet.
+var stageRequestBodyLimit = configuredMaxFileSizeBytes + 1024 * 1024;
+// Anonymous submissions carry only form fields (file ids, sender details), never a file.
+const long createRequestBodyLimit = 1024 * 1024;
 builder.WebHost.ConfigureKestrel(options =>
 {
     options.Limits.MaxRequestBodySize = maxRequestBodySize;
@@ -179,6 +185,11 @@ builder.Services.AddHangfireServer(options =>
 });
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<ShareManager>();
+builder.Services.AddSingleton<KeyedAsyncLock>();
+builder.Services.AddSingleton(sp => new ScratchSpaceMonitor(
+    sp.GetRequiredService<IOptions<AgoraOptions>>(),
+    storageProvider,
+    sp.GetRequiredService<ILogger<ScratchSpaceMonitor>>()));
 builder.Services.AddSingleton<IShareContentStore, ShareContentStore>();
 builder.Services.AddScoped<AuthEmailJob>();
 builder.Services.AddScoped<EmailNotificationJob>();
@@ -304,69 +315,7 @@ using (var scope = app.Services.CreateScope())
 app.UseForwardedHeaders();
 app.UseStaticFiles();
 app.UseAuthentication();
-app.Use(async (context, next) =>
-{
-    // Health probes stay independent of DataProtection/antiforgery and never set cookies.
-    if (IsHealthPath(context.Request.Path))
-    {
-        await next();
-        return;
-    }
-
-    var antiforgery = context.RequestServices.GetRequiredService<IAntiforgery>();
-
-    if (IsSafeHttpMethod(context.Request.Method))
-    {
-        var tokens = antiforgery.GetAndStoreTokens(context);
-        if (!string.IsNullOrWhiteSpace(tokens.RequestToken))
-        {
-            context.Response.Cookies.Append("agora.csrf.request", tokens.RequestToken, new CookieOptions
-            {
-                HttpOnly = false,
-                SameSite = SameSiteMode.Lax,
-                Secure = CookieSessions.IsSecure(cookieSecurePolicy, context.Request.IsHttps),
-                Path = "/"
-            });
-        }
-
-        await next();
-        return;
-    }
-
-    if (isE2E && context.Request.Path.StartsWithSegments("/api/e2e", StringComparison.OrdinalIgnoreCase))
-    {
-        await next();
-        return;
-    }
-
-    if (context.Request.Path.StartsWithSegments("/hangfire", StringComparison.OrdinalIgnoreCase))
-    {
-        await next();
-        return;
-    }
-
-    try
-    {
-        await antiforgery.ValidateRequestAsync(context);
-    }
-    catch (AntiforgeryValidationException ex)
-    {
-        app.Logger.LogWarning(
-            ex,
-            "CSRF validation failed for {Method} {Path}. IsHttps={IsHttps} Host={Host} Origin={Origin} Referer={Referer}",
-            context.Request.Method,
-            context.Request.Path,
-            context.Request.IsHttps,
-            context.Request.Host.Value,
-            context.Request.Headers.Origin.ToString(),
-            context.Request.Headers.Referer.ToString());
-        context.Response.StatusCode = StatusCodes.Status400BadRequest;
-        await context.Response.WriteAsJsonAsync(new { error = "Invalid or missing CSRF token." });
-        return;
-    }
-
-    await next();
-});
+app.UseAgoraCsrf(isE2E, cookieSecurePolicy, app.Logger);
 app.UseRateLimiter();
 app.UseAuthorization();
 app.MapRazorPages();
@@ -932,6 +881,19 @@ app.MapPost("/api/account/template", async (HttpContext context, ShareManager ma
 
         var key = $"uploads/templates/general/{Guid.NewGuid():N}{extension}";
         var storageRoot = context.RequestServices.GetRequiredService<IOptions<AgoraOptions>>().Value.StorageRoot;
+        // Scratch copy plus, with the FileSystem store, the durable object on the same volume.
+        var scratchSpace = context.RequestServices.GetRequiredService<ScratchSpaceMonitor>();
+        ScratchReservation backgroundReservation;
+        try
+        {
+            backgroundReservation = scratchSpace.Reserve(new ScratchDemand(backgroundImageFile.Length, scratchSpace.DurableDemand(backgroundImageFile.Length).DurableBytes));
+        }
+        catch (UploadLimitException ex)
+        {
+            return Results.Redirect($"/account/landing-page-designer?msg={Uri.EscapeDataString(ex.Message)}");
+        }
+
+        using var _ = backgroundReservation;
         var scratchPath = ScratchFiles.NewPath(storageRoot, extension);
         try
         {
@@ -978,7 +940,7 @@ app.MapPost("/api/share-drafts/{draftShareId}/template", async (HttpContext cont
     {
         draftShareId = await manager.EnsureDraftShareAsync(email, draftShareId, ct);
     }
-    catch (InvalidOperationException ex)
+    catch (Exception ex) when (ex is InvalidOperationException or UploadLimitException)
     {
         return Results.Redirect($"/shares/new?msg={Uri.EscapeDataString(ex.Message)}");
     }
@@ -1086,140 +1048,15 @@ app.MapGet("/account/template/background", async (HttpContext context, ShareMana
     return ObjectResults.UserContent(context.Response, background, key);
 }).RequireAuthorization();
 
-app.MapPost("/api/uploads/stage", async (
-    HttpContext context,
-    ShareManager manager,
-    IOptions<AgoraOptions> options,
-    HttpRequest request,
-    CancellationToken ct) =>
-{
-    if (!request.HasFormContentType)
-    {
-        return Results.BadRequest(new { error = "Expected multipart/form-data." });
-    }
-
-    var uploaderEmail = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(uploaderEmail))
-    {
-        return Results.Unauthorized();
-    }
-
-    var form = await request.ReadFormAsync(ct);
-    var draftShareId = form["draftShareId"].ToString().Trim();
-    if (string.IsNullOrWhiteSpace(draftShareId))
-    {
-        return Results.BadRequest(new { error = "draftShareId is required." });
-    }
-
-    try
-    {
-        draftShareId = await manager.EnsureDraftShareAsync(uploaderEmail, draftShareId, ct);
-    }
-    catch (InvalidOperationException ex)
-    {
-        return Results.BadRequest(new { error = ex.Message });
-    }
-
-    var file = form.Files["file"];
-    if (file is null || file.Length <= 0)
-    {
-        return Results.BadRequest(new { error = "A file is required." });
-    }
-
-    var cfg = options.Value;
-    if (file.Length > cfg.MaxFileSizeBytes)
-    {
-        return Results.BadRequest(new { error = $"File '{file.FileName}' exceeds max size." });
-    }
-
-    await using var stream = file.OpenReadStream();
-    var staged = await manager.StageUploadAsync(
-        uploaderEmail,
-        draftShareId,
-        file.FileName,
-        file.Length,
-        stream,
-        ct,
-        ShareManager.UploadPurposeShareFile);
-
-    return Results.Ok(new
-    {
-        uploadId = staged.UploadId,
-        fileName = staged.OriginalFileName,
-        sizeBytes = staged.OriginalSizeBytes
-    });
-}).RequireAuthorization();
-
-app.MapPost("/api/public-uploads/stage", async (
-    AuthService authService,
-    ShareManager manager,
-    IOptions<AgoraOptions> options,
-    HttpRequest request,
-    CancellationToken ct) =>
-{
-    if (!request.HasFormContentType)
-    {
-        return Results.BadRequest(new { error = "Expected multipart/form-data." });
-    }
-
-    var form = await request.ReadFormAsync(ct);
-    var uploadToken = form["uploadToken"].ToString().Trim();
-    var draftShareId = form["draftShareId"].ToString().Trim();
-    if (string.IsNullOrWhiteSpace(uploadToken) || string.IsNullOrWhiteSpace(draftShareId))
-    {
-        return Results.BadRequest(new { error = "uploadToken and draftShareId are required." });
-    }
-
-    var user = await authService.FindByUploadTokenAsync(uploadToken, ct);
-    if (user is null)
-    {
-        return Results.NotFound(new { error = "Upload link not found." });
-    }
-
-    try
-    {
-        draftShareId = await manager.EnsureDraftShareAsync(user.Email, draftShareId, ct);
-    }
-    catch (InvalidOperationException ex)
-    {
-        return Results.BadRequest(new { error = ex.Message });
-    }
-
-    var file = form.Files["file"];
-    if (file is null || file.Length <= 0)
-    {
-        return Results.BadRequest(new { error = "A file is required." });
-    }
-
-    var cfg = options.Value;
-    if (file.Length > cfg.MaxFileSizeBytes)
-    {
-        return Results.BadRequest(new { error = $"File '{file.FileName}' exceeds max size." });
-    }
-
-    await using var stream = file.OpenReadStream();
-    var staged = await manager.StageUploadAsync(
-        user.Email,
-        draftShareId,
-        file.FileName,
-        file.Length,
-        stream,
-        ct,
-        ShareManager.UploadPurposeShareFile);
-
-    return Results.Ok(new
-    {
-        uploadId = staged.UploadId,
-        fileName = staged.OriginalFileName,
-        sizeBytes = staged.OriginalSizeBytes
-    });
-}).RequireRateLimiting(RateLimitSetup.PublicUploadEndpoints);
+app.MapUploadStagingEndpoints(stageRequestBodyLimit);
 
 app.MapPost("/api/public-uploads/create-share", async (
     AuthService authService,
     ShareManager manager,
+    ScratchSpaceMonitor scratchSpace,
     IOptions<AgoraOptions> options,
     QueuedShareCreationJob queuedShareCreationJob,
+    HttpContext context,
     HttpRequest request,
     CancellationToken ct) =>
 {
@@ -1257,11 +1094,15 @@ app.MapPost("/api/public-uploads/create-share", async (
 
     try
     {
-        draftShareId = await manager.EnsureDraftShareAsync(user.Email, draftShareId, ct);
+        draftShareId = await manager.EnsurePublicUploadDraftAsync(user.Email, draftShareId, user.UploadToken, ClientAddress(context), ct);
     }
     catch (InvalidOperationException ex)
     {
         return Results.BadRequest(ex.Message);
+    }
+    catch (UploadLimitException ex)
+    {
+        return UploadLimitText(ex);
     }
 
     var uploadedFileIds = form["uploadedFileIds"]
@@ -1308,6 +1149,26 @@ app.MapPost("/api/public-uploads/create-share", async (
         return Results.BadRequest("Total upload size exceeds limit.");
     }
 
+    // The queued job builds the archive; refuse now rather than fail the job later (the job reserves the space).
+    try
+    {
+        scratchSpace.EnsureCanAdmit(scratchSpace.ArchiveDemand(total, passwordProtected: false));
+    }
+    catch (UploadLimitException ex)
+    {
+        return UploadLimitText(ex);
+    }
+
+    // Fast path for the daily budget of received shares (counted per owner account, so rotating the code does not
+    // reset it); the job re-checks it under a per-owner lock before the share is committed.
+    var nowUtc = DateTime.UtcNow;
+    var usage = await manager.GetReceivedShareUsageAsync(user.Email, nowUtc.AddHours(-24), ct);
+    var quotaError = PublicUploadPolicy.CheckDailyQuota(usage.Count, usage.Bytes, total, cfg.PublicUploads);
+    if (quotaError is not null)
+    {
+        return Results.Text(quotaError, statusCode: StatusCodes.Status429TooManyRequests);
+    }
+
     var shareToken = await manager.GenerateUniqueShareTokenAsync(8, ct);
     if (isE2E)
     {
@@ -1317,8 +1178,12 @@ app.MapPost("/api/public-uploads/create-share", async (
             shareToken = e2eShareTokenOverride;
         }
     }
-    var expiryModeRaw = "indefinite";
-    DateTime? expiresAtUtc = null;
+
+    // Received shares follow the owner's default expiry; "indefinite" only when the owner chose it explicitly.
+    var ownerExpiryMode = await authService.GetDefaultExpiryModeAsync(user.Email, ct);
+    var expiry = PublicUploadPolicy.ResolveExpiry(ownerExpiryMode, cfg.PublicUploads.DefaultExpiryDays, nowUtc);
+    var expiryModeRaw = expiry.Mode;
+    var expiresAtUtc = expiry.ExpiresAtUtc;
 
     var notifyMode = await authService.GetDefaultNotifyModeAsync(user.Email, ct);
     if (notifyMode is not ("none" or "once" or "every_time"))
@@ -1352,78 +1217,23 @@ app.MapPost("/api/public-uploads/create-share", async (
         TemplateBackgroundUploadId: null,
         UploadedFileIds: uploadedFileIds);
 
-    queuedShareCreationJob.Queue(queued);
-    return Results.Redirect($"/u/{Uri.EscapeDataString(uploadToken)}?submitted=1");
-}).RequireRateLimiting(RateLimitSetup.PublicUploadEndpoints);
-
-app.MapPost("/api/uploads/stage-template-background", async (
-    HttpContext context,
-    ShareManager manager,
-    IOptions<AgoraOptions> options,
-    HttpRequest request,
-    CancellationToken ct) =>
-{
-    if (!request.HasFormContentType)
-    {
-        return Results.BadRequest(new { error = "Expected multipart/form-data." });
-    }
-
-    var uploaderEmail = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(uploaderEmail))
-    {
-        return Results.Unauthorized();
-    }
-
-    var form = await request.ReadFormAsync(ct);
-    var draftShareId = form["draftShareId"].ToString().Trim();
-    if (string.IsNullOrWhiteSpace(draftShareId))
-    {
-        return Results.BadRequest(new { error = "draftShareId is required." });
-    }
-
+    // Sealing stops further staging into this draft and makes a second submission of it a 409; a failed enqueue
+    // unseals it again and reports 503 so the sender can retry.
     try
     {
-        draftShareId = await manager.EnsureDraftShareAsync(uploaderEmail, draftShareId, ct);
+        if (!await manager.SealDraftForSubmissionAsync(user.Email, draftShareId, () => { queuedShareCreationJob.Queue(queued); return Task.CompletedTask; }, ct))
+        {
+            return Results.Text("This upload was already submitted.", statusCode: StatusCodes.Status409Conflict);
+        }
     }
-    catch (InvalidOperationException ex)
+    catch (UploadLimitException ex)
     {
-        return Results.BadRequest(new { error = ex.Message });
-    }
-
-    var file = form.Files["file"];
-    if (file is null || file.Length <= 0)
-    {
-        return Results.BadRequest(new { error = "An image file is required." });
+        return UploadLimitText(ex);
     }
 
-    if (!ContentTypePolicy.IsAllowedBackgroundImage(file.FileName))
-    {
-        return Results.BadRequest(new { error = "Only JPG, PNG, or WEBP files are allowed." });
-    }
-
-    var cfg = options.Value;
-    if (file.Length > cfg.MaxFileSizeBytes)
-    {
-        return Results.BadRequest(new { error = $"File '{file.FileName}' exceeds max size." });
-    }
-
-    await using var stream = file.OpenReadStream();
-    var staged = await manager.StageUploadAsync(
-        uploaderEmail,
-        draftShareId,
-        file.FileName,
-        file.Length,
-        stream,
-        ct,
-        ShareManager.UploadPurposeTemplateBackground);
-
-    return Results.Ok(new
-    {
-        uploadId = staged.UploadId,
-        fileName = staged.OriginalFileName,
-        sizeBytes = staged.OriginalSizeBytes
-    });
-}).RequireAuthorization();
+    return Results.Redirect($"/u/{Uri.EscapeDataString(uploadToken)}?submitted=1");
+}).RequireRateLimiting(RateLimitSetup.PublicUploadEndpoints)
+  .WithMetadata(new UploadEndpointMetadata(RequiresHeaderCsrfToken: false), new RequestSizeLimitAttribute(createRequestBodyLimit));
 
 app.MapPost("/api/uploads/remove", async (
     HttpContext context,
@@ -1489,6 +1299,10 @@ app.MapPost("/api/uploads/cancel", async (
     {
         return Results.BadRequest(new { error = ex.Message });
     }
+    catch (UploadLimitException ex)
+    {
+        return UploadLimitJson(ex);
+    }
 
     var jobId = backgroundJobs.Enqueue<ShareManager>(x =>
         x.DeleteStagedUploadsForDraftAsync(uploaderEmail, draftShareId, CancellationToken.None));
@@ -1500,6 +1314,7 @@ app.MapPost("/api/shares", async (
     HttpContext context,
     ShareManager manager,
     AuthService authService,
+    ScratchSpaceMonitor scratchSpace,
     IOptions<AgoraOptions> options,
     QueuedShareCreationJob queuedShareCreationJob,
     HttpRequest request,
@@ -1516,6 +1331,18 @@ app.MapPost("/api/shares", async (
         return Results.Unauthorized();
     }
 
+    var cfg = options.Value;
+    // API clients may post files directly here (the UI stages first), so the multipart buffer is reserved against
+    // the scratch budget before the body is read, like on the stage endpoints.
+    try
+    {
+        UploadStagingEndpoints.ReserveRequestBuffer(context, scratchSpace, cfg.MaxTotalUploadBytes);
+    }
+    catch (UploadLimitException ex)
+    {
+        return UploadLimitText(ex);
+    }
+
     var form = await request.ReadFormAsync(ct);
     var draftShareId = form["draftShareId"].ToString().Trim();
     if (string.IsNullOrWhiteSpace(draftShareId))
@@ -1530,6 +1357,10 @@ app.MapPost("/api/shares", async (
     catch (InvalidOperationException ex)
     {
         return Results.BadRequest(ex.Message);
+    }
+    catch (UploadLimitException ex)
+    {
+        return UploadLimitText(ex);
     }
 
     var shareToken = form["shareToken"].ToString().Trim();
@@ -1563,7 +1394,6 @@ app.MapPost("/api/shares", async (
         .Cast<string>()
         .ToArray();
 
-    var cfg = options.Value;
     IReadOnlyList<ShareManager.StagedUploadFile> stagedUploads;
     try
     {
@@ -1669,21 +1499,33 @@ app.MapPost("/api/shares", async (
         : TemplateMode.AccountDefault;
 
     var templateBackgroundUploadId = form["template.backgroundUploadId"].ToString().Trim();
+    long templateBackgroundBytes = 0;
     if (!string.IsNullOrWhiteSpace(templateBackgroundUploadId))
     {
         try
         {
-            await manager.ResolveStagedUploadsAsync(
+            var stagedBackground = await manager.ResolveStagedUploadsAsync(
                 uploaderEmail,
                 [templateBackgroundUploadId],
                 draftShareId,
                 ct,
                 ShareManager.UploadPurposeTemplateBackground);
+            templateBackgroundBytes = stagedBackground.Sum(x => x.OriginalSizeBytes);
         }
         catch (InvalidOperationException ex)
         {
             return Results.BadRequest(ex.Message);
         }
+    }
+
+    // The queued job builds the archive; refuse now rather than fail the job later (the job reserves the space).
+    try
+    {
+        scratchSpace.EnsureCanAdmit(scratchSpace.ArchiveDemand(total, passwordProtected: downloadPassword is not null, backgroundBytes: templateBackgroundBytes));
+    }
+    catch (UploadLimitException ex)
+    {
+        return UploadLimitText(ex);
     }
 
     var queued = new QueuedShareCreationJob.Payload(
@@ -1709,9 +1551,23 @@ app.MapPost("/api/shares", async (
         TemplateBackgroundUploadId: templateBackgroundUploadId,
         UploadedFileIds: uploadedFileIds);
 
-    queuedShareCreationJob.Queue(queued);
+    // Sealing stops further staging into this draft and makes a second submission of it a 409; a failed enqueue
+    // unseals it again and reports 503 so the user can retry.
+    try
+    {
+        if (!await manager.SealDraftForSubmissionAsync(uploaderEmail, draftShareId, () => { queuedShareCreationJob.Queue(queued); return Task.CompletedTask; }, ct))
+        {
+            return Results.Text("This share was already submitted.", statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+    catch (UploadLimitException ex)
+    {
+        return UploadLimitText(ex);
+    }
+
     return Results.Redirect($"/shares/created?token={Uri.EscapeDataString(shareToken)}");
-}).RequireAuthorization();
+}).RequireAuthorization()
+  .WithMetadata(new UploadEndpointMetadata(RequiresHeaderCsrfToken: false), new RequestSizeLimitAttribute(configuredMaxTotalUploadBytes + 1024 * 1024));
 
 app.MapGet("/api/shares/{token}", async (ShareManager manager, string token, CancellationToken ct) =>
 {
@@ -1755,16 +1611,11 @@ app.MapHub<ShareProgressHub>("/hubs/share-progress").RequireAuthorization();
 
 app.Run();
 
-static bool IsHealthPath(PathString path) =>
-    path.Equals("/live", StringComparison.OrdinalIgnoreCase) || path.Equals("/ready", StringComparison.OrdinalIgnoreCase);
+static IResult UploadLimitJson(UploadLimitException ex) => UploadStagingEndpoints.UploadLimitJson(ex);
 
-static bool IsSafeHttpMethod(string method)
-{
-    return HttpMethods.IsGet(method) ||
-           HttpMethods.IsHead(method) ||
-           HttpMethods.IsOptions(method) ||
-           HttpMethods.IsTrace(method);
-}
+static IResult UploadLimitText(UploadLimitException ex) => UploadStagingEndpoints.UploadLimitText(ex);
+
+static string ClientAddress(HttpContext context) => UploadStagingEndpoints.ClientAddress(context);
 
 static bool IsValidShareToken(string token)
 {
