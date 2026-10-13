@@ -124,6 +124,12 @@ builder.Services.AddAntiforgery(options =>
     options.FormFieldName = "__RequestVerificationToken";
     options.HeaderName = "X-CSRF-TOKEN";
 });
+// E2E mode (test endpoints, no login throttling) also requires ASPNETCORE_ENVIRONMENT=E2E, so a stray flag
+// can never enable it in Production.
+var isE2E = builder.Environment.IsEnvironment("E2E") &&
+            (builder.Configuration.GetValue<bool>("E2E:Enabled") ||
+             string.Equals(Environment.GetEnvironmentVariable("AGORA_E2E"), "1", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(Environment.GetEnvironmentVariable("AGORA_E2E"), "true", StringComparison.OrdinalIgnoreCase));
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -163,6 +169,12 @@ builder.Services.AddRateLimiter(options =>
 
     options.AddPolicy("AuthEndpoints", httpContext =>
     {
+        // E2E suites log in far more often than a real client; don't throttle them.
+        if (isE2E)
+        {
+            return RateLimitPartition.GetNoLimiter("auth:e2e");
+        }
+
         var ip = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         return RateLimitPartition.GetSlidingWindowLimiter(
             partitionKey: $"auth:{ip}",
@@ -288,9 +300,6 @@ app.Logger.LogInformation(
     Path.GetFullPath(logFile.Path),
     logFile.RetainedDays is { } retainedDays ? $"{retainedDays} days" : "unlimited");
 var isDevelopment = app.Environment.IsDevelopment();
-var isE2E = builder.Configuration.GetValue<bool>("E2E:Enabled") ||
-            string.Equals(Environment.GetEnvironmentVariable("AGORA_E2E"), "1", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(Environment.GetEnvironmentVariable("AGORA_E2E"), "true", StringComparison.OrdinalIgnoreCase);
 
 using (var scope = app.Services.CreateScope())
 {

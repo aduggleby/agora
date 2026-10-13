@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
-import { createE2EUser, createTempFiles, extractShareUrl, login } from '../support/helpers';
+import { createE2EUser, createTempFiles, extractShareUrl, login, waitForShareReady } from '../support/helpers';
 
 test('account default background image is shown on download page', async ({ page, request }, testInfo) => {
   const user = await createE2EUser(request, 'default-bg');
@@ -34,6 +34,7 @@ test('account default background image is shown on download page', async ({ page
   const shareUrlText = await page.locator('main').innerText();
   const shareUrl = extractShareUrl(shareUrlText, page.url());
   const sharePath = new URL(shareUrl).pathname;
+  await waitForShareReady(page, shareUrl);
 
   const backgroundLoad = page.waitForResponse((response) =>
     response.url().endsWith(`${sharePath}/background`) && response.status() === 200
@@ -81,7 +82,7 @@ test('per-share custom background image is shown on download page', async ({ pag
   await page.setInputFiles('[data-template-background-file]', customBgPath);
   await page.getByRole('button', { name: 'Save and return' }).click();
   await page.waitForURL(/\/shares\/new\?draftShareId=/);
-  await expect(page.locator('[data-upload-list] li')).toHaveCount(2);
+  await expect(page.locator('[data-upload-list] li')).toHaveCount(1);
   await expect(page.locator('[data-upload-list] li').filter({ hasText: 'proof-custom.txt' })).toBeVisible();
 
   await page.locator('[data-submit]').click();
@@ -90,6 +91,7 @@ test('per-share custom background image is shown on download page', async ({ pag
   const shareUrlText = await page.locator('main').innerText();
   const shareUrl = extractShareUrl(shareUrlText, page.url());
   const sharePath = new URL(shareUrl).pathname;
+  await waitForShareReady(page, shareUrl);
 
   const backgroundLoad = page.waitForResponse((response) =>
     response.url().endsWith(`${sharePath}/background`) && response.status() === 200

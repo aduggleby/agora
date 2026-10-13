@@ -470,6 +470,7 @@ type SavedShareOptionsState = {
         ui.state.className = 'text-[11px] text-sage mt-0.5';
         ui.remove.classList.remove('hidden');
         ui.remove.addEventListener('click', () => requestRemove(id, ui.row));
+        refreshState();
       } else {
         const errorMessage = resolveUploadErrorMessage(xhr);
         ui.row.className = 'relative rounded-lg border border-danger/35 bg-danger-wash px-2.5 py-2 min-w-0';
