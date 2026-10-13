@@ -64,6 +64,7 @@ public sealed class AuthService(
 
             user = existing;
             user.PasswordHash = PasswordHasher.Hash(password);
+            user.SecurityStamp = SecurityStamps.New();
             user.IsEnabled = true;
             if (string.IsNullOrWhiteSpace(user.UploadToken))
             {
@@ -85,6 +86,7 @@ public sealed class AuthService(
                 DisplayName = DefaultDisplayNameForEmail(email),
                 EmailConfirmed = false,
                 PasswordHash = PasswordHasher.Hash(password),
+                SecurityStamp = SecurityStamps.New(),
                 Role = isFirstUser ? "admin" : "user",
                 DefaultNotifyMode = "once",
                 DefaultExpiryMode = "7_days",
@@ -196,11 +198,25 @@ public sealed class AuthService(
             return (false, "Invalid credentials.", null);
         }
 
+        var changed = false;
         if (user.FailedLoginCount != 0 || user.LastFailedLoginAtUtc is not null || user.LockoutEndUtc is not null)
         {
             user.FailedLoginCount = 0;
             user.LastFailedLoginAtUtc = null;
             user.LockoutEndUtc = null;
+            changed = true;
+        }
+
+        // Rows created before security stamps existed get one at their first sign-in. Never rotate an existing
+        // stamp here: a sign-in must not end the user's other sessions.
+        if (string.IsNullOrEmpty(user.SecurityStamp))
+        {
+            user.SecurityStamp = SecurityStamps.New();
+            changed = true;
+        }
+
+        if (changed)
+        {
             await db.SaveChangesAsync(cancellationToken);
         }
 
@@ -269,6 +285,11 @@ public sealed class AuthService(
                 existing.DisplayName = DefaultDisplayNameForEmail(email);
                 changed = true;
             }
+            if (string.IsNullOrEmpty(existing.SecurityStamp))
+            {
+                existing.SecurityStamp = SecurityStamps.New();
+                changed = true;
+            }
 
             if (changed)
             {
@@ -287,6 +308,7 @@ public sealed class AuthService(
             EmailConfirmed = true,
             EmailConfirmedAtUtc = DateTime.UtcNow,
             PasswordHash = PasswordHasher.Hash(generatedPassword),
+            SecurityStamp = SecurityStamps.New(),
             Role = "admin",
             DefaultNotifyMode = "once",
             DefaultExpiryMode = "7_days",
@@ -338,7 +360,13 @@ public sealed class AuthService(
             }
         }
 
+        if (user.Role == role)
+        {
+            return true;
+        }
+
         user.Role = role;
+        user.SecurityStamp = SecurityStamps.New();
         await db.SaveChangesAsync(cancellationToken);
         return true;
     }
@@ -360,7 +388,13 @@ public sealed class AuthService(
             }
         }
 
+        if (user.IsEnabled == enabled)
+        {
+            return true;
+        }
+
         user.IsEnabled = enabled;
+        user.SecurityStamp = SecurityStamps.New();
         await db.SaveChangesAsync(cancellationToken);
         return true;
     }
@@ -754,6 +788,7 @@ public sealed class AuthService(
         user.PendingEmail = null;
         user.PendingEmailTokenHash = null;
         user.PendingEmailTokenExpiresAtUtc = null;
+        user.SecurityStamp = SecurityStamps.New();
 
         var accountTemplate = await db.AccountTemplates.SingleOrDefaultAsync(x => x.UploaderEmail == previousEmail, cancellationToken);
         if (accountTemplate is not null)
@@ -866,6 +901,7 @@ public sealed class AuthService(
         user.PendingPasswordHash = null;
         user.PendingPasswordTokenHash = null;
         user.PendingPasswordTokenExpiresAtUtc = null;
+        user.SecurityStamp = SecurityStamps.New();
         await db.SaveChangesAsync(cancellationToken);
 
         await QueueAuthEmailAsync(new AuthEmailMessage(
@@ -941,6 +977,7 @@ public sealed class AuthService(
         user.PendingPasswordHash = null;
         user.PendingPasswordTokenHash = null;
         user.PendingPasswordTokenExpiresAtUtc = null;
+        user.SecurityStamp = SecurityStamps.New();
         await db.SaveChangesAsync(cancellationToken);
 
         await QueueAuthEmailAsync(new AuthEmailMessage(

@@ -26,6 +26,7 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
@@ -116,11 +117,22 @@ builder.Services.AddDataProtection()
     .SetApplicationName("Agora")
     .PersistKeysToFileSystem(Directory.CreateDirectory(dataProtectionKeysPath));
 
+// Sign-in and CSRF cookies share one Secure policy (Agora:Auth:SecureCookies). Auto means Secure in Production,
+// SameAsRequest elsewhere so Development and E2E keep working on http://localhost.
+var authOptions = builder.Configuration.GetSection(AgoraOptions.Section).GetSection("Auth").Get<AgoraAuthOptions>() ?? new AgoraAuthOptions();
+var cookieSecurePolicy = CookieSessions.SecurePolicy(authOptions, builder.Environment.IsProduction());
+builder.Services.TryAddSingleton(TimeProvider.System);
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
     .AddCookie(options =>
     {
         options.LoginPath = "/login";
         options.AccessDeniedPath = "/login";
+        options.ExpireTimeSpan = CookieSessions.SessionLifetime(authOptions);
+        options.SlidingExpiration = true;
+        options.Cookie.HttpOnly = true;
+        options.Cookie.SameSite = SameSiteMode.Lax;
+        options.Cookie.SecurePolicy = cookieSecurePolicy;
+        options.Events.OnValidatePrincipal = CookieSessions.ValidatePrincipalAsync;
     });
 
 builder.Services.AddAuthorization(options =>
@@ -132,7 +144,7 @@ builder.Services.AddAntiforgery(options =>
     options.Cookie.Name = "agora.csrf";
     options.Cookie.HttpOnly = true;
     options.Cookie.SameSite = SameSiteMode.Lax;
-    options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+    options.Cookie.SecurePolicy = cookieSecurePolicy;
     options.FormFieldName = "__RequestVerificationToken";
     options.HeaderName = "X-CSRF-TOKEN";
 });
@@ -268,7 +280,7 @@ builder.Services.AddScoped<SharePreviewJobService>();
 builder.Services.AddSingleton<ShareCreationStatusStore>();
 builder.Services.AddSingleton<ShareProgressBroadcaster>();
 builder.Services.AddSingleton<SharePreviewImageGenerator>();
-builder.Services.AddSignalR();
+builder.Services.AddSignalR(options => options.AddFilter<SessionRevalidationHubFilter>());
 builder.Services.AddHttpClient<IDownloaderGeoLookup, IpWhoIsDownloaderGeoLookup>(client =>
 {
     client.BaseAddress = new Uri("https://ipwho.is/");
@@ -379,7 +391,7 @@ app.Use(async (context, next) =>
             {
                 HttpOnly = false,
                 SameSite = SameSiteMode.Lax,
-                Secure = context.Request.IsHttps,
+                Secure = CookieSessions.IsSecure(cookieSecurePolicy, context.Request.IsHttps),
                 Path = "/"
             });
         }
@@ -456,7 +468,7 @@ app.MapPost("/login", async (HttpContext httpContext, AuthService authService, I
         return Results.Redirect($"/login?msg={Uri.EscapeDataString(result.Error)}");
     }
 
-    await httpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, CreatePrincipal(result.User));
+    await httpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, CookieSessions.CreatePrincipal(result.User));
     return Results.Redirect("/");
 }).RequireRateLimiting("AuthEndpoints");
 
@@ -471,7 +483,7 @@ if (isDevelopment)
     app.MapPost("/login/development", async (HttpContext httpContext, AuthService authService, CancellationToken ct) =>
     {
         var result = await authService.EnsureDevelopmentUserAsync(ct);
-        await httpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, CreatePrincipal(result.User));
+        await httpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, CookieSessions.CreatePrincipal(result.User));
         return Results.Redirect("/");
     }).RequireRateLimiting("AuthEndpoints");
 }
@@ -601,6 +613,7 @@ if (isE2E)
             EmailConfirmed = true,
             EmailConfirmedAtUtc = DateTime.UtcNow,
             PasswordHash = PasswordHasher.Hash(password),
+            SecurityStamp = SecurityStamps.New(),
             Role = "user",
             IsEnabled = true,
             CreatedAtUtc = DateTime.UtcNow,
@@ -782,16 +795,29 @@ app.MapPost("/api/admin/users/{id:guid}/enabled", async (Guid id, HttpContext ht
         : Results.BadRequest(new { ok = false, message = "Unable to update user status." });
 }).RequireAuthorization("AdminOnly");
 
-app.MapPost("/admin/users/{id:guid}/enabled", async (Guid id, HttpRequest request, AuthService authService, CancellationToken ct) =>
+app.MapPost("/admin/users/{id:guid}/enabled", async (Guid id, HttpContext httpContext, HttpRequest request, AuthService authService, CancellationToken ct) =>
 {
+    var currentUserIdRaw = httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier);
     var form = await request.ReadFormAsync(ct);
     var enabled = bool.TryParse(form["enabled"].ToString(), out var parsed) && parsed;
+
+    if (Guid.TryParse(currentUserIdRaw, out var currentUserId) && currentUserId == id && !enabled)
+    {
+        return Results.Redirect("/admin?msg=You%20cannot%20disable%20your%20own%20account");
+    }
+
     var ok = await authService.SetEnabledAsync(id, enabled, ct);
     return Results.Redirect(ok ? "/admin?msg=User%20status%20updated" : "/admin?msg=Unable%20to%20update%20user");
 }).RequireAuthorization("AdminOnly");
 
-app.MapPost("/admin/users/{id:guid}/delete", async (Guid id, AuthService authService, CancellationToken ct) =>
+app.MapPost("/admin/users/{id:guid}/delete", async (Guid id, HttpContext httpContext, AuthService authService, CancellationToken ct) =>
 {
+    var currentUserIdRaw = httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier);
+    if (Guid.TryParse(currentUserIdRaw, out var currentUserId) && currentUserId == id)
+    {
+        return Results.Redirect("/admin?msg=You%20cannot%20delete%20your%20own%20account");
+    }
+
     var ok = await authService.DeleteUserAsync(id, ct);
     return Results.Redirect(ok ? "/admin?msg=User%20deleted" : "/admin?msg=Unable%20to%20delete%20user");
 }).RequireAuthorization("AdminOnly");
@@ -1792,21 +1818,6 @@ app.MapPublicShareEndpoints();
 app.MapHub<ShareProgressHub>("/hubs/share-progress").RequireAuthorization();
 
 app.Run();
-
-static ClaimsPrincipal CreatePrincipal(UserAccount user)
-{
-    var displayName = string.IsNullOrWhiteSpace(user.DisplayName) ? user.Email : user.DisplayName.Trim();
-    var claims = new List<Claim>
-    {
-        new(ClaimTypes.NameIdentifier, user.Id.ToString()),
-        new(ClaimTypes.Email, user.Email),
-        new(ClaimTypes.Name, displayName),
-        new(ClaimTypes.Role, user.Role)
-    };
-
-    var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
-    return new ClaimsPrincipal(identity);
-}
 
 static bool IsHealthPath(PathString path) =>
     path.Equals("/live", StringComparison.OrdinalIgnoreCase) || path.Equals("/ready", StringComparison.OrdinalIgnoreCase);

@@ -87,6 +87,8 @@ export default defineConfig({
       PLAYWRIGHT_E2E_MINIO_BUCKET: minioBucket,
       ...storageEnv,
       Agora__StorageRoot: storageRoot,
+      // Revalidate the sign-in cookie against the database on every request so the suite exercises that path.
+      Agora__Auth__SessionRevalidationMinutes: '0',
       Email__Provider: 'filesystem',
       Email__FileSystem__OutputDirectory: path.join(dataRoot, 'emails'),
       Agora__Logging__File__Path: path.join(dataRoot, 'logs')

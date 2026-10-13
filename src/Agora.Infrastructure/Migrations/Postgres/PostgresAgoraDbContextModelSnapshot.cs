@@ -65,7 +65,7 @@ namespace Agora.Infrastructure.Migrations.Postgres
                     b.HasIndex("UploaderEmail")
                         .IsUnique();
 
-                    b.ToTable("AccountTemplates", (string)null);
+                    b.ToTable("AccountTemplates");
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.DownloadEvent", b =>
@@ -103,7 +103,7 @@ namespace Agora.Infrastructure.Migrations.Postgres
 
                     b.HasIndex("ShareId");
 
-                    b.ToTable("DownloadEvents", (string)null);
+                    b.ToTable("DownloadEvents");
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.Share", b =>
@@ -212,7 +212,7 @@ namespace Agora.Infrastructure.Migrations.Postgres
                     b.HasIndex("ShareToken")
                         .IsUnique();
 
-                    b.ToTable("Shares", (string)null);
+                    b.ToTable("Shares");
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.ShareFile", b =>
@@ -250,7 +250,7 @@ namespace Agora.Infrastructure.Migrations.Postgres
 
                     b.HasIndex("ShareId");
 
-                    b.ToTable("ShareFiles", (string)null);
+                    b.ToTable("ShareFiles");
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.SystemSetting", b =>
@@ -269,7 +269,7 @@ namespace Agora.Infrastructure.Migrations.Postgres
 
                     b.HasKey("Key");
 
-                    b.ToTable("SystemSettings", (string)null);
+                    b.ToTable("SystemSettings");
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.UserAccount", b =>
@@ -366,6 +366,11 @@ namespace Agora.Infrastructure.Migrations.Postgres
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
 
+                    b.Property<string>("SecurityStamp")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<string>("UploadToken")
                         .IsRequired()
                         .HasMaxLength(120)
@@ -382,7 +387,7 @@ namespace Agora.Infrastructure.Migrations.Postgres
                     b.HasIndex("UploadToken")
                         .IsUnique();
 
-                    b.ToTable("Users", (string)null);
+                    b.ToTable("Users");
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.DownloadEvent", b =>

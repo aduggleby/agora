@@ -2,6 +2,8 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Agora.Infrastructure.Auth;
+using Agora.Infrastructure.Persistence;
+using Agora.Web.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -11,7 +13,7 @@ using Agora.Application.Models;
 namespace Agora.Web.Pages.Account;
 
 [Authorize]
-public class SettingsModel(AuthService authService, IOptions<AgoraOptions> options) : PageModel
+public class SettingsModel(AuthService authService, AgoraDbContext db, IOptions<AgoraOptions> options) : PageModel
 {
     public string CurrentEmail { get; private set; } = string.Empty;
     public string DisplayName { get; private set; } = string.Empty;
@@ -60,17 +62,12 @@ public class SettingsModel(AuthService authService, IOptions<AgoraOptions> optio
             return RedirectToPage("/Account/Settings", new { msg = result.Error });
         }
 
-        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty;
-        var role = User.FindFirstValue(ClaimTypes.Role) ?? "user";
-        var claims = new List<Claim>
+        // Re-issue the cookie from the database record (role, stamp), never from the existing claims, and only if the
+        // current cookie still carries the live stamp.
+        if (!await CookieSessions.TryReissueAsync(HttpContext, db, ct))
         {
-            new(ClaimTypes.NameIdentifier, userId),
-            new(ClaimTypes.Email, email),
-            new(ClaimTypes.Name, result.DisplayName ?? email),
-            new(ClaimTypes.Role, role)
-        };
-        var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
-        await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity));
+            return Redirect("/login");
+        }
 
         return RedirectToPage("/Account/Settings", new { msg = "Profile updated" });
     }

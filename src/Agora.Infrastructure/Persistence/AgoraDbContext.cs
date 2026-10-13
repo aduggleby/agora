@@ -80,6 +80,7 @@ public class AgoraDbContext : DbContext
             builder.Property(x => x.UploadToken).HasMaxLength(120);
             builder.Property(x => x.PasswordHash).HasMaxLength(1000);
             builder.Property(x => x.Role).HasMaxLength(20);
+            builder.Property(x => x.SecurityStamp).HasMaxLength(64);
             builder.Property(x => x.DefaultNotifyMode).HasMaxLength(20);
             builder.Property(x => x.DefaultExpiryMode).HasMaxLength(20);
             builder.Property(x => x.EmailConfirmationTokenHash).HasMaxLength(64);

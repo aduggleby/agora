@@ -251,6 +251,11 @@ Switching providers does not move existing content. To move a FileSystem install
 Before, containers kept keys only in memory, so every restart already signed everyone out. Upgrading to 0.9.18 signs all
 users out (and invalidates open login/confirmation forms) one last time; after that, sign-ins survive restarts and updates.
 
+**Security stamps:** sign-in cookies now carry a per-user security stamp that is revalidated against the database (see
+"Sessions" below). Cookies issued before this change have no stamp and are rejected, so upgrading signs all users out
+once. From this change on, `Production` deployments must be served over HTTPS unless `Agora__Auth__SecureCookies` is
+changed (see "Sessions").
+
 ### Upload and retention
 
 | Setting | Default | What it controls |
@@ -285,6 +290,29 @@ How uploaded content is served (not configurable):
 - Only raster images (`png`, `jpg`, `gif`, `webp`, `avif`, `bmp`), common video and audio formats, PDF and plain text are served inline for previews. Everything else, including HTML, SVG and XML, is always served as a download (`application/octet-stream`, `Content-Disposition: attachment`).
 - All responses carrying user content (files, archive downloads, backgrounds, previews, thumbnails, link-preview images) are sent with `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox` (inline PDFs are exempt from the CSP so the browser's PDF viewer can render them).
 - Download-page background images must be JPG, PNG or WEBP. SVG backgrounds are no longer accepted; previously uploaded SVG backgrounds are offered as a download instead of being displayed.
+
+### Sessions
+
+| Setting | Default | What it controls |
+| --- | --- | --- |
+| `Agora__Auth__SessionLifetimeDays` | `14` | Sliding lifetime of the sign-in cookie: renewed while the user stays active, expired after this many idle days |
+| `Agora__Auth__SessionRevalidationMinutes` | `5` | How often a signed-in session is checked against the user record; `0` checks on every request |
+| `Agora__Auth__SecureCookies` | `Auto` | When the sign-in and CSRF cookies get the `Secure` flag: `Auto` (always in `Production`, only on HTTPS requests elsewhere), `Always`, `SameAsRequest` |
+
+Every sign-in cookie carries the user's security stamp. The stamp changes when the password is changed or reset, an
+email address change is confirmed, the role changes, or the account is disabled or re-enabled. The cookie is compared
+with the database at most every `SessionRevalidationMinutes`, so after any of those events (or a deletion) every
+session of that user is signed out within that interval. A promoted or demoted user therefore has to sign in again
+and gets the new role at that sign-in. Signing in does not end the user's other sessions. Open share-progress
+(SignalR) connections are checked the same way on connect and on every call.
+
+With `SecureCookies=Auto`, `Production` (the container default) marks the cookies `Secure`, so the app must be reached
+over HTTPS, typically behind a reverse proxy that forwards `X-Forwarded-Proto` (see "Reverse proxy headers"). Plain
+HTTP works outside `Production`, for example with `ASPNETCORE_ENVIRONMENT=Development`.
+
+> **Warning:** `Agora__Auth__SecureCookies=SameAsRequest` exists for HTTP-only installs on a trusted private network.
+> On a site reachable over plain HTTP from the public internet it lets anyone on the network path read the session
+> and CSRF cookies and take over the account. Prefer HTTPS.
 
 ### Email
 

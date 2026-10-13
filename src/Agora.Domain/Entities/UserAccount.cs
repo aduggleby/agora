@@ -22,6 +22,11 @@ public sealed class UserAccount
     public string DefaultNotifyMode { get; set; } = "once";
     public string DefaultExpiryMode { get; set; } = "7_days";
     public bool IsEnabled { get; set; } = true;
+    /// <summary>
+    /// Random value embedded in every sign-in cookie and compared on revalidation. Rotating it signs the user out of
+    /// all sessions; empty means the row predates stamps and gets one at the next sign-in.
+    /// </summary>
+    public string SecurityStamp { get; set; } = string.Empty;
     public string UploadToken { get; set; } = string.Empty;
     public DateTime? UploadTokenUpdatedAtUtc { get; set; }
     public int FailedLoginCount { get; set; }
