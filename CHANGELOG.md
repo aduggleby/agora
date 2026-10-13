@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.21] - 2026-10-13
+
+### Changed
+- Previews, thumbnails and Open Graph images are rendered with SkiaSharp (already bundled for PDF rendering) instead of SixLabors.ImageSharp, which is removed together with its five open advisories. Only PNG, JPEG, WEBP and BMP sources get generated previews, selected by magic bytes and the codec header; PNGs with duplicate headers, compressed text chunks or more than 64 KB of ancillary data are refused before decoding; raster decodes share two slots under the preview time budget.
+- Open Graph panels have rounded corners.
+
 ## [0.9.20] - 2026-10-13
 
 Security hardening release. **Breaking:** `Agora__PublicBaseUrl` is now required outside `Development`/`E2E` (startup fails without it), and `X-Forwarded-*` headers are honoured only from loopback and the proxies listed in `Agora__TrustedProxies`. Upgrading signs every existing session out once.
@@ -29,7 +35,7 @@ Security hardening release. **Breaking:** `Agora__PublicBaseUrl` is now required
 - The admin "allow registration" toggle could not re-enable registration (the form posted `false,true`).
 
 ### Notes
-- `SixLabors.ImageSharp` stays at 3.1.12. The patched 4.x line requires a build-time license key. The five open advisories are unreachable in Agora: TIFF encoding is never used, the TIFF decoder is not registered, histogram equalization is never called, and ICC profiles are never parsed (`SkipMetadata`).
+- `SixLabors.ImageSharp` stays at 3.1.12 in this release (replaced by SkiaSharp in 0.9.21). The five open advisories are unreachable here: TIFF encoding is never used, the TIFF decoder is not registered, histogram equalization is never called, and ICC profiles are never parsed (`SkipMetadata`).
 
 ## [0.9.19] - 2026-10-13
 
