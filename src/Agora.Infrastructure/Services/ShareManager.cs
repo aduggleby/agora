@@ -8,6 +8,7 @@ using Agora.Infrastructure.Persistence;
 using Hangfire;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -21,6 +22,7 @@ public sealed class ShareManager(
     AgoraDbContext db,
     IOptions<AgoraOptions> options,
     IShareContentStore contentStore,
+    IObjectStore objectStore,
     IBackgroundJobClient backgroundJobs,
     ILogger<ShareManager> logger)
 {
@@ -112,142 +114,247 @@ public sealed class ShareManager(
         var downloadPassword = string.IsNullOrWhiteSpace(command.DownloadPassword)
             ? null
             : command.DownloadPassword;
-        var persistedContent = await contentStore.PersistShareFilesAsync(command.Files, now, cancellationToken);
-        var shareContentRelativePath = persistedContent.ContentRootPath;
-        var storedFiles = persistedContent.Files;
-
-        var zipRelativePath = Path.Combine("zips", now.ToString("yyyy"), now.ToString("MM"), $"{Guid.NewGuid()}.zip");
-        var zipAbsolutePath = Path.Combine(_options.StorageRoot, zipRelativePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(zipAbsolutePath)!);
-
-        await using (var outStream = File.Create(zipAbsolutePath))
-        await using (var zip = new ZipArchive(outStream, ZipArchiveMode.Create))
+        // Every durable object written below is tracked so a failure at any step (including the DB save and
+        // cancellation) removes it again; scratch files are always deleted.
+        string? shareContentRelativePath = null;
+        var uploadedKeys = new List<string>();
+        var attemptedShareIds = new List<Guid>();
+        var scratchZipPath = ScratchFiles.NewPath(_options.StorageRoot, ".zip");
+        var scratchEncryptedPath = ScratchFiles.NewPath(_options.StorageRoot, ".agz");
+        try
         {
-            foreach (var file in storedFiles)
+            var persistedContent = await contentStore.PersistShareFilesAsync(command.Files, now, cancellationToken);
+            shareContentRelativePath = persistedContent.ContentRootPath;
+            var storedFiles = persistedContent.Files;
+
+            await using (var outStream = File.Create(scratchZipPath))
+            await using (var zip = new ZipArchive(outStream, ZipArchiveMode.Create))
             {
-                var entry = zip.CreateEntry(file.EntryName, CompressionLevel.Fastest);
-                await using var entryStream = entry.Open();
-                await using var source = File.OpenRead(file.StoredAbsolutePath);
-                await source.CopyToAsync(entryStream, cancellationToken);
+                foreach (var file in storedFiles)
+                {
+                    var entry = zip.CreateEntry(file.EntryName, CompressionLevel.Fastest);
+                    await using var entryStream = entry.Open();
+                    await using var source = File.OpenRead(file.LocalSourcePath);
+                    await source.CopyToAsync(entryStream, cancellationToken);
+                }
             }
-        }
 
-        var archiveDiskPath = zipRelativePath;
-        long archiveSizeBytes;
-        if (downloadPassword is not null)
-        {
-            var encryptedRelativePath = Path.Combine("zips", now.ToString("yyyy"), now.ToString("MM"), $"{Guid.NewGuid()}.agz");
-            var encryptedAbsolutePath = Path.Combine(_options.StorageRoot, encryptedRelativePath);
-            Directory.CreateDirectory(Path.GetDirectoryName(encryptedAbsolutePath)!);
-            await ZipEncryption.EncryptFileAsync(zipAbsolutePath, encryptedAbsolutePath, downloadPassword, cancellationToken);
-            File.Delete(zipAbsolutePath);
-            archiveDiskPath = encryptedRelativePath;
-            archiveSizeBytes = new FileInfo(encryptedAbsolutePath).Length;
-        }
-        else
-        {
-            archiveSizeBytes = new FileInfo(zipAbsolutePath).Length;
-        }
-
-        var template = await ResolveTemplateAsync(command, cancellationToken);
-        logger.LogInformation(
-            "Resolved download page template for uploader {UploaderEmail} mode {TemplateMode} with background marker {BackgroundMarker}",
-            command.UploaderEmail,
-            command.TemplateMode,
-            template.BackgroundImageUrl ?? "<none>");
-
-        if (command.TemplateMode == TemplateMode.PerUpload && command.TemplateBackgroundFile is not null)
-        {
-            var backgroundMarker = CopyTemplateBackgroundToShareDirectory(command.TemplateBackgroundFile, zipRelativePath);
-            template = template with { BackgroundImageUrl = backgroundMarker };
-            logger.LogInformation(
-                "Copied per-share custom background for uploader {UploaderEmail} to marker {BackgroundMarker}",
-                command.UploaderEmail,
-                backgroundMarker ?? "<none>");
-        }
-        else if (command.TemplateMode == TemplateMode.AccountDefault &&
-                 !string.IsNullOrWhiteSpace(template.BackgroundImageUrl) &&
-                 template.BackgroundImageUrl.StartsWith("internal:", StringComparison.OrdinalIgnoreCase))
-        {
-            var sourceMarker = template.BackgroundImageUrl;
-            var copiedMarker = CopyInternalBackgroundToShareDirectory(template.BackgroundImageUrl, zipRelativePath);
-            template = template with { BackgroundImageUrl = copiedMarker };
-            logger.LogInformation(
-                "Copied account default background for uploader {UploaderEmail} from {SourceMarker} to {CopiedMarker}",
-                command.UploaderEmail,
-                sourceMarker ?? "<none>",
-                copiedMarker ?? "<none>");
-        }
-
-        for (var attempt = 0; attempt < 16; attempt += 1)
-        {
-            var token = hasRequestedToken
-                ? requestedToken!
-                : TokenCodec.GenerateAlphanumericToken(8);
-
-            var share = new Share
+            var zipRelativePath = $"zips/{now:yyyy}/{now:MM}/{Guid.NewGuid()}.zip";
+            var archiveDiskPath = zipRelativePath;
+            var archiveLocalPath = scratchZipPath;
+            if (downloadPassword is not null)
             {
-                Id = Guid.NewGuid(),
-                UploaderEmail = EmailAddress.Normalize(command.UploaderEmail),
-                ShareToken = token,
-                ZipDisplayName = zipName,
-                ZipDiskPath = archiveDiskPath,
-                ZipSizeBytes = archiveSizeBytes,
-                ShareExperienceType = shareExperienceType,
-                AccessMode = accessMode,
-                ContentRootPath = shareContentRelativePath,
-                DownloadPasswordHash = downloadPassword is null ? null : PasswordHasher.Hash(downloadPassword),
-                UploaderMessage = command.Message,
-                SenderName = command.SenderName,
-                SenderEmail = EmailAddress.NormalizeOptional(command.SenderEmail),
-                SenderMessage = command.SenderMessage,
-                NotifyMode = command.NotifyMode,
-                ExpiresAtUtc = command.ExpiryMode == ExpiryMode.Indefinite ? null : command.ExpiresAtUtc,
-                CreatedAtUtc = now,
-                PageTitle = template.Title,
-                PageH1 = template.H1,
-                PageDescription = template.Description,
-                BackgroundImageUrl = template.BackgroundImageUrl,
-                PageBackgroundColorHex = template.BackgroundColorHex,
-                PageContainerPosition = NormalizeContainerPosition(template.ContainerPosition),
-                Files = storedFiles.Select(x => new ShareFile
+                await ZipEncryption.EncryptFileAsync(scratchZipPath, scratchEncryptedPath, downloadPassword, cancellationToken);
+                archiveDiskPath = $"zips/{now:yyyy}/{now:MM}/{Guid.NewGuid()}.agz";
+                archiveLocalPath = scratchEncryptedPath;
+            }
+
+            var archiveSizeBytes = new FileInfo(archiveLocalPath).Length;
+            uploadedKeys.Add(archiveDiskPath);
+            await objectStore.PutFileAsync(
+                archiveDiskPath,
+                archiveLocalPath,
+                downloadPassword is null ? "application/zip" : "application/octet-stream",
+                cancellationToken);
+
+            var template = await ResolveTemplateAsync(command, cancellationToken);
+            logger.LogInformation(
+                "Resolved download page template for uploader {UploaderEmail} mode {TemplateMode} with background marker {BackgroundMarker}",
+                command.UploaderEmail,
+                command.TemplateMode,
+                template.BackgroundImageUrl ?? "<none>");
+
+            if (command.TemplateMode == TemplateMode.PerUpload && command.TemplateBackgroundFile is not null)
+            {
+                var backgroundKey = ShareBackgroundKey(zipRelativePath, command.TemplateBackgroundFile.OriginalFileName);
+                uploadedKeys.Add(backgroundKey);
+                await objectStore.PutFileAsync(backgroundKey, command.TemplateBackgroundFile.TempPath, command.TemplateBackgroundFile.ContentType, cancellationToken);
+                var backgroundMarker = $"internal:{backgroundKey}";
+                template = template with { BackgroundImageUrl = backgroundMarker };
+                logger.LogInformation(
+                    "Copied per-share custom background for uploader {UploaderEmail} to marker {BackgroundMarker}",
+                    command.UploaderEmail,
+                    backgroundMarker);
+            }
+            else if (command.TemplateMode == TemplateMode.AccountDefault &&
+                     !string.IsNullOrWhiteSpace(template.BackgroundImageUrl) &&
+                     template.BackgroundImageUrl.StartsWith("internal:", StringComparison.OrdinalIgnoreCase))
+            {
+                var sourceMarker = template.BackgroundImageUrl;
+                var copiedMarker = await CopyInternalBackgroundToShareDirectoryAsync(template.BackgroundImageUrl, zipRelativePath, uploadedKeys, cancellationToken);
+                template = template with { BackgroundImageUrl = copiedMarker };
+                logger.LogInformation(
+                    "Copied account default background for uploader {UploaderEmail} from {SourceMarker} to {CopiedMarker}",
+                    command.UploaderEmail,
+                    sourceMarker ?? "<none>",
+                    copiedMarker ?? "<none>");
+            }
+
+            for (var attempt = 0; attempt < 16; attempt += 1)
+            {
+                var token = hasRequestedToken
+                    ? requestedToken!
+                    : TokenCodec.GenerateAlphanumericToken(8);
+
+                var share = new Share
                 {
                     Id = Guid.NewGuid(),
-                    OriginalFilename = x.EntryName,
-                    StoredRelativePath = x.StoredRelativePath,
-                    RenderType = DetectRenderType(x.EntryName, x.ContentType),
-                    OriginalSizeBytes = x.SizeBytes,
-                    DetectedContentType = x.ContentType
-                }).ToList()
-            };
+                    UploaderEmail = EmailAddress.Normalize(command.UploaderEmail),
+                    ShareToken = token,
+                    ZipDisplayName = zipName,
+                    ZipDiskPath = archiveDiskPath,
+                    ZipSizeBytes = archiveSizeBytes,
+                    ShareExperienceType = shareExperienceType,
+                    AccessMode = accessMode,
+                    ContentRootPath = shareContentRelativePath,
+                    DownloadPasswordHash = downloadPassword is null ? null : PasswordHasher.Hash(downloadPassword),
+                    UploaderMessage = command.Message,
+                    SenderName = command.SenderName,
+                    SenderEmail = EmailAddress.NormalizeOptional(command.SenderEmail),
+                    SenderMessage = command.SenderMessage,
+                    NotifyMode = command.NotifyMode,
+                    ExpiresAtUtc = command.ExpiryMode == ExpiryMode.Indefinite ? null : command.ExpiresAtUtc,
+                    CreatedAtUtc = now,
+                    PageTitle = template.Title,
+                    PageH1 = template.H1,
+                    PageDescription = template.Description,
+                    BackgroundImageUrl = template.BackgroundImageUrl,
+                    PageBackgroundColorHex = template.BackgroundColorHex,
+                    PageContainerPosition = NormalizeContainerPosition(template.ContainerPosition),
+                    Files = storedFiles.Select(x => new ShareFile
+                    {
+                        Id = Guid.NewGuid(),
+                        OriginalFilename = x.EntryName,
+                        StoredRelativePath = x.StoredRelativePath,
+                        RenderType = DetectRenderType(x.EntryName, x.ContentType),
+                        OriginalSizeBytes = x.SizeBytes,
+                        DetectedContentType = x.ContentType
+                    }).ToList()
+                };
 
-            db.Shares.Add(share);
-            try
-            {
-                await db.SaveChangesAsync(cancellationToken);
-                return new CreateShareResult(share.Id, token, share.ZipDisplayName, share.ExpiresAtUtc);
+                db.Shares.Add(share);
+                attemptedShareIds.Add(share.Id);
+                try
+                {
+                    await db.SaveChangesAsync(cancellationToken);
+                    return new CreateShareResult(share.Id, token, share.ZipDisplayName, share.ExpiresAtUtc);
+                }
+                catch (DbUpdateException ex) when (IsShareTokenConflict(ex))
+                {
+                    logger.LogWarning(
+                        ex,
+                        "Share token conflict while creating share. token={Token} uploader={Uploader} requestedToken={RequestedToken} hasRequestedToken={HasRequestedToken} provider={Provider}",
+                        token,
+                        command.UploaderEmail,
+                        requestedToken ?? "<none>",
+                        hasRequestedToken,
+                        db.Database.ProviderName ?? "<unknown>");
+                    db.Entry(share).State = EntityState.Detached;
+                    if (hasRequestedToken)
+                    {
+                        throw new InvalidOperationException("Share token is already in use.", ex);
+                    }
+
+                    // Random collision on generated token; retry with a new token.
+                }
+                catch
+                {
+                    db.Entry(share).State = EntityState.Detached;
+                    throw;
+                }
             }
-            catch (DbUpdateException ex) when (IsShareTokenConflict(ex))
+
+            throw new InvalidOperationException("Unable to generate a unique share token right now.");
+        }
+        catch
+        {
+            if (await IsAnyShareCommittedAsync(attemptedShareIds))
             {
                 logger.LogWarning(
-                    ex,
-                    "Share token conflict while creating share. token={Token} uploader={Uploader} requestedToken={RequestedToken} hasRequestedToken={HasRequestedToken} provider={Provider}",
-                    token,
-                    command.UploaderEmail,
-                    requestedToken ?? "<none>",
-                    hasRequestedToken,
-                    db.Database.ProviderName ?? "<unknown>");
-                db.Entry(share).State = EntityState.Detached;
-                if (hasRequestedToken)
-                {
-                    throw new InvalidOperationException("Share token is already in use.", ex);
-                }
+                    "Share creation failed but a share row may have been committed (ids {ShareIds}); keeping its objects (content root {ContentRoot}, keys {Keys}) for reconciliation",
+                    attemptedShareIds,
+                    shareContentRelativePath,
+                    uploadedKeys);
+            }
+            else
+            {
+                await DeleteUploadedObjectsAsync(shareContentRelativePath, uploadedKeys);
+            }
 
-                // Random collision on generated token; retry with a new token.
+            throw;
+        }
+        finally
+        {
+            ScratchFiles.TryDelete(scratchZipPath);
+            ScratchFiles.TryDelete(scratchEncryptedPath);
+        }
+    }
+
+    /// <summary>
+    /// A save can commit even though it reports a failure (lost acknowledgement), so compensation first checks with a
+    /// fresh context whether any attempted share row exists. True when one exists or the check itself fails.
+    /// </summary>
+    private async Task<bool> IsAnyShareCommittedAsync(IReadOnlyList<Guid> shareIds)
+    {
+        if (shareIds.Count == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await using var fresh = (AgoraDbContext)Activator.CreateInstance(db.GetType(), db.GetService<IDbContextOptions>())!;
+            return await fresh.Shares.AsNoTracking().AnyAsync(x => shareIds.Contains(x.Id), timeout.Token);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Could not verify whether failed share creation committed (ids {ShareIds})", shareIds);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Compensation for a failed share creation; uses its own timeout so a cancelled request still cleans up. Every
+    /// deletion is attempted even when earlier ones fail; whatever could not be deleted is logged for reconciliation.
+    /// </summary>
+    private async Task DeleteUploadedObjectsAsync(string? contentRootPath, IReadOnlyList<string> keys)
+    {
+        using var cleanup = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var failed = new List<string>();
+        var errors = new List<Exception>();
+        async Task TryAsync(string target, Func<Task> delete)
+        {
+            try
+            {
+                await delete();
+            }
+            catch (Exception ex)
+            {
+                failed.Add(target);
+                errors.Add(ex);
             }
         }
 
-        throw new InvalidOperationException("Unable to generate a unique share token right now.");
+        await TryAsync(contentRootPath ?? "<none>", () => contentStore.DeleteContentRootAsync(contentRootPath, cleanup.Token));
+        foreach (var key in keys)
+        {
+            await TryAsync(key, () => objectStore.DeleteAsync(key, cleanup.Token));
+        }
+
+        if (failed.Count > 0)
+        {
+            logger.LogError(
+                new AggregateException(errors),
+                "Failed to delete objects of a failed share creation; left behind: {FailedObjects}",
+                failed);
+        }
+    }
+
+    private static string ShareBackgroundKey(string zipRelativePath, string sourceName)
+    {
+        var extension = Path.GetExtension(sourceName);
+        return $"{zipRelativePath[..zipRelativePath.LastIndexOf('/')]}/{Path.GetFileNameWithoutExtension(zipRelativePath)}-background{(string.IsNullOrWhiteSpace(extension) ? ".bin" : extension)}";
     }
 
     public Task<Share?> FindByTokenAsync(string token, CancellationToken cancellationToken)
@@ -329,8 +436,7 @@ public sealed class ShareManager(
             return false;
         }
 
-        var zipAbsolutePath = Path.Combine(_options.StorageRoot, share.ZipDiskPath);
-        if (!File.Exists(zipAbsolutePath))
+        if (!ObjectKey.TryNormalize(share.ZipDiskPath, out var zipKey) || await objectStore.GetInfoAsync(zipKey, cancellationToken) is null)
         {
             return false;
         }
@@ -415,7 +521,7 @@ public sealed class ShareManager(
             return;
         }
 
-        DeleteShareContentFiles(share.ZipDiskPath, share.BackgroundImageUrl, share.ContentRootPath);
+        await DeleteShareContentFilesAsync(share, cancellationToken);
     }
 
     public static bool IsExpired(Share share, DateTime utcNow)
@@ -548,7 +654,7 @@ public sealed class ShareManager(
         var count = 0;
         foreach (var share in expired)
         {
-            DeleteShareContentFiles(share.ZipDiskPath, share.BackgroundImageUrl, share.ContentRootPath);
+            await DeleteShareContentFilesAsync(share, cancellationToken);
             share.DeletedAtUtc = now;
             count++;
         }
@@ -921,7 +1027,41 @@ public sealed class ShareManager(
             }
         }
 
-        return removed + staleDraftIds.Count;
+        return removed + staleDraftIds.Count + SweepStaleScratchFiles(cutoff, cancellationToken);
+    }
+
+    /// <summary>
+    /// Deletes scratch files (under tmp/, including ASP.NET's tmp/aspnet buffers) and preview .lock markers older than
+    /// the cutoff. Only files are removed, so in-use directories such as tmp/aspnet survive.
+    /// </summary>
+    private int SweepStaleScratchFiles(DateTime cutoffUtc, CancellationToken cancellationToken)
+    {
+        var candidates = new[]
+        {
+            (Root: ScratchFiles.Root(_options.StorageRoot), Pattern: "*"),
+            (Root: Path.Combine(_options.StorageRoot, "previews"), Pattern: "*.lock")
+        };
+
+        var removed = 0;
+        foreach (var (root, pattern) in candidates)
+        {
+            if (!Directory.Exists(root))
+            {
+                continue;
+            }
+
+            foreach (var path in Directory.EnumerateFiles(root, pattern, SearchOption.AllDirectories))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (File.GetLastWriteTimeUtc(path) <= cutoffUtc)
+                {
+                    ScratchFiles.TryDelete(path);
+                    removed++;
+                }
+            }
+        }
+
+        return removed;
     }
 
     public async Task<string> EnsureDraftShareAsync(string uploaderEmail, string? requestedDraftShareId, CancellationToken cancellationToken)
@@ -1294,114 +1434,65 @@ public sealed class ShareManager(
                text.Contains("UNIQUE constraint failed: Shares.ShareToken", StringComparison.OrdinalIgnoreCase);
     }
 
-    private string CopyTemplateBackgroundToShareDirectory(UploadSourceFile backgroundFile, string zipRelativePath)
+    private async Task DeleteShareContentFilesAsync(Share share, CancellationToken cancellationToken)
     {
-        var zipDirectory = Path.GetDirectoryName(zipRelativePath) ?? "zips";
-        var zipStem = Path.GetFileNameWithoutExtension(zipRelativePath);
-        var safeExtension = Path.GetExtension(backgroundFile.OriginalFileName);
-        if (string.IsNullOrWhiteSpace(safeExtension))
+        if (ObjectKey.TryNormalize(share.ZipDiskPath, out var zipKey) && zipKey.StartsWith("zips/", StringComparison.Ordinal))
         {
-            safeExtension = ".bin";
+            await objectStore.DeleteAsync(zipKey, cancellationToken);
         }
 
-        var backgroundRelativePath = Path.Combine(zipDirectory, $"{zipStem}-background{safeExtension}");
-        var backgroundAbsolutePath = Path.Combine(_options.StorageRoot, backgroundRelativePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(backgroundAbsolutePath)!);
-        File.Copy(backgroundFile.TempPath, backgroundAbsolutePath, overwrite: true);
-        return $"internal:{backgroundRelativePath.Replace('\\', '/')}";
-    }
+        await contentStore.DeleteContentRootAsync(share.ContentRootPath, cancellationToken);
+        await objectStore.DeletePrefixAsync($"previews/{share.Id:N}/", cancellationToken);
 
-    private void DeleteShareContentFiles(string zipDiskPath, string? backgroundImageMarker, string? contentRootPath)
-    {
-        var zipAbsolutePath = Path.Combine(_options.StorageRoot, zipDiskPath);
-        if (File.Exists(zipAbsolutePath))
+        // Preview .lock/.failed markers are local scratch (in S3 mode the previews themselves are not here).
+        var previewMarkers = Path.Combine(_options.StorageRoot, "previews", share.Id.ToString("N"));
+        if (Directory.Exists(previewMarkers))
         {
-            File.Delete(zipAbsolutePath);
+            Directory.Delete(previewMarkers, recursive: true);
         }
 
-        contentStore.DeleteContentRoot(contentRootPath);
-
-        var marker = backgroundImageMarker ?? string.Empty;
-        if (!marker.StartsWith("internal:", StringComparison.OrdinalIgnoreCase))
+        var backgroundKey = ObjectKey.FromInternalMarker(share.BackgroundImageUrl);
+        if (backgroundKey is null)
         {
             return;
         }
 
-        var relativePath = marker["internal:".Length..].TrimStart('/', '\\');
-        if (relativePath.Length == 0)
-        {
-            return;
-        }
-
-        var normalizedRelativePath = relativePath.Replace('\\', '/');
-        if (!normalizedRelativePath.StartsWith("zips/", StringComparison.OrdinalIgnoreCase))
+        if (!backgroundKey.StartsWith("zips/", StringComparison.Ordinal))
         {
             logger.LogInformation(
                 "Skipping background deletion for non-share-owned marker {BackgroundMarker}",
-                backgroundImageMarker ?? "<none>");
+                share.BackgroundImageUrl);
             return;
         }
 
-        var backgroundAbsolutePath = Path.Combine(_options.StorageRoot, relativePath);
-        if (File.Exists(backgroundAbsolutePath))
-        {
-            File.Delete(backgroundAbsolutePath);
-        }
+        await objectStore.DeleteAsync(backgroundKey, cancellationToken);
     }
 
-    private string? CopyInternalBackgroundToShareDirectory(string internalMarker, string zipRelativePath)
+    private async Task<string?> CopyInternalBackgroundToShareDirectoryAsync(
+        string internalMarker,
+        string zipRelativePath,
+        List<string> uploadedKeys,
+        CancellationToken cancellationToken)
     {
-        var marker = internalMarker ?? string.Empty;
-        if (!marker.StartsWith("internal:", StringComparison.OrdinalIgnoreCase))
+        var sourceKey = ObjectKey.FromInternalMarker(internalMarker);
+        if (sourceKey is null)
+        {
+            logger.LogWarning("Cannot copy background marker because it is not a valid internal key. Marker: {BackgroundMarker}", internalMarker);
+            return null;
+        }
+
+        if (await objectStore.GetInfoAsync(sourceKey, cancellationToken) is null)
         {
             logger.LogWarning(
-                "Cannot copy background marker because it is not internal. Marker: {BackgroundMarker}",
-                internalMarker ?? "<none>");
+                "Cannot copy background marker because source object does not exist. Marker: {BackgroundMarker}",
+                internalMarker);
             return null;
         }
 
-        var relativePath = marker["internal:".Length..].TrimStart('/', '\\');
-        if (relativePath.Length == 0)
-        {
-            logger.LogWarning("Cannot copy background marker because relative path was empty. Marker: {BackgroundMarker}", marker);
-            return null;
-        }
-
-        var storageRoot = Path.GetFullPath(_options.StorageRoot);
-        var sourceAbsolutePath = Path.GetFullPath(Path.Combine(storageRoot, relativePath));
-        if (!sourceAbsolutePath.StartsWith(storageRoot, StringComparison.Ordinal))
-        {
-            logger.LogWarning(
-                "Cannot copy background marker because source path escaped storage root. Marker: {BackgroundMarker}",
-                marker);
-            return null;
-        }
-
-        if (!File.Exists(sourceAbsolutePath))
-        {
-            logger.LogWarning(
-                "Cannot copy background marker because source file does not exist. Marker: {BackgroundMarker} SourcePath: {SourcePath}",
-                marker,
-                sourceAbsolutePath);
-            return null;
-        }
-
-        var zipDirectory = Path.GetDirectoryName(zipRelativePath) ?? "zips";
-        var zipStem = Path.GetFileNameWithoutExtension(zipRelativePath);
-        var safeExtension = Path.GetExtension(relativePath);
-        if (string.IsNullOrWhiteSpace(safeExtension))
-        {
-            safeExtension = ".bin";
-        }
-
-        var backgroundRelativePath = Path.Combine(zipDirectory, $"{zipStem}-background{safeExtension}");
-        var backgroundAbsolutePath = Path.Combine(storageRoot, backgroundRelativePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(backgroundAbsolutePath)!);
-        File.Copy(sourceAbsolutePath, backgroundAbsolutePath, overwrite: true);
-        logger.LogInformation(
-            "Copied internal background from {SourcePath} to {TargetPath}",
-            sourceAbsolutePath,
-            backgroundAbsolutePath);
-        return $"internal:{backgroundRelativePath.Replace('\\', '/')}";
+        var backgroundKey = ShareBackgroundKey(zipRelativePath, sourceKey);
+        uploadedKeys.Add(backgroundKey);
+        await objectStore.CopyAsync(sourceKey, backgroundKey, cancellationToken);
+        logger.LogInformation("Copied internal background from {SourceKey} to {TargetKey}", sourceKey, backgroundKey);
+        return $"internal:{backgroundKey}";
     }
 }

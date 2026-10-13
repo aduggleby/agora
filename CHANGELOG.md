@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.19] - 2026-10-13
+
+### Added
+- Object storage backend: `Storage__Provider=S3` with `Storage__S3__ServiceUrl|Region|Bucket|AccessKeyId|SecretAccessKey|ForcePathStyle` (Hetzner Object Storage, MinIO, other S3-compatible stores). The default `FileSystem` provider keeps content under `StorageRoot` exactly as before, so existing installs need no change.
+- Share files, archives, download-page backgrounds and previews are stored through the object store; object keys are the existing relative paths (no database change). Downloads are proxied through the app with range support for single files.
+- `/ready` also checks the bucket in S3 mode (healthy results cached for 30 s).
+
+### Changed
+- Archives (and password-protected `.agz` files) are built in `StorageRoot/tmp` and then uploaded. If share creation fails at any step, every object already uploaded is deleted again.
+- Password-protected downloads decrypt into `StorageRoot/tmp` (was `downloads/tmp`); the plaintext is deleted on every failure path and after the response.
+- Deleting a share also deletes its previews (`previews/{shareId}/`), which were left behind before. A preview finished after its share was deleted is removed.
+- The zombie cleanup also sweeps `StorageRoot/tmp` files and stale preview `.lock` markers older than `Agora__ZombieUploadRetentionHours`.
+
+### Removed
+- Unused `ExpiredShareCleanupService` (expired-share cleanup runs as a Hangfire recurring job).
+
 ## [0.9.18] - 2026-10-12
 
 ### Added

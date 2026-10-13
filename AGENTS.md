@@ -30,6 +30,8 @@ When working in this repository, agents should prioritize:
 - Store and query emails lower-cased (`EmailAddress.Normalize`); PostgreSQL comparisons are case-sensitive.
 - Persist only UTC `DateTime` values (`DateTimeKind.Utc`); Npgsql rejects other kinds for `timestamptz`.
 - Share/upload token lookups are exact-match: case-sensitive on PostgreSQL, case-insensitive on default SQL Server collations. Do not rely on either behaviour.
+- Durable content (share files, archives, backgrounds, previews) is read and written only through `IObjectStore` (`Storage__Provider=FileSystem|S3`). Never use `File.*`/`Directory.*` on durable paths, and never build durable paths from `StorageRoot`. Keys are relative, forward-slash paths validated by `ObjectKey`; `DeletePrefixAsync` takes only prefixes with at least two segments and a trailing `/`.
+- Local `StorageRoot` is scratch only: staged uploads, drafts, share-create status, preview `.lock`/`.failed` markers and `StorageRoot/tmp` (`ScratchFiles`). Build archives locally, then upload; track every uploaded key and delete them if share creation fails.
 - Large temp files go under `StorageRoot/tmp` (never the system `/tmp`, a 64 MB tmpfs on prod1). Startup sets `ASPNETCORE_TEMP` to `StorageRoot/tmp/aspnet` unless it is set explicitly.
 
 ## Build/Test Commands
@@ -37,8 +39,9 @@ When working in this repository, agents should prioritize:
 - Build system: `Ando` (https://andobuild.com/llms.txt)
 - `dotnet restore Agora.slnx`
 - `dotnet build Agora.slnx`
-- `dotnet test tests/Agora.Application.Tests/Agora.Application.Tests.csproj` (PostgreSQL integration tests use Testcontainers and skip without Docker; set `AGORA_REQUIRE_POSTGRES_TESTS=1` to make that a failure)
-- E2E: `cd tests/e2e && npm run test:sqlserver`, `npm run test:postgres`, or `npm run test:all` (`PLAYWRIGHT_E2E_DB=sqlserver|postgres`)
+- `dotnet test tests/Agora.Application.Tests/Agora.Application.Tests.csproj` (PostgreSQL and MinIO tests use Testcontainers and skip without Docker; set `AGORA_REQUIRE_POSTGRES_TESTS=1` / `AGORA_REQUIRE_S3_TESTS=1` to make that a failure)
+- Opt-in real-bucket smoke test: set `AGORA_S3_LIVE_BUCKET`, `AGORA_S3_LIVE_ENDPOINT`, `AGORA_S3_LIVE_REGION` (optional `AGORA_S3_LIVE_FORCE_PATH_STYLE`, default `false`) plus `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, then `dotnet test --filter LiveS3`. It works under a unique `agora-smoke/<guid>/` prefix and leaves it empty.
+- E2E: `cd tests/e2e && npx playwright test` with `PLAYWRIGHT_E2E_DB=sqlserver|postgres` and `PLAYWRIGHT_E2E_STORAGE=filesystem|s3` (scripts `test:sqlserver`, `test:postgres`, `test:postgres-s3`, `test:all`). The s3 leg runs MinIO and fails teardown if durable content landed on local disk.
 - `ando` (uses `build.csando`)
 
 ## Container Contract
@@ -47,8 +50,9 @@ The container must run with only:
 
 - Environment variables for config
 - One writable volume
-  - `/app/data` (contains uploads, DataProtection keys, logs)
-- Health endpoints: `GET /live` (process up) and `GET /ready` (database reachable)
+  - `/app/data` (contains scratch: staged uploads, drafts, `uploads/tmp`; DataProtection keys; logs; and, with `Storage__Provider=FileSystem`, the durable content)
+- Optional object storage: `Storage__Provider=S3` with `Storage__S3__*` (durable content in the bucket; `/app/data` still needs ≈3× the largest share × concurrent creations for scratch)
+- Health endpoints: `GET /live` (process up) and `GET /ready` (database and, in S3 mode, bucket reachable)
 
 Default container port:
 
@@ -63,6 +67,7 @@ E2E defaults:
 - Web app (Playwright): `18090`
 - Dedicated E2E SQL Server container: `mcr.microsoft.com/mssql/server:2022-latest` on `18091`
 - Dedicated E2E PostgreSQL container: `postgres:17` on `18092`
+- Dedicated E2E MinIO container (`PLAYWRIGHT_E2E_STORAGE=s3`): `quay.io/minio/minio` on `18093`, bucket `agora-e2e`
 - Dedicated E2E database: `agora_e2e`
 
 ## File Ownership and Layout

@@ -4,9 +4,10 @@
   "type": "module",
   "scripts": {
     "test": "playwright test",
-    "test:sqlserver": "PLAYWRIGHT_E2E_DB=sqlserver playwright test",
+    "test:sqlserver": "PLAYWRIGHT_E2E_DB=sqlserver PLAYWRIGHT_E2E_STORAGE=filesystem playwright test",
     "test:postgres": "PLAYWRIGHT_E2E_DB=postgres playwright test",
-    "test:all": "PLAYWRIGHT_E2E_DB=sqlserver playwright test && PLAYWRIGHT_E2E_DB=postgres playwright test",
+    "test:postgres-s3": "PLAYWRIGHT_E2E_DB=postgres PLAYWRIGHT_E2E_STORAGE=s3 playwright test",
+    "test:all": "PLAYWRIGHT_E2E_DB=sqlserver PLAYWRIGHT_E2E_STORAGE=filesystem playwright test && PLAYWRIGHT_E2E_DB=postgres playwright test && PLAYWRIGHT_E2E_DB=postgres PLAYWRIGHT_E2E_STORAGE=s3 playwright test",
     "test:headed": "playwright test --headed",
     "report": "playwright show-report"
   },

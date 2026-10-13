@@ -1,79 +1,58 @@
+using System.Text.RegularExpressions;
 using Agora.Application.Abstractions;
 using Agora.Application.Models;
 using Agora.Application.Utilities;
-using Microsoft.Extensions.Options;
 
 namespace Agora.Infrastructure.Services;
 
-public sealed class ShareContentStore(IOptions<AgoraOptions> options) : IShareContentStore
+public sealed partial class ShareContentStore(IObjectStore objectStore) : IShareContentStore
 {
-    private readonly AgoraOptions _options = options.Value;
-
-    public Task<(string ContentRootPath, IReadOnlyList<StoredShareContentFile> Files)> PersistShareFilesAsync(
+    public async Task<(string ContentRootPath, IReadOnlyList<StoredShareContentFile> Files)> PersistShareFilesAsync(
         IReadOnlyList<UploadSourceFile> files,
         DateTime nowUtc,
         CancellationToken cancellationToken)
     {
-        var shareContentRelativePath = Path.Combine("shares", nowUtc.ToString("yyyy"), nowUtc.ToString("MM"), Guid.NewGuid().ToString("N"));
-        var shareContentAbsolutePath = Path.Combine(_options.StorageRoot, shareContentRelativePath);
-        Directory.CreateDirectory(shareContentAbsolutePath);
-
+        var contentRoot = $"shares/{nowUtc:yyyy}/{nowUtc:MM}/{Guid.NewGuid():N}";
         var storedFiles = new List<StoredShareContentFile>(files.Count);
-        foreach (var file in files)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var file in files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
 
-            var entryName = ArchiveNameResolver.Sanitize(file.OriginalFileName);
-            var safeExtension = Path.GetExtension(entryName);
-            var storedFileName = $"{Guid.NewGuid():N}{safeExtension}";
-            var storedRelativePath = Path.Combine(shareContentRelativePath, storedFileName);
-            var storedAbsolutePath = Path.Combine(_options.StorageRoot, storedRelativePath);
-            Directory.CreateDirectory(Path.GetDirectoryName(storedAbsolutePath)!);
-            File.Copy(file.TempPath, storedAbsolutePath, overwrite: true);
-            storedFiles.Add(new StoredShareContentFile(
-                entryName,
-                storedRelativePath,
-                storedAbsolutePath,
-                file.OriginalSizeBytes,
-                file.ContentType));
+                var entryName = ArchiveNameResolver.Sanitize(file.OriginalFileName);
+                var key = $"{contentRoot}/{Guid.NewGuid():N}{Path.GetExtension(entryName)}";
+                await objectStore.PutFileAsync(key, file.TempPath, file.ContentType, cancellationToken);
+                storedFiles.Add(new StoredShareContentFile(entryName, key, file.TempPath, file.OriginalSizeBytes, file.ContentType));
+            }
+        }
+        catch
+        {
+            try
+            {
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+                await objectStore.DeletePrefixAsync(contentRoot + "/", cleanup.Token);
+            }
+            catch
+            {
+                // Best effort; the original failure is what matters to the caller.
+            }
+
+            throw;
         }
 
-        return Task.FromResult((shareContentRelativePath, (IReadOnlyList<StoredShareContentFile>)storedFiles));
+        return (contentRoot, storedFiles);
     }
 
-    public string? ResolveAbsolutePath(string? storedRelativePath)
+    public async Task DeleteContentRootAsync(string? contentRootPath, CancellationToken cancellationToken)
     {
-        var relative = (storedRelativePath ?? string.Empty).Trim().TrimStart('/').TrimStart('\\');
-        if (relative.Length == 0)
+        var root = (contentRootPath ?? string.Empty).Replace('\\', '/').TrimEnd('/');
+        if (ContentRootPattern().IsMatch(root))
         {
-            return null;
-        }
-
-        var storageRoot = Path.GetFullPath(_options.StorageRoot);
-        var absolutePath = Path.GetFullPath(Path.Combine(storageRoot, relative));
-        return absolutePath.StartsWith(storageRoot, StringComparison.Ordinal)
-            ? absolutePath
-            : null;
-    }
-
-    public void DeleteContentRoot(string? contentRootPath)
-    {
-        var contentRelativePath = (contentRootPath ?? string.Empty).TrimStart('/', '\\');
-        if (contentRelativePath.Length == 0)
-        {
-            return;
-        }
-
-        var normalizedContentPath = contentRelativePath.Replace('\\', '/');
-        if (!normalizedContentPath.StartsWith("shares/", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        var contentAbsolutePath = Path.Combine(_options.StorageRoot, contentRelativePath);
-        if (Directory.Exists(contentAbsolutePath))
-        {
-            Directory.Delete(contentAbsolutePath, recursive: true);
+            await objectStore.DeletePrefixAsync(root + "/", cancellationToken);
         }
     }
+
+    [GeneratedRegex("^shares/[0-9]{4}/[0-9]{2}/[0-9a-f]{32}$")]
+    private static partial Regex ContentRootPattern();
 }

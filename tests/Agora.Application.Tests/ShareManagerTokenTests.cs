@@ -3,6 +3,7 @@ using Agora.Application.Models;
 using Agora.Domain.Entities;
 using Agora.Infrastructure.Persistence;
 using Agora.Infrastructure.Services;
+using Agora.Infrastructure.Storage;
 using Hangfire;
 using Hangfire.Common;
 using Hangfire.States;
@@ -202,11 +203,12 @@ public sealed class ShareManagerTokenTests
             var storageRoot = Path.Combine(Path.GetTempPath(), "agora-sharemanager-tests", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(storageRoot);
             var appOptions = Options.Create(new AgoraOptions { StorageRoot = storageRoot });
-            IShareContentStore contentStore = new ShareContentStore(appOptions);
+            var objectStore = new FileSystemObjectStore(storageRoot);
             var manager = new ShareManager(
                 db,
                 appOptions,
-                contentStore,
+                new ShareContentStore(objectStore),
+                objectStore,
                 new NoopBackgroundJobClient(),
                 NullLogger<ShareManager>.Instance);
 

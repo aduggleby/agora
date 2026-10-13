@@ -1,63 +1,87 @@
 using Agora.Application.Abstractions;
 using Agora.Application.Models;
 using Agora.Infrastructure.Services;
-using Microsoft.Extensions.Options;
+using Agora.Infrastructure.Storage;
 
 namespace Agora.Application.Tests;
 
-public sealed class ShareContentStoreTests
+public sealed class ShareContentStoreTests : IDisposable
 {
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "agora-sharestore-tests", Guid.NewGuid().ToString("N"));
+
+    public ShareContentStoreTests() => Directory.CreateDirectory(_root);
+
+    public void Dispose() => Directory.Delete(_root, recursive: true);
+
     [Fact]
-    public async Task PersistShareFilesAndResolvePath_Works()
+    public async Task PersistShareFiles_uploads_to_object_keys_and_keeps_local_source()
     {
-        var root = Path.Combine(Path.GetTempPath(), "agora-sharestore-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
-        {
-            var options = Options.Create(new AgoraOptions { StorageRoot = root });
-            IShareContentStore store = new ShareContentStore(options);
+        var objectStore = new FileSystemObjectStore(Path.Combine(_root, "store"));
+        IShareContentStore store = new ShareContentStore(objectStore);
+        var sourcePath = Path.Combine(_root, "input.txt");
+        await File.WriteAllTextAsync(sourcePath, "hello");
 
-            var sourcePath = Path.Combine(root, "input.txt");
-            await File.WriteAllTextAsync(sourcePath, "hello");
-            var files = new List<UploadSourceFile>
-            {
-                new(sourcePath, "input.txt", 5, "text/plain")
-            };
+        var result = await store.PersistShareFilesAsync([new UploadSourceFile(sourcePath, "input.txt", 5, "text/plain")], new DateTime(2026, 10, 13, 0, 0, 0, DateTimeKind.Utc), CancellationToken.None);
 
-            var result = await store.PersistShareFilesAsync(files, DateTime.UtcNow, CancellationToken.None);
-            Assert.Single(result.Files);
-            var stored = result.Files[0];
-
-            Assert.True(File.Exists(stored.StoredAbsolutePath));
-            var resolved = store.ResolveAbsolutePath(stored.StoredRelativePath);
-            Assert.Equal(Path.GetFullPath(stored.StoredAbsolutePath), resolved);
-        }
-        finally
-        {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
-        }
+        Assert.Matches("^shares/2026/10/[0-9a-f]{32}$", result.ContentRootPath);
+        var stored = Assert.Single(result.Files);
+        Assert.StartsWith(result.ContentRootPath + "/", stored.StoredRelativePath);
+        Assert.EndsWith(".txt", stored.StoredRelativePath);
+        Assert.Equal(sourcePath, stored.LocalSourcePath);
+        Assert.Equal(5, (await objectStore.GetInfoAsync(stored.StoredRelativePath, CancellationToken.None))!.Length);
+        Assert.True(File.Exists(sourcePath));
     }
 
     [Fact]
-    public void ResolveAbsolutePath_RejectsTraversal()
+    public async Task PersistShareFiles_removes_partial_uploads_on_failure()
     {
-        var root = Path.Combine(Path.GetTempPath(), "agora-sharestore-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
+        var storeRoot = Path.Combine(_root, "store");
+        IShareContentStore store = new ShareContentStore(new FileSystemObjectStore(storeRoot));
+        var sourcePath = Path.Combine(_root, "input.txt");
+        await File.WriteAllTextAsync(sourcePath, "hello");
+        var files = new List<UploadSourceFile>
         {
-            var options = Options.Create(new AgoraOptions { StorageRoot = root });
-            IShareContentStore store = new ShareContentStore(options);
-            Assert.Null(store.ResolveAbsolutePath("../../etc/passwd"));
-        }
-        finally
-        {
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
-        }
+            new(sourcePath, "a.txt", 5, "text/plain"),
+            new(Path.Combine(_root, "missing.txt"), "b.txt", 5, "text/plain")
+        };
+
+        await Assert.ThrowsAsync<FileNotFoundException>(() => store.PersistShareFilesAsync(files, DateTime.UtcNow, CancellationToken.None));
+
+        Assert.Empty(Directory.EnumerateFiles(storeRoot, "*", SearchOption.AllDirectories));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("shares/")]
+    [InlineData("shares/2026/10")]
+    [InlineData("shares/2026/10/../..")]
+    [InlineData("zips/2026/10/0123456789abcdef0123456789abcdef")]
+    [InlineData("shares/2026/10/not-a-guid")]
+    public async Task DeleteContentRoot_ignores_anything_but_generated_roots(string? contentRoot)
+    {
+        var storeRoot = Path.Combine(_root, "store");
+        var objectStore = new FileSystemObjectStore(storeRoot);
+        await objectStore.PutBytesAsync("shares/2026/10/0123456789abcdef0123456789abcdef/a.txt", [1], null, CancellationToken.None);
+        await objectStore.PutBytesAsync("zips/2026/10/0123456789abcdef0123456789abcdef/a.txt", [1], null, CancellationToken.None);
+
+        await new ShareContentStore(objectStore).DeleteContentRootAsync(contentRoot, CancellationToken.None);
+
+        Assert.Equal(2, Directory.EnumerateFiles(storeRoot, "*", SearchOption.AllDirectories).Count());
+    }
+
+    [Fact]
+    public async Task DeleteContentRoot_deletes_a_generated_root_only()
+    {
+        var storeRoot = Path.Combine(_root, "store");
+        var objectStore = new FileSystemObjectStore(storeRoot);
+        const string root = "shares/2026/10/0123456789abcdef0123456789abcdef";
+        await objectStore.PutBytesAsync($"{root}/a.txt", [1], null, CancellationToken.None);
+        await objectStore.PutBytesAsync($"{root}0/b.txt", [1], null, CancellationToken.None);
+
+        await new ShareContentStore(objectStore).DeleteContentRootAsync(root, CancellationToken.None);
+
+        Assert.Null(await objectStore.GetInfoAsync($"{root}/a.txt", CancellationToken.None));
+        Assert.NotNull(await objectStore.GetInfoAsync($"{root}0/b.txt", CancellationToken.None));
     }
 }

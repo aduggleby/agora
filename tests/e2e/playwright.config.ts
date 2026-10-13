@@ -19,6 +19,33 @@ const connectionString = isPostgres
   ? `Host=127.0.0.1;Port=${sqlPort};Database=agora_e2e;Username=postgres;Password=${sqlPassword};GSS Encryption Mode=Disable`
   : `Server=127.0.0.1,${sqlPort};Database=agora_e2e;User Id=sa;Password=${sqlPassword};Encrypt=True;TrustServerCertificate=True`;
 process.env.PLAYWRIGHT_E2E_SQL_CONTAINER_NAME = sqlContainerName;
+// PLAYWRIGHT_E2E_STORAGE=filesystem (default) | s3 selects the object store; s3 runs a dedicated MinIO container.
+const storageKind = (process.env.PLAYWRIGHT_E2E_STORAGE ?? 'filesystem').toLowerCase();
+if (storageKind !== 'filesystem' && storageKind !== 's3') {
+  throw new Error(`PLAYWRIGHT_E2E_STORAGE must be 'filesystem' or 's3' (got '${storageKind}').`);
+}
+const isS3 = storageKind === 's3';
+const minioContainerName = isS3 ? `agora-e2e-minio-${runId}` : '';
+const minioPort = Number.parseInt(process.env.PLAYWRIGHT_E2E_MINIO_PORT ?? '18093', 10);
+const minioUser = 'agora-e2e';
+const minioPassword = 'AgoraE2E-Minio-Passw0rd';
+const minioBucket = 'agora-e2e';
+const storageRoot = path.join(dataRoot, 'storage');
+process.env.PLAYWRIGHT_E2E_STORAGE = storageKind;
+process.env.PLAYWRIGHT_E2E_MINIO_CONTAINER_NAME = minioContainerName;
+process.env.PLAYWRIGHT_E2E_MINIO_BUCKET = minioBucket;
+process.env.PLAYWRIGHT_E2E_STORAGE_ROOT = storageRoot;
+const storageEnv: Record<string, string> = isS3
+  ? {
+      Storage__Provider: 'S3',
+      Storage__S3__ServiceUrl: `http://127.0.0.1:${minioPort}`,
+      Storage__S3__Region: 'us-east-1',
+      Storage__S3__Bucket: minioBucket,
+      Storage__S3__AccessKeyId: minioUser,
+      Storage__S3__SecretAccessKey: minioPassword,
+      Storage__S3__ForcePathStyle: 'true',
+    }
+  : { Storage__Provider: 'FileSystem' };
 
 export default defineConfig({
   testDir: './specs',
@@ -52,7 +79,14 @@ export default defineConfig({
       PLAYWRIGHT_E2E_SQL_PASSWORD: sqlPassword,
       Database__Provider: isPostgres ? 'Postgres' : 'SqlServer',
       ConnectionStrings__Default: connectionString,
-      Agora__StorageRoot: path.join(dataRoot, 'storage'),
+      PLAYWRIGHT_E2E_STORAGE: storageKind,
+      PLAYWRIGHT_E2E_MINIO_CONTAINER_NAME: minioContainerName,
+      PLAYWRIGHT_E2E_MINIO_PORT: minioPort.toString(),
+      PLAYWRIGHT_E2E_MINIO_USER: minioUser,
+      PLAYWRIGHT_E2E_MINIO_PASSWORD: minioPassword,
+      PLAYWRIGHT_E2E_MINIO_BUCKET: minioBucket,
+      ...storageEnv,
+      Agora__StorageRoot: storageRoot,
       Email__Provider: 'filesystem',
       Email__FileSystem__OutputDirectory: path.join(dataRoot, 'emails'),
       Agora__Logging__File__Path: path.join(dataRoot, 'logs')

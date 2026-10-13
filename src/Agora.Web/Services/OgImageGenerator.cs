@@ -40,8 +40,11 @@ public sealed class OgImageGenerator
         _brandFont = _fontFamily.CreateFont(18, FontStyle.Bold);
     }
 
+    public const long MaxBackgroundBytes = 20L * 1024 * 1024;
+    public const long MaxBackgroundPixels = 40_000_000;
+
     public async Task<byte[]> GenerateShareOgImageAsync(
-        string? backgroundImagePath,
+        Stream? backgroundImage,
         string? backgroundColorHex,
         string title,
         string? subtitle,
@@ -52,13 +55,12 @@ public sealed class OgImageGenerator
     {
         using var image = new Image<Rgba32>(Width, Height);
 
-        if (!string.IsNullOrWhiteSpace(backgroundImagePath) && File.Exists(backgroundImagePath))
-            await DrawBackgroundImageAsync(image, backgroundImagePath);
-        else
+        var hasBackground = backgroundImage is not null && await DrawBackgroundImageAsync(image, backgroundImage);
+        if (!hasBackground)
             DrawGradientBackground(image, backgroundColorHex);
 
         DrawShareCard(image, title, subtitle, fileName, fileCount, sizeDisplay, isExpired);
-        DrawBranding(image, !string.IsNullOrWhiteSpace(backgroundImagePath));
+        DrawBranding(image, hasBackground);
 
         using var ms = new MemoryStream();
         await image.SaveAsPngAsync(ms);
@@ -112,11 +114,27 @@ public sealed class OgImageGenerator
         return ms.ToArray();
     }
 
-    private async Task DrawBackgroundImageAsync(Image<Rgba32> canvas, string imagePath)
+    /// <summary>
+    /// Draws the uploaded background, streamed (never buffered whole). Backgrounds above <see cref="MaxBackgroundBytes"/>
+    /// or <see cref="MaxBackgroundPixels"/> are skipped, as are undecodable ones. Returns false when nothing was drawn.
+    /// </summary>
+    private async Task<bool> DrawBackgroundImageAsync(Image<Rgba32> canvas, Stream imageStream)
     {
         try
         {
-            using var bgImage = await Image.LoadAsync<Rgba32>(imagePath);
+            if (!imageStream.CanSeek || imageStream.Length > MaxBackgroundBytes)
+            {
+                return false;
+            }
+
+            var info = await Image.IdentifyAsync(imageStream);
+            if ((long)info.Width * info.Height > MaxBackgroundPixels)
+            {
+                return false;
+            }
+
+            imageStream.Position = 0;
+            using var bgImage = await Image.LoadAsync<Rgba32>(imageStream);
             var scale = Math.Max((float)Width / bgImage.Width, (float)Height / bgImage.Height);
             bgImage.Mutate(ctx =>
             {
@@ -133,10 +151,11 @@ public sealed class OgImageGenerator
                 // Dark overlay
                 ctx.Fill(new Color(new Rgba32(0, 0, 0, 130)), new RectangularPolygon(0, 0, Width, Height));
             });
+            return true;
         }
         catch
         {
-            DrawGradientBackground(canvas, null);
+            return false;
         }
     }
 

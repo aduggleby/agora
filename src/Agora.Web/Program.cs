@@ -7,6 +7,7 @@ using Agora.Infrastructure.Auth;
 using Agora.Infrastructure.Logging;
 using Agora.Infrastructure.Persistence;
 using Agora.Infrastructure.Services;
+using Agora.Infrastructure.Storage;
 using Agora.Web.Auth;
 using Agora.Web.Endpoints;
 using Agora.Web.Hubs;
@@ -26,6 +27,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Serilog;
 using System.Data;
@@ -90,8 +92,18 @@ if (string.IsNullOrWhiteSpace(connectionString))
 // Throws for unsupported values so a typo can never silently fall back to the wrong database.
 var databaseProvider = DatabaseSetup.ParseProvider(builder.Configuration[DatabaseSetup.ProviderKey]);
 builder.Services.AddAgoraDbContext(databaseProvider, connectionString);
-builder.Services.AddHealthChecks()
+var healthChecks = builder.Services.AddHealthChecks()
     .AddCheck<DatabaseHealthCheck>("database", tags: [DatabaseHealthCheck.ReadyTag], timeout: TimeSpan.FromSeconds(5));
+
+// Durable content (share files, archives, backgrounds, previews): Storage:Provider=FileSystem (default, rooted at
+// StorageRoot) or S3. Scratch (staging, drafts, tmp/, preview locks) always stays under StorageRoot.
+var storageProvider = builder.Services.AddAgoraObjectStore(builder.Configuration, storageRootPath);
+if (storageProvider == StorageProvider.S3)
+{
+    builder.Services.TryAddSingleton(TimeProvider.System);
+    builder.Services.AddSingleton<ObjectStoreHealthCheck>();
+    healthChecks.AddCheck<ObjectStoreHealthCheck>("object-store", tags: [DatabaseHealthCheck.ReadyTag], timeout: TimeSpan.FromSeconds(5));
+}
 
 // Persist DataProtection keys so auth cookies and gate tokens survive restarts.
 var dataProtectionKeysPath = builder.Configuration["DataProtection:KeysPath"];
@@ -248,7 +260,7 @@ builder.Services.AddHangfireServer(options =>
 });
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<ShareManager>();
-builder.Services.AddScoped<IShareContentStore, ShareContentStore>();
+builder.Services.AddSingleton<IShareContentStore, ShareContentStore>();
 builder.Services.AddScoped<AuthEmailJob>();
 builder.Services.AddScoped<EmailNotificationJob>();
 builder.Services.AddScoped<QueuedShareCreationJob>();
@@ -294,8 +306,9 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 
 var app = builder.Build();
 app.Logger.LogInformation(
-    "Database provider: {DatabaseProvider}. File logging: {FileLogging} ({FileLoggingPath}, retention: {FileLoggingRetention}).",
+    "Database provider: {DatabaseProvider}. Storage provider: {StorageProvider}. File logging: {FileLogging} ({FileLoggingPath}, retention: {FileLoggingRetention}).",
     databaseProvider,
+    storageProvider,
     logFile.Enabled,
     Path.GetFullPath(logFile.Path),
     logFile.RetainedDays is { } retainedDays ? $"{retainedDays} days" : "unlimited");
@@ -955,16 +968,25 @@ app.MapPost("/api/account/template", async (HttpContext context, ShareManager ma
             extension = ".jpg";
         }
 
-        var relativePath = Path.Combine("uploads", "templates", "general", $"{Guid.NewGuid():N}{extension}");
+        var key = $"uploads/templates/general/{Guid.NewGuid():N}{extension}";
         var storageRoot = context.RequestServices.GetRequiredService<IOptions<AgoraOptions>>().Value.StorageRoot;
-        var absolutePath = Path.Combine(storageRoot, relativePath);
-        Directory.CreateDirectory(Path.GetDirectoryName(absolutePath)!);
-        await using (var stream = File.Create(absolutePath))
+        var scratchPath = ScratchFiles.NewPath(storageRoot, extension);
+        try
         {
-            await backgroundImageFile.CopyToAsync(stream, ct);
+            await using (var stream = File.Create(scratchPath))
+            {
+                await backgroundImageFile.CopyToAsync(stream, ct);
+            }
+
+            await context.RequestServices.GetRequiredService<IObjectStore>()
+                .PutFileAsync(key, scratchPath, GuessImageContentType(extension), ct);
+        }
+        finally
+        {
+            ScratchFiles.TryDelete(scratchPath);
         }
 
-        backgroundImageUrl = $"internal:{relativePath.Replace('\\', '/')}";
+        backgroundImageUrl = $"internal:{key}";
     }
 
     await manager.UpsertAccountTemplateAsync(email, new ShareTemplateData(
@@ -1087,7 +1109,7 @@ app.MapPost("/api/account/settings", async (HttpContext context, AuthService aut
     return Results.Redirect(ok ? "/account/settings?msg=Account%20defaults%20saved" : "/account/settings?msg=Unable%20to%20save%20account%20defaults");
 }).RequireAuthorization();
 
-app.MapGet("/account/template/background", async (HttpContext context, ShareManager manager, IOptions<AgoraOptions> options, CancellationToken ct) =>
+app.MapGet("/account/template/background", async (HttpContext context, ShareManager manager, IObjectStore objectStore, CancellationToken ct) =>
 {
     var email = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
     if (string.IsNullOrWhiteSpace(email))
@@ -1096,26 +1118,13 @@ app.MapGet("/account/template/background", async (HttpContext context, ShareMana
     }
 
     var template = await manager.GetAccountTemplateAsync(email, ct);
-    var marker = template.BackgroundImageUrl ?? string.Empty;
-    if (!marker.StartsWith("internal:", StringComparison.OrdinalIgnoreCase))
+    var key = ObjectKey.FromInternalMarker(template.BackgroundImageUrl);
+    if (key is null || await objectStore.OpenReadAsync(key, ct) is not { } background)
     {
         return Results.NotFound();
     }
 
-    var relativePath = marker["internal:".Length..].TrimStart('/', '\\');
-    var storageRoot = Path.GetFullPath(options.Value.StorageRoot);
-    var absolutePath = Path.GetFullPath(Path.Combine(storageRoot, relativePath));
-    if (!absolutePath.StartsWith(storageRoot, StringComparison.Ordinal))
-    {
-        return Results.NotFound();
-    }
-
-    if (!File.Exists(absolutePath))
-    {
-        return Results.NotFound();
-    }
-
-    return Results.File(absolutePath, GuessImageContentType(Path.GetExtension(absolutePath)));
+    return ObjectResults.File(background, GuessImageContentType(Path.GetExtension(key)));
 }).RequireAuthorization();
 
 app.MapPost("/api/uploads/stage", async (

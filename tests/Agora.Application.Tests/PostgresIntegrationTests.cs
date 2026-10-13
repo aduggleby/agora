@@ -5,6 +5,7 @@ using Agora.Domain.Entities;
 using Agora.Infrastructure.Auth;
 using Agora.Infrastructure.Persistence;
 using Agora.Infrastructure.Services;
+using Agora.Infrastructure.Storage;
 using Hangfire;
 using Hangfire.Common;
 using Hangfire.States;
@@ -346,7 +347,8 @@ public sealed class PostgresIntegrationTests(PostgresFixture fixture) : IClassFi
     private static ShareManager CreateShareManager(AgoraDbContext db, string storageRoot, IBackgroundJobClient jobs)
     {
         var options = Options.Create(new AgoraOptions { StorageRoot = storageRoot });
-        return new ShareManager(db, options, new ShareContentStore(options), jobs, NullLogger<ShareManager>.Instance);
+        var objectStore = new FileSystemObjectStore(storageRoot);
+        return new ShareManager(db, options, new ShareContentStore(objectStore), objectStore, jobs, NullLogger<ShareManager>.Instance);
     }
 
     private static Share NewShare(string token, DateTime createdAtUtc) => new()

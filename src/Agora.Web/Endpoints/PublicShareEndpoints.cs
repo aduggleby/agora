@@ -13,7 +13,7 @@ public static class PublicShareEndpoints
 {
     public static WebApplication MapPublicShareEndpoints(this WebApplication app)
     {
-        app.MapGet("/s/{token}/background", async (ShareManager manager, IOptions<AgoraOptions> options, string token, ILoggerFactory loggerFactory, CancellationToken ct) =>
+        app.MapGet("/s/{token}/background", async (ShareManager manager, IObjectStore objectStore, string token, ILoggerFactory loggerFactory, CancellationToken ct) =>
         {
             var logger = loggerFactory.CreateLogger("Agora.DownloadPageBackground");
             var share = await manager.FindByTokenAsync(token, ct);
@@ -30,48 +30,30 @@ public static class PublicShareEndpoints
             }
 
             var marker = share.BackgroundImageUrl ?? string.Empty;
-            if (!marker.StartsWith("internal:", StringComparison.OrdinalIgnoreCase))
+            var key = ObjectKey.FromInternalMarker(marker);
+            if (key is null)
             {
                 logger.LogInformation(
-                    "Background request for token {Token} failed: share has no internal marker. Marker: {Marker}",
+                    "Background request for token {Token} failed: share has no valid internal marker. Marker: {Marker}",
                     token,
                     marker.Length == 0 ? "<empty>" : marker);
                 return Results.NotFound();
             }
 
-            var relativePath = marker["internal:".Length..].TrimStart('/', '\\');
-            var storageRoot = Path.GetFullPath(options.Value.StorageRoot);
-            var absolutePath = Path.GetFullPath(Path.Combine(storageRoot, relativePath));
-            if (!absolutePath.StartsWith(storageRoot, StringComparison.Ordinal))
+            var background = await objectStore.OpenReadAsync(key, ct);
+            if (background is null)
             {
-                logger.LogWarning(
-                    "Background request for token {Token} failed: resolved path escaped storage root. Marker: {Marker}",
-                    token,
-                    marker);
+                logger.LogWarning("Background request for token {Token} failed: object {Key} missing.", token, key);
                 return Results.NotFound();
             }
 
-            if (!File.Exists(absolutePath))
-            {
-                logger.LogWarning(
-                    "Background request for token {Token} failed: file missing at {Path}. Marker: {Marker}",
-                    token,
-                    absolutePath,
-                    marker);
-                return Results.NotFound();
-            }
-
-            logger.LogInformation(
-                "Background request for token {Token} served file {Path}. Marker: {Marker}",
-                token,
-                absolutePath,
-                marker);
-            return Results.File(absolutePath, GuessImageContentType(Path.GetExtension(absolutePath)));
+            logger.LogInformation("Background request for token {Token} served object {Key}.", token, key);
+            return ObjectResults.File(background, GuessImageContentType(Path.GetExtension(key)));
         });
 
         app.MapGet("/s/{token}/og-image", async (
             ShareManager manager,
-            IOptions<AgoraOptions> options,
+            IObjectStore objectStore,
             OgImageGenerator ogGenerator,
             string token,
             CancellationToken ct) =>
@@ -79,18 +61,10 @@ public static class PublicShareEndpoints
             var share = await manager.FindByTokenAsync(token, ct);
             if (share is null) return Results.NotFound();
 
-            string? bgPath = null;
-            var marker = share.BackgroundImageUrl ?? string.Empty;
-            if (marker.StartsWith("internal:", StringComparison.OrdinalIgnoreCase))
-            {
-                var relativePath = marker["internal:".Length..].TrimStart('/', '\\');
-                var storageRoot = Path.GetFullPath(options.Value.StorageRoot);
-                var absolutePath = Path.GetFullPath(Path.Combine(storageRoot, relativePath));
-                if (absolutePath.StartsWith(storageRoot, StringComparison.Ordinal) && File.Exists(absolutePath))
-                {
-                    bgPath = absolutePath;
-                }
-            }
+            // Streamed straight into the generator, which skips oversized or undecodable backgrounds.
+            var backgroundKey = ObjectKey.FromInternalMarker(share.BackgroundImageUrl);
+            var background = backgroundKey is null ? null : await objectStore.OpenReadAsync(backgroundKey, ct);
+            await using var backgroundStream = background?.Content;
 
             var isExpired = ShareManager.IsExpired(share, DateTime.UtcNow);
             var sizeDisplay = share.ZipSizeBytes >= 1024 * 1024
@@ -98,7 +72,7 @@ public static class PublicShareEndpoints
                 : $"{share.ZipSizeBytes / 1024.0:F0} KB";
 
             var imageBytes = await ogGenerator.GenerateShareOgImageAsync(
-                backgroundImagePath: bgPath,
+                backgroundImage: backgroundStream,
                 backgroundColorHex: share.PageBackgroundColorHex,
                 title: share.PageH1,
                 subtitle: share.PageTitle,
@@ -143,7 +117,7 @@ public static class PublicShareEndpoints
             }));
         });
 
-        app.MapGet("/s/{token}/files/{fileId:guid}", async (ShareManager manager, IShareContentStore contentStore, string token, Guid fileId, HttpRequest request, CancellationToken ct) =>
+        app.MapGet("/s/{token}/files/{fileId:guid}", async (ShareManager manager, IObjectStore objectStore, string token, Guid fileId, HttpRequest request, CancellationToken ct) =>
         {
             var share = await manager.FindByTokenAsync(token, ct);
             if (share is null)
@@ -171,8 +145,10 @@ public static class PublicShareEndpoints
                 return Results.NotFound();
             }
 
-            var absolutePath = contentStore.ResolveAbsolutePath(file.StoredRelativePath);
-            if (absolutePath is null || !File.Exists(absolutePath))
+            var stored = ObjectKey.TryNormalize(file.StoredRelativePath, out var key)
+                ? await objectStore.OpenReadAsync(key, ct)
+                : null;
+            if (stored is null)
             {
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
@@ -180,9 +156,7 @@ public static class PublicShareEndpoints
             request.HttpContext.Response.Headers["X-Content-Type-Options"] = "nosniff";
             var asAttachment = request.Query["download"].ToString() == "1";
             var contentType = string.IsNullOrWhiteSpace(file.DetectedContentType) ? "application/octet-stream" : file.DetectedContentType;
-            return asAttachment
-                ? Results.File(absolutePath, contentType, file.OriginalFilename, enableRangeProcessing: true)
-                : Results.File(absolutePath, contentType, enableRangeProcessing: true);
+            return ObjectResults.File(stored, contentType, asAttachment ? file.OriginalFilename : null);
         }).RequireRateLimiting("DownloadEndpoints");
 
         app.MapGet("/s/{token}/files/{fileId:guid}/preview", async (
@@ -292,7 +266,7 @@ public static class PublicShareEndpoints
                 return Results.NotFound();
             }
 
-            var availability = previewJobService.GetAvailability(share, file);
+            var availability = await previewJobService.GetAvailabilityAsync(share, file, ct);
             if (availability.State == "pending")
             {
                 previewJobService.QueueGeneration(share.Id, file.Id);
@@ -337,7 +311,7 @@ public static class PublicShareEndpoints
                 return Results.NotFound();
             }
 
-            var availability = previewJobService.GetAvailability(share, file);
+            var availability = await previewJobService.GetAvailabilityAsync(share, file, ct);
             if (string.Equals(availability.Reason, "unsupported_type", StringComparison.Ordinal))
             {
                 return Results.Ok(new { state = "unavailable", reason = "unsupported_type" });
@@ -354,7 +328,7 @@ public static class PublicShareEndpoints
             return Results.Redirect($"/s/{token}");
         }).RequireRateLimiting("DownloadEndpoints");
 
-        app.MapPost("/s/{token}/download", async (ShareManager manager, IOptions<AgoraOptions> options, string token, HttpRequest request, CancellationToken ct) =>
+        app.MapPost("/s/{token}/download", async (ShareManager manager, IObjectStore objectStore, IOptions<AgoraOptions> options, string token, HttpRequest request, CancellationToken ct) =>
         {
             var share = await manager.FindByTokenAsync(token, ct);
             if (share is null)
@@ -372,14 +346,35 @@ public static class PublicShareEndpoints
                 return Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=download_disabled");
             }
 
-            var absolutePath = Path.Combine(options.Value.StorageRoot, share.ZipDiskPath);
-            if (!File.Exists(absolutePath))
+            var archive = ObjectKey.TryNormalize(share.ZipDiskPath, out var archiveKey)
+                ? await objectStore.OpenReadAsync(archiveKey, ct)
+                : null;
+            if (archive is null)
             {
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
 
-            var requiresPassword = !string.IsNullOrWhiteSpace(share.DownloadPasswordHash);
-            if (requiresPassword)
+            var isAuthenticatedRequester = request.HttpContext.User.Identity?.IsAuthenticated == true;
+            Task RecordDownloadAsync() => isAuthenticatedRequester
+                ? Task.CompletedTask
+                : manager.RecordDownloadAsync(share, token, ResolveRequesterIp(request), request.Headers.UserAgent.ToString(), ct);
+
+            if (string.IsNullOrWhiteSpace(share.DownloadPasswordHash))
+            {
+                try
+                {
+                    await RecordDownloadAsync();
+                }
+                catch
+                {
+                    await archive.Content.DisposeAsync();
+                    throw;
+                }
+
+                return Results.File(archive.Content, "application/zip", share.ZipDisplayName);
+            }
+
+            await using (archive.Content)
             {
                 var form = request.HasFormContentType
                     ? await request.ReadFormAsync(ct)
@@ -391,69 +386,21 @@ public static class PublicShareEndpoints
                     return Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=password_required");
                 }
 
-                var passwordHash = share.DownloadPasswordHash ?? string.Empty;
-                if (!PasswordHasher.Verify(downloadPassword, passwordHash))
+                if (!PasswordHasher.Verify(downloadPassword, share.DownloadPasswordHash))
                 {
                     return Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=invalid_password");
                 }
 
-                var tempRoot = Path.Combine(options.Value.StorageRoot, "downloads", "tmp");
-                Directory.CreateDirectory(tempRoot);
-                var decryptedPath = Path.Combine(tempRoot, $"{Guid.NewGuid():N}.zip");
-
-                try
-                {
-                    await ZipEncryption.DecryptFileAsync(absolutePath, decryptedPath, downloadPassword, ct);
-                }
-                catch (CryptographicException)
-                {
-                    if (File.Exists(decryptedPath))
-                    {
-                        File.Delete(decryptedPath);
-                    }
-
-                    return Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=invalid_password");
-                }
-
-                var isAuthenticated = request.HttpContext.User.Identity?.IsAuthenticated == true;
-                if (!isAuthenticated)
-                {
-                    var ip = ResolveRequesterIp(request);
-                    var userAgent = request.Headers.UserAgent.ToString();
-                    await manager.RecordDownloadAsync(share, token, ip, userAgent, ct);
-                }
-
-                var decryptedStream = File.OpenRead(decryptedPath);
-                request.HttpContext.Response.OnCompleted(() =>
-                {
-                    try
-                    {
-                        decryptedStream.Dispose();
-                        if (File.Exists(decryptedPath))
-                        {
-                            File.Delete(decryptedPath);
-                        }
-                    }
-                    catch
-                    {
-                    }
-
-                    return Task.CompletedTask;
-                });
-
-                return Results.File(decryptedStream, "application/zip", share.ZipDisplayName);
+                return await EncryptedArchiveDownload.ServeAsync(
+                        request.HttpContext,
+                        archive.Content,
+                        downloadPassword,
+                        options.Value.StorageRoot,
+                        share.ZipDisplayName,
+                        RecordDownloadAsync,
+                        ct)
+                    ?? Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=invalid_password");
             }
-
-            var isAuthenticatedRequester = request.HttpContext.User.Identity?.IsAuthenticated == true;
-            if (!isAuthenticatedRequester)
-            {
-                var ip = ResolveRequesterIp(request);
-                var userAgent = request.Headers.UserAgent.ToString();
-                await manager.RecordDownloadAsync(share, token, ip, userAgent, ct);
-            }
-
-            var stream = File.OpenRead(absolutePath);
-            return Results.File(stream, "application/zip", share.ZipDisplayName);
         }).RequireRateLimiting("DownloadEndpoints");
 
         return app;

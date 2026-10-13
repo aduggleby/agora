@@ -40,7 +40,9 @@ Production/container deployments should use:
 - One writable volume mounted at `/app/data`
 - Default HTTP port `18080`
 
-All mutable runtime data should remain under `/app/data` (uploads, DataProtection keys, logs).
+All mutable runtime data should remain under `/app/data` (uploads, DataProtection keys, logs). With the default
+`Storage__Provider=FileSystem`, share content lives there too; with `Storage__Provider=S3` it goes to the bucket and
+`/app/data` only holds scratch (staging, drafts, `tmp/`), keys and logs (see [Storage](#storage)).
 
 ### Docker
 
@@ -172,7 +174,7 @@ upper- and lower-case letters, so always use links exactly as Agora shows them.
 | Endpoint | Returns |
 | --- | --- |
 | `GET /live` | `200` while the process is up (no checks) |
-| `GET /ready` | `200` when the database is reachable, `503` otherwise |
+| `GET /ready` | `200` when the database (and, with `Storage__Provider=S3`, the bucket) is reachable, `503` otherwise |
 
 Both are anonymous and not rate limited.
 
@@ -197,6 +199,52 @@ empty means unlimited, and legacy numbers are not capped (minimum 1); the 1-3650
 Large multipart form bodies are buffered to disk by ASP.NET Core (`ASPNETCORE_TEMP`). Unless `ASPNETCORE_TEMP` is set
 explicitly, Agora points it at `<StorageRoot>/tmp/aspnet` (`/app/data/uploads/tmp/aspnet` in the container) so uploads
 never fill a small `/tmp` (prod1 mounts `/tmp` as a 64 MB tmpfs). Size the storage volume for the uploads in flight.
+
+### Storage
+
+Durable content (share files, archives, download-page backgrounds, previews) goes to an object store. Object keys are the
+relative paths already stored in the database (`shares/…`, `zips/…`, `uploads/templates/…`, `previews/…`), so no
+database change is involved.
+
+| Setting | Default | What it controls |
+| --- | --- | --- |
+| `Storage__Provider` | `FileSystem` | `FileSystem` (content under `Agora__StorageRoot`, as before) or `S3`; anything else is a startup error |
+| `Storage__S3__ServiceUrl` | *(required for S3)* | Endpoint URL, e.g. `https://hel1.your-objectstorage.com` |
+| `Storage__S3__Region` | *(required for S3)* | Signing region, e.g. `hel1` |
+| `Storage__S3__Bucket` | *(required for S3)* | Bucket name (must exist) |
+| `Storage__S3__AccessKeyId` | *(required for S3)* | Access key |
+| `Storage__S3__SecretAccessKey` | *(required for S3)* | Secret key |
+| `Storage__S3__ForcePathStyle` | `false` | `false` = virtual-hosted style (Hetzner); `true` for MinIO |
+
+Missing or invalid S3 settings stop startup. Downloads are always proxied through Agora (range requests are supported for
+single files); the bucket never needs to be public.
+
+Hetzner Object Storage:
+
+```bash
+Storage__Provider=S3
+Storage__S3__ServiceUrl=https://hel1.your-objectstorage.com
+Storage__S3__Region=hel1
+Storage__S3__Bucket=YOUR_BUCKET
+Storage__S3__AccessKeyId=YOUR_ACCESS_KEY
+Storage__S3__SecretAccessKey=YOUR_SECRET_KEY
+Storage__S3__ForcePathStyle=false
+```
+
+MinIO: same settings with `ServiceUrl=http://minio:9000`, any region (e.g. `us-east-1`) and `ForcePathStyle=true`.
+
+> **Hetzner warning:** never configure a Public Access Block on the bucket. Agora does not need one (buckets are private
+> by default and every download is proxied through the app), and on Hetzner it can unexpectedly change or block access
+> to the bucket. Leave the bucket's access configuration untouched.
+
+**Local scratch disk is still required in S3 mode.** Staged uploads, drafts, share-creation status, preview lock
+markers and `<StorageRoot>/tmp` (zip building, `.agz` encryption/decryption, preview sources, ASP.NET upload buffers) stay
+on local disk. Creating a share needs about 3× its size at peak (staged files + zip + encrypted copy), so size the
+volume for **≈3× the largest share × concurrent share creations**, plus decrypted copies of password-protected archives
+being downloaded. Scratch files older than `Agora__ZombieUploadRetentionHours` are swept automatically.
+
+Switching providers does not move existing content. To move a FileSystem install to S3, copy `shares/`, `zips/`,
+`uploads/templates/` and `previews/` from `StorageRoot` into the bucket with the same relative keys.
 
 ### Upgrade notes
 

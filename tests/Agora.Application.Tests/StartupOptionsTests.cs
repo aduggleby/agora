@@ -1,6 +1,7 @@
 using Agora.Application.Utilities;
 using Agora.Infrastructure.Logging;
 using Agora.Infrastructure.Persistence;
+using Agora.Infrastructure.Storage;
 using Microsoft.Extensions.Configuration;
 
 namespace Agora.Application.Tests;
@@ -100,6 +101,54 @@ public sealed class StartupOptionsTests
     {
         Assert.Equal(expected, EmailAddress.Normalize(value));
     }
+
+    [Theory]
+    [InlineData(null, StorageProvider.FileSystem)]
+    [InlineData("", StorageProvider.FileSystem)]
+    [InlineData("filesystem", StorageProvider.FileSystem)]
+    [InlineData(" S3 ", StorageProvider.S3)]
+    public void StorageProvider_AcceptsKnownValues(string? value, StorageProvider expected) =>
+        Assert.Equal(expected, StorageSetup.ParseProvider(value));
+
+    [Theory]
+    [InlineData("1")]
+    [InlineData("Minio")]
+    [InlineData("Local")]
+    public void StorageProvider_RejectsUnknownValues(string value) =>
+        Assert.Throws<InvalidOperationException>(() => StorageSetup.ParseProvider(value));
+
+    [Fact]
+    public void S3Options_RequireAllSettings()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => StorageSetup.ReadS3Options(Config(
+            ("Storage:S3:ServiceUrl", "https://hel1.your-objectstorage.com"),
+            ("Storage:S3:Bucket", "bucket"))));
+        Assert.Contains("Storage:S3:Region", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Storage:S3:AccessKeyId", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Storage:S3:SecretAccessKey", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("not a url", null)]
+    [InlineData("ftp://example.com", null)]
+    [InlineData("https://hel1.your-objectstorage.com", "maybe")]
+    public void S3Options_RejectInvalidValues(string serviceUrl, string? forcePathStyle) =>
+        Assert.Throws<InvalidOperationException>(() => StorageSetup.ReadS3Options(S3Config(serviceUrl, forcePathStyle)));
+
+    [Fact]
+    public void S3Options_DefaultToVirtualHostedStyle()
+    {
+        Assert.False(StorageSetup.ReadS3Options(S3Config("https://hel1.your-objectstorage.com", null)).ForcePathStyle);
+        Assert.True(StorageSetup.ReadS3Options(S3Config("http://127.0.0.1:9000", "true")).ForcePathStyle);
+    }
+
+    private static IConfiguration S3Config(string serviceUrl, string? forcePathStyle) => Config(
+        ("Storage:S3:ServiceUrl", serviceUrl),
+        ("Storage:S3:Region", "hel1"),
+        ("Storage:S3:Bucket", "bucket"),
+        ("Storage:S3:AccessKeyId", "id"),
+        ("Storage:S3:SecretAccessKey", "secret"),
+        ("Storage:S3:ForcePathStyle", forcePathStyle));
 
     private static IConfiguration Config(params (string Key, string? Value)[] values) =>
         new ConfigurationBuilder()
