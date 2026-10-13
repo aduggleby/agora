@@ -36,13 +36,13 @@
       idx = (idx + dir + items.length) % items.length;
       show();
     };
-    window["openLightbox"] = (el) => {
+    window.openLightbox = (el) => {
       const src = el.dataset.lightboxSrc ?? "";
       idx = Math.max(0, items.findIndex((it) => it.src === src));
       show();
     };
-    window["closeLightbox"] = close;
-    window["navLightbox"] = nav;
+    window.closeLightbox = close;
+    window.navLightbox = nav;
     box.addEventListener("click", (e) => {
       if (e.target === box) close();
     });

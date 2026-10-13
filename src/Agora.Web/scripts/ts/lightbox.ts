@@ -4,6 +4,13 @@ type LightboxItem = {
   download: string;
 };
 
+// Exposed for the inline onclick handlers in Pages/S/Index.cshtml.
+interface Window {
+  openLightbox: (el: HTMLElement) => void;
+  closeLightbox: () => void;
+  navLightbox: (dir: number) => void;
+}
+
 (() => {
   // Lightbox
   const box = document.getElementById('lightbox');
@@ -48,13 +55,13 @@ type LightboxItem = {
   };
 
   // Expose for inline onclick handlers
-  (window as Record<string, unknown>)['openLightbox'] = (el: HTMLElement): void => {
+  window.openLightbox = (el: HTMLElement): void => {
     const src = el.dataset.lightboxSrc ?? '';
     idx = Math.max(0, items.findIndex((it) => it.src === src));
     show();
   };
-  (window as Record<string, unknown>)['closeLightbox'] = close;
-  (window as Record<string, unknown>)['navLightbox'] = nav;
+  window.closeLightbox = close;
+  window.navLightbox = nav;
 
   box.addEventListener('click', (e) => {
     if (e.target === box) close();
