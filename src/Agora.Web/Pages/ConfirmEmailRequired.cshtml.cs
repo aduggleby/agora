@@ -1,16 +1,17 @@
-using Agora.Application.Models;
 using Agora.Infrastructure.Auth;
 using Agora.Web.Auth;
+using Agora.Web.Services;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace Agora.Web.Pages;
 
+[EnableRateLimiting("AuthEndpoints")]
 public class ConfirmEmailRequiredModel(
     AuthService authService,
-    IOptions<AgoraOptions> options,
+    PublicBaseUrlResolver publicBaseUrls,
     IDataProtectionProvider dataProtectionProvider) : PageModel
 {
     public string Email { get; private set; } = string.Empty;
@@ -40,8 +41,7 @@ public class ConfirmEmailRequiredModel(
             return RedirectToPage("/Login");
         }
 
-        var publicBaseUrl = ResolvePublicBaseUrl(options.Value.PublicBaseUrl, Request);
-        var confirmUrlBase = $"{publicBaseUrl}/auth/confirm-email";
+        var confirmUrlBase = $"{publicBaseUrls.Resolve(Request)}/auth/confirm-email";
         await authService.ResendEmailConfirmationAsync(Email, confirmUrlBase, ct);
 
         return RedirectToPage("/ConfirmEmailRequired", new
@@ -67,16 +67,5 @@ public class ConfirmEmailRequiredModel(
         Email = gateEmail;
         GateToken = gate;
         return true;
-    }
-
-    private static string ResolvePublicBaseUrl(string? configuredValue, HttpRequest request)
-    {
-        var configured = (configuredValue ?? string.Empty).Trim().TrimEnd('/');
-        if (configured.Length > 0 && Uri.TryCreate(configured, UriKind.Absolute, out var absolute))
-        {
-            return absolute.GetLeftPart(UriPartial.Authority);
-        }
-
-        return $"{request.Scheme}://{request.Host}";
     }
 }

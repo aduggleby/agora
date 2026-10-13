@@ -1,11 +1,18 @@
 using System.Text.Json;
+using Agora.Application.Models;
 using Agora.Application.Utilities;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Agora.Infrastructure.Services;
 
+/// <summary>
+/// Resolves a downloader's city and country through https://ipwho.is/. Only public addresses are sent, and nothing
+/// at all when <c>Agora:GeoLookup:Enabled</c> is false.
+/// </summary>
 public sealed class IpWhoIsDownloaderGeoLookup(
     HttpClient httpClient,
+    IOptions<AgoraOptions> options,
     ILogger<IpWhoIsDownloaderGeoLookup> logger) : IDownloaderGeoLookup
 {
     public async Task<string> FormatForNotificationAsync(string ipAddress, CancellationToken cancellationToken)
@@ -16,7 +23,7 @@ public sealed class IpWhoIsDownloaderGeoLookup(
             return fallback;
         }
 
-        if (!IpAddressUtilities.IsPublicRoutable(normalizedIp))
+        if (!options.Value.GeoLookup.Enabled || !IpAddressUtilities.IsPublicRoutable(normalizedIp))
         {
             return normalizedIp;
         }

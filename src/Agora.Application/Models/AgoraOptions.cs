@@ -3,7 +3,14 @@ namespace Agora.Application.Models;
 public sealed class AgoraOptions
 {
     public const string Section = "Agora";
+    /// <summary>Public origin of the site (https://host[:port]); required outside Development and E2E.</summary>
     public string? PublicBaseUrl { get; set; }
+
+    /// <summary>
+    /// Reverse proxies (IP addresses and CIDR networks) whose X-Forwarded-For/Proto/Host headers are honoured.
+    /// Loopback is always trusted; everything else is ignored unless listed here.
+    /// </summary>
+    public string? TrustedProxies { get; set; }
     public string StorageRoot { get; set; } = "storage";
     public int MaxFilesPerShare { get; set; } = 20;
     public long MaxFileSizeBytes { get; set; } = 5L * 1024 * 1024 * 1024;
@@ -12,6 +19,24 @@ public sealed class AgoraOptions
     public int ZombieUploadRetentionHours { get; set; } = 24;
     public AgoraPreviewOptions Previews { get; set; } = new();
     public AgoraAuthOptions Auth { get; set; } = new();
+    public AgoraGeoLookupOptions GeoLookup { get; set; } = new();
+    public AgoraRateLimitOptions RateLimits { get; set; } = new();
+}
+
+/// <summary>
+/// Whether download notifications look up the downloader's city and country. The lookup sends the downloader's
+/// public IP address to the third-party service ipwho.is; disable it to keep that data in-house.
+/// </summary>
+public sealed class AgoraGeoLookupOptions
+{
+    public bool Enabled { get; set; } = true;
+}
+
+/// <summary>Per-client request budgets enforced by the rate limiter.</summary>
+public sealed class AgoraRateLimitOptions
+{
+    /// <summary>Requests per minute an anonymous client (keyed by IP address) may make across the whole site; 0 disables the budget.</summary>
+    public int AnonymousPerMinute { get; set; } = 1200;
 }
 
 /// <summary>

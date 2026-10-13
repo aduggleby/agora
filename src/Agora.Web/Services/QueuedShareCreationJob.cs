@@ -18,6 +18,7 @@ public sealed class QueuedShareCreationJob(
     IEmailSender emailSender,
     ShareCreationStatusStore statusStore,
     ShareProgressBroadcaster broadcaster,
+    IPublicOriginProvider publicOrigin,
     IOptions<AgoraOptions> options,
     IOptions<EmailSenderOptions> emailSenderOptions,
     ILogger<QueuedShareCreationJob> logger)
@@ -208,7 +209,7 @@ public sealed class QueuedShareCreationJob(
 
             try
             {
-                var shareUrl = BuildShareUrl(result.Token);
+                var shareUrl = publicOrigin.ShareUrl(result.Token);
                 var email = BuildCompletionEmail(payload, shareUrl);
                 await emailSender.SendAuthEmailAsync(email, ct);
 
@@ -246,17 +247,6 @@ public sealed class QueuedShareCreationJob(
             var failed = statusStore.MarkFailed(token, ex.Message);
             await broadcaster.BroadcastAsync(failed, ct);
         }
-    }
-
-    private string BuildShareUrl(string token)
-    {
-        var configuredBase = (_options.PublicBaseUrl ?? string.Empty).Trim().TrimEnd('/');
-        if (!string.IsNullOrWhiteSpace(configuredBase))
-        {
-            return $"{configuredBase}/s/{token}";
-        }
-
-        return $"/s/{token}";
     }
 
     private static string? BuildSenderDetails(Payload payload)

@@ -1,13 +1,11 @@
-using Agora.Application.Models;
 using Agora.Infrastructure.Services;
 using Agora.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.Extensions.Options;
 
 namespace Agora.Web.Pages.S;
 
-public class IndexModel(ShareManager manager, ShareExperienceRendererResolver shareExperienceRendererResolver, IOptions<AgoraOptions> agoraOptions, ILogger<IndexModel> logger) : PageModel
+public class IndexModel(ShareManager manager, ShareExperienceRendererResolver shareExperienceRendererResolver, PublicBaseUrlResolver publicBaseUrls, ILogger<IndexModel> logger) : PageModel
 {
     public sealed record PreviewItemViewModel(
         Guid Id,
@@ -108,13 +106,8 @@ public class IndexModel(ShareManager manager, ShareExperienceRendererResolver sh
             _ => ("center", "center")
         };
 
-        // Resolve public base URL for OG tags
-        var publicBase = agoraOptions.Value.PublicBaseUrl;
-        if (string.IsNullOrWhiteSpace(publicBase))
-        {
-            publicBase = $"{Request.Scheme}://{Request.Host}";
-        }
-        publicBase = publicBase.TrimEnd('/');
+        // OG tags are read by crawlers, so they use the configured public origin, never the request host.
+        var publicBase = publicBaseUrls.Resolve(Request);
         OgImageUrl = $"{publicBase}/s/{token}/og-image";
         PageUrl = $"{publicBase}/s/{token}";
 

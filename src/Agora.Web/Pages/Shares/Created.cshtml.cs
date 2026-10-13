@@ -1,16 +1,14 @@
-using Agora.Application.Models;
 using Agora.Infrastructure.Services;
 using Agora.Web.Pages.Shared;
 using Agora.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.Extensions.Options;
 
 namespace Agora.Web.Pages.Shares;
 
 [Authorize]
-public class CreatedModel(IOptions<AgoraOptions> options, ShareManager manager, ShareCreationStatusStore statusStore) : PageModel
+public class CreatedModel(PublicBaseUrlResolver publicBaseUrls, ShareManager manager, ShareCreationStatusStore statusStore) : PageModel
 {
     public string Token { get; private set; } = string.Empty;
     public string ShareUrl { get; private set; } = string.Empty;
@@ -28,7 +26,7 @@ public class CreatedModel(IOptions<AgoraOptions> options, ShareManager manager, 
         }
 
         Token = token;
-        var baseUrl = ResolvePublicBaseUrl(options.Value.PublicBaseUrl, Request);
+        var baseUrl = publicBaseUrls.Resolve(Request);
         ShareUrl = $"{baseUrl}/s/{Uri.EscapeDataString(token)}";
 
         var share = await manager.FindByTokenAsync(token, HttpContext.RequestAborted);
@@ -76,16 +74,5 @@ public class CreatedModel(IOptions<AgoraOptions> options, ShareManager manager, 
 
         ViewData["Title"] = "Share created";
         return Page();
-    }
-
-    private static string ResolvePublicBaseUrl(string? configuredValue, HttpRequest request)
-    {
-        var configured = (configuredValue ?? string.Empty).Trim().TrimEnd('/');
-        if (configured.Length > 0 && Uri.TryCreate(configured, UriKind.Absolute, out var absolute))
-        {
-            return absolute.GetLeftPart(UriPartial.Authority);
-        }
-
-        return $"{request.Scheme}://{request.Host}";
     }
 }

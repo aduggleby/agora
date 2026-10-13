@@ -21,32 +21,6 @@ public static class IpAddressUtilities
         return true;
     }
 
-    public static string? ExtractFromForwardedFor(string? forwardedFor, bool preferPublic)
-    {
-        if (string.IsNullOrWhiteSpace(forwardedFor))
-        {
-            return null;
-        }
-
-        string? firstValid = null;
-        foreach (var token in forwardedFor.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            if (!TryParseIpAddress(token, out var ipAddress))
-            {
-                continue;
-            }
-
-            var normalized = Normalize(ipAddress);
-            firstValid ??= normalized;
-            if (!preferPublic || IsPublicRoutable(ipAddress))
-            {
-                return normalized;
-            }
-        }
-
-        return firstValid;
-    }
-
     public static bool IsPublicRoutable(string ipAddress)
     {
         if (!TryParseIpAddress(ipAddress, out var parsed))

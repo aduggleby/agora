@@ -32,10 +32,8 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Serilog;
 using System.Data;
-using System.Globalization;
 using System.Net.Mail;
 using System.Security.Cryptography;
-using System.Threading.RateLimiting;
 
 // Composes the web host, infrastructure services, middleware pipeline, and startup data/bootstrap routines.
 var builder = WebApplication.CreateBuilder(args);
@@ -154,99 +152,8 @@ var isE2E = builder.Environment.IsEnvironment("E2E") &&
             (builder.Configuration.GetValue<bool>("E2E:Enabled") ||
              string.Equals(Environment.GetEnvironmentVariable("AGORA_E2E"), "1", StringComparison.OrdinalIgnoreCase) ||
              string.Equals(Environment.GetEnvironmentVariable("AGORA_E2E"), "true", StringComparison.OrdinalIgnoreCase));
-builder.Services.AddRateLimiter(options =>
-{
-    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-    options.OnRejected = static (context, _) =>
-    {
-        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
-        {
-            var seconds = Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds));
-            context.HttpContext.Response.Headers.RetryAfter = seconds.ToString(CultureInfo.InvariantCulture);
-        }
-
-        return ValueTask.CompletedTask;
-    };
-
-    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
-    {
-        if (httpContext.User.Identity?.IsAuthenticated != true)
-        {
-            return RateLimitPartition.GetNoLimiter("anonymous");
-        }
-
-        var userId = httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier)
-                     ?? httpContext.User.FindFirstValue(ClaimTypes.Email)
-                     ?? "authenticated";
-
-        return RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: $"authenticated:{userId}",
-            factory: _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit = 120,
-                Window = TimeSpan.FromMinutes(1),
-                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                QueueLimit = 0,
-                AutoReplenishment = true
-            });
-    });
-
-    options.AddPolicy("AuthEndpoints", httpContext =>
-    {
-        // E2E suites log in far more often than a real client; don't throttle them.
-        if (isE2E)
-        {
-            return RateLimitPartition.GetNoLimiter("auth:e2e");
-        }
-
-        var ip = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        return RateLimitPartition.GetSlidingWindowLimiter(
-            partitionKey: $"auth:{ip}",
-            factory: _ => new SlidingWindowRateLimiterOptions
-            {
-                PermitLimit = 10,
-                Window = TimeSpan.FromMinutes(1),
-                SegmentsPerWindow = 4,
-                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                QueueLimit = 0,
-                AutoReplenishment = true
-            });
-    });
-
-    options.AddPolicy("DownloadEndpoints", httpContext =>
-    {
-        var ip = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        var token = httpContext.Request.RouteValues.TryGetValue("token", out var tokenValue)
-            ? tokenValue?.ToString() ?? "unknown"
-            : "unknown";
-
-        return RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: $"download:{token}:{ip}",
-            factory: _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit = 20,
-                Window = TimeSpan.FromMinutes(1),
-                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                QueueLimit = 0,
-                AutoReplenishment = true
-            });
-    });
-
-    options.AddPolicy("PublicUploadEndpoints", httpContext =>
-    {
-        var ip = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        return RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: $"public-upload:{ip}",
-            factory: _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit = 25,
-                Window = TimeSpan.FromMinutes(1),
-                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-                QueueLimit = 0,
-                AutoReplenishment = true
-            });
-    });
-});
+var rateLimits = builder.Configuration.GetSection(AgoraOptions.Section).GetSection("RateLimits").Get<AgoraRateLimitOptions>() ?? new AgoraRateLimitOptions();
+builder.Services.AddRateLimiter(options => RateLimitSetup.Configure(options, rateLimits, isE2E));
 
 var razorPages = builder.Services.AddRazorPages();
 if (builder.Environment.IsDevelopment())
@@ -307,14 +214,19 @@ builder.Services.Configure<FormOptions>(options =>
 {
     options.MultipartBodyLengthLimit = configuredMaxTotalUploadBytes;
 });
-builder.Services.Configure<ForwardedHeadersOptions>(options =>
-{
-    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor
-        | ForwardedHeaders.XForwardedProto
-        | ForwardedHeaders.XForwardedHost;
-    options.KnownIPNetworks.Clear();
-    options.KnownProxies.Clear();
-});
+// X-Forwarded-* headers are honoured only from loopback and the proxies listed in Agora:TrustedProxies; from any
+// other peer they are ignored, so clients cannot pick their own RemoteIpAddress (every per-IP rate limiter and the
+// download log key on it), scheme or host. The setup resets the known lists first, so ASPNETCORE_FORWARDEDHEADERS_ENABLED
+// (whose startup filter clears them to trust everyone) cannot widen this.
+var trustedProxies = TrustedProxies.Parse(builder.Configuration[TrustedProxies.Key]);
+builder.Services.Configure<ForwardedHeadersOptions>(options => ForwardedHeadersSetup.Configure(options, trustedProxies));
+
+// Links that leave the browser (emails, share links, OG tags) are built from Agora:PublicBaseUrl only. The request
+// host is an acceptable stand-in solely for local Development and the E2E server, which have no fixed origin.
+var allowRequestHostFallback = builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("E2E");
+var publicBaseUrl = PublicBaseUrl.Resolve(builder.Configuration[PublicBaseUrl.Key], required: !allowRequestHostFallback);
+builder.Services.AddSingleton(new PublicBaseUrlResolver(publicBaseUrl, allowRequestHostFallback));
+builder.Services.AddSingleton<IPublicOriginProvider>(sp => sp.GetRequiredService<PublicBaseUrlResolver>());
 
 var app = builder.Build();
 app.Logger.LogInformation(
@@ -324,6 +236,27 @@ app.Logger.LogInformation(
     logFile.Enabled,
     Path.GetFullPath(logFile.Path),
     logFile.RetainedDays is { } retainedDays ? $"{retainedDays} days" : "unlimited");
+app.Logger.LogInformation(
+    "Public base URL: {PublicBaseUrl}. Trusted proxies: {TrustedProxies} (plus loopback).",
+    publicBaseUrl ?? "<request host>",
+    trustedProxies.IsEmpty ? "<none>" : builder.Configuration[TrustedProxies.Key]);
+if (trustedProxies.IsEmpty && !allowRequestHostFallback)
+{
+    app.Logger.LogWarning(
+        "Agora__TrustedProxies is empty: X-Forwarded-For/Proto/Host from a reverse proxy are ignored. Behind a proxy, " +
+        "list its address or network there; otherwise every client shares the proxy's IP, download logs record the proxy " +
+        "and all anonymous traffic is throttled collectively at Agora__RateLimits__AnonymousPerMinute ({AnonymousPerMinute}/min).",
+        rateLimits.AnonymousPerMinute);
+}
+
+var allowedHosts = (builder.Configuration["AllowedHosts"] ?? "*").Trim();
+if (app.Environment.IsProduction() && (allowedHosts.Length == 0 || allowedHosts == "*"))
+{
+    app.Logger.LogWarning(
+        "AllowedHosts is '*': requests for any Host header are served. Set it to the public hostname(s) in production " +
+        "(for example AllowedHosts=files.example.com) and make sure the reverse proxy does not forward arbitrary Host values.");
+}
+
 var isDevelopment = app.Environment.IsDevelopment();
 
 using (var scope = app.Services.CreateScope())
@@ -470,7 +403,7 @@ app.MapPost("/login", async (HttpContext httpContext, AuthService authService, I
 
     await httpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, CookieSessions.CreatePrincipal(result.User));
     return Results.Redirect("/");
-}).RequireRateLimiting("AuthEndpoints");
+}).RequireRateLimiting(RateLimitSetup.AuthEndpoints);
 
 app.MapPost("/logout", async (HttpContext httpContext) =>
 {
@@ -485,19 +418,16 @@ if (isDevelopment)
         var result = await authService.EnsureDevelopmentUserAsync(ct);
         await httpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, CookieSessions.CreatePrincipal(result.User));
         return Results.Redirect("/");
-    }).RequireRateLimiting("AuthEndpoints");
+    }).RequireRateLimiting(RateLimitSetup.AuthEndpoints);
 }
 
 
-app.MapPost("/register", async (HttpContext httpContext, AuthService authService, CancellationToken ct) =>
+app.MapPost("/register", async (HttpContext httpContext, AuthService authService, PublicBaseUrlResolver publicBaseUrls, CancellationToken ct) =>
 {
     var form = await httpContext.Request.ReadFormAsync(ct);
     var email = form["email"].ToString();
     var password = form["password"].ToString();
-    var publicBaseUrl = ResolvePublicBaseUrl(
-        httpContext.RequestServices.GetRequiredService<IOptions<AgoraOptions>>().Value.PublicBaseUrl,
-        httpContext.Request);
-    var confirmUrlBase = $"{publicBaseUrl}/auth/confirm-email";
+    var confirmUrlBase = $"{publicBaseUrls.Resolve(httpContext.Request)}/auth/confirm-email";
 
     var result = await authService.RegisterAsync(email, password, confirmUrlBase, ct);
     if (!result.Success)
@@ -506,7 +436,7 @@ app.MapPost("/register", async (HttpContext httpContext, AuthService authService
     }
 
     return Results.Redirect("/login?msg=Check%20your%20email%20to%20confirm%20your%20account");
-}).RequireRateLimiting("AuthEndpoints");
+}).RequireRateLimiting(RateLimitSetup.AuthEndpoints);
 
 app.MapGet("/auth/confirm-email", async (AuthService authService, string email, string token, CancellationToken ct) =>
 {
@@ -516,7 +446,7 @@ app.MapGet("/auth/confirm-email", async (AuthService authService, string email, 
         : $"/login?msg={Uri.EscapeDataString(result.Error)}");
 });
 
-app.MapPost("/auth/resend-confirmation", async (HttpContext httpContext, AuthService authService, CancellationToken ct) =>
+app.MapPost("/auth/resend-confirmation", async (HttpContext httpContext, AuthService authService, PublicBaseUrlResolver publicBaseUrls, CancellationToken ct) =>
 {
     if (!httpContext.Request.HasFormContentType)
     {
@@ -525,14 +455,11 @@ app.MapPost("/auth/resend-confirmation", async (HttpContext httpContext, AuthSer
 
     var form = await httpContext.Request.ReadFormAsync(ct);
     var email = form["email"].ToString();
-    var publicBaseUrl = ResolvePublicBaseUrl(
-        httpContext.RequestServices.GetRequiredService<IOptions<AgoraOptions>>().Value.PublicBaseUrl,
-        httpContext.Request);
-    var confirmUrlBase = $"{publicBaseUrl}/auth/confirm-email";
+    var confirmUrlBase = $"{publicBaseUrls.Resolve(httpContext.Request)}/auth/confirm-email";
 
     await authService.ResendEmailConfirmationAsync(email, confirmUrlBase, ct);
     return Results.Redirect("/login?msg=If%20the%20account%20is%20unconfirmed%2C%20a%20confirmation%20email%20was%20sent");
-}).RequireRateLimiting("AuthEndpoints");
+}).RequireRateLimiting(RateLimitSetup.AuthEndpoints);
 
 app.MapGet("/auth/confirm-email-change", async (HttpContext context, AuthService authService, string email, string token, CancellationToken ct) =>
 {
@@ -577,6 +504,15 @@ if (isE2E)
         var password = form["password"].ToString();
         var defaultNotifyMode = form["defaultNotifyMode"].ToString();
         var defaultExpiryMode = form["defaultExpiryMode"].ToString();
+        var role = form["role"].ToString().Trim().ToLowerInvariant();
+        if (role.Length == 0)
+        {
+            role = "user";
+        }
+        else if (role is not ("user" or "admin"))
+        {
+            return Results.BadRequest(new { error = "role must be 'user' or 'admin'." });
+        }
 
         if (string.IsNullOrWhiteSpace(email))
         {
@@ -614,7 +550,7 @@ if (isE2E)
             EmailConfirmedAtUtc = DateTime.UtcNow,
             PasswordHash = PasswordHasher.Hash(password),
             SecurityStamp = SecurityStamps.New(),
-            Role = "user",
+            Role = role,
             IsEnabled = true,
             CreatedAtUtc = DateTime.UtcNow,
             DefaultNotifyMode = string.IsNullOrWhiteSpace(defaultNotifyMode) ? "once" : defaultNotifyMode.Trim(),
@@ -782,7 +718,7 @@ app.MapPost("/api/admin/users/{id:guid}/enabled", async (Guid id, HttpContext ht
 {
     var currentUserIdRaw = httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier);
     var form = await request.ReadFormAsync(ct);
-    var enabled = bool.TryParse(form["enabled"].ToString(), out var parsed) && parsed;
+    var enabled = FormValues.LastBool(form["enabled"]);
 
     if (Guid.TryParse(currentUserIdRaw, out var currentUserId) && currentUserId == id && !enabled)
     {
@@ -799,7 +735,7 @@ app.MapPost("/admin/users/{id:guid}/enabled", async (Guid id, HttpContext httpCo
 {
     var currentUserIdRaw = httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier);
     var form = await request.ReadFormAsync(ct);
-    var enabled = bool.TryParse(form["enabled"].ToString(), out var parsed) && parsed;
+    var enabled = FormValues.LastBool(form["enabled"]);
 
     if (Guid.TryParse(currentUserIdRaw, out var currentUserId) && currentUserId == id && !enabled)
     {
@@ -825,7 +761,7 @@ app.MapPost("/admin/users/{id:guid}/delete", async (Guid id, HttpContext httpCon
 app.MapPost("/admin/settings/registration", async (HttpRequest request, AuthService authService, CancellationToken ct) =>
 {
     var form = await request.ReadFormAsync(ct);
-    var enabled = bool.TryParse(form["enabled"].ToString(), out var parsed) && parsed;
+    var enabled = FormValues.LastBool(form["enabled"]);
     await authService.SetAllowRegistrationAsync(enabled, ct);
     return Results.Redirect($"/admin?msg={(enabled ? "Registration%20enabled" : "Registration%20disabled")}");
 }).RequireAuthorization("AdminOnly");
@@ -1277,7 +1213,7 @@ app.MapPost("/api/public-uploads/stage", async (
         fileName = staged.OriginalFileName,
         sizeBytes = staged.OriginalSizeBytes
     });
-}).RequireRateLimiting("PublicUploadEndpoints");
+}).RequireRateLimiting(RateLimitSetup.PublicUploadEndpoints);
 
 app.MapPost("/api/public-uploads/create-share", async (
     AuthService authService,
@@ -1418,7 +1354,7 @@ app.MapPost("/api/public-uploads/create-share", async (
 
     queuedShareCreationJob.Queue(queued);
     return Results.Redirect($"/u/{Uri.EscapeDataString(uploadToken)}?submitted=1");
-}).RequireRateLimiting("PublicUploadEndpoints");
+}).RequireRateLimiting(RateLimitSetup.PublicUploadEndpoints);
 
 app.MapPost("/api/uploads/stage-template-background", async (
     HttpContext context,
@@ -1879,17 +1815,6 @@ static bool TryNormalizeOptionalSharePassword(string? raw, out string? password)
     return password.Length >= 8 && password.Length <= 256;
 }
 
-
-static string ResolvePublicBaseUrl(string? configuredValue, HttpRequest request)
-{
-    var configured = (configuredValue ?? string.Empty).Trim().TrimEnd('/');
-    if (configured.Length > 0 && Uri.TryCreate(configured, UriKind.Absolute, out var absolute))
-    {
-        return absolute.GetLeftPart(UriPartial.Authority);
-    }
-
-    return $"{request.Scheme}://{request.Host}";
-}
 
 static string? NormalizeHexColor(string? value)
 {

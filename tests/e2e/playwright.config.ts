@@ -87,6 +87,8 @@ export default defineConfig({
       PLAYWRIGHT_E2E_MINIO_BUCKET: minioBucket,
       ...storageEnv,
       Agora__StorageRoot: storageRoot,
+      // Outgoing links are built from this origin only (never the request host); it matches baseURL.
+      Agora__PublicBaseUrl: 'http://127.0.0.1:18090',
       // Revalidate the sign-in cookie against the database on every request so the suite exercises that path.
       Agora__Auth__SessionRevalidationMinutes: '0',
       Email__Provider: 'filesystem',

@@ -6,7 +6,6 @@ using Hangfire.Console;
 using Hangfire.Server;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using System.Text.Json;
 
 namespace Agora.Infrastructure.Services;
@@ -15,11 +14,9 @@ public sealed class EmailNotificationJob(
     AgoraDbContext db,
     IEmailSender emailSender,
     IDownloaderGeoLookup downloaderGeoLookup,
-    IOptions<AgoraOptions> options,
+    IPublicOriginProvider publicOrigin,
     ILogger<EmailNotificationJob> logger)
 {
-    private readonly AgoraOptions _options = options.Value;
-
     public async Task ProcessDownloadEventAsync(Guid downloadEventId, string token, CancellationToken cancellationToken, PerformContext? performContext = null)
     {
         performContext?.WriteLine($"Processing download notification for event '{downloadEventId}'.");
@@ -50,7 +47,7 @@ public sealed class EmailNotificationJob(
         {
             var downloadCount = await db.DownloadEvents.CountAsync(x => x.ShareId == share.Id, cancellationToken);
             var browser = ParseBrowserMetadata(downloadEvent.BrowserMetadataJson);
-            var shareUrl = BuildShareUrl(token);
+            var shareUrl = publicOrigin.ShareUrl(token);
             var downloaderIpDisplay = await downloaderGeoLookup.FormatForNotificationAsync(downloadEvent.IpAddress, cancellationToken);
 
             var notification = new DownloadNotification(
@@ -82,17 +79,6 @@ public sealed class EmailNotificationJob(
             downloadEvent.NotificationError = ex.Message;
             await db.SaveChangesAsync(cancellationToken);
         }
-    }
-
-    private string BuildShareUrl(string token)
-    {
-        var configuredBase = (_options.PublicBaseUrl ?? string.Empty).Trim().TrimEnd('/');
-        if (!string.IsNullOrWhiteSpace(configuredBase))
-        {
-            return $"{configuredBase}/s/{token}";
-        }
-
-        return $"/s/{token}";
     }
 
     private static (string BrowserFamily, string OsFamily, string DeviceType) ParseBrowserMetadata(string json)

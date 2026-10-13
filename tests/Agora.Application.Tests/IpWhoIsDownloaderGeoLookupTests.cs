@@ -1,7 +1,9 @@
 using System.Net;
 using System.Text;
 using Agora.Infrastructure.Services;
+using Agora.Application.Models;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace Agora.Application.Tests;
 
@@ -18,7 +20,7 @@ public sealed class IpWhoIsDownloaderGeoLookupTests
         {
             BaseAddress = new Uri("https://ipwho.is/")
         };
-        var lookup = new IpWhoIsDownloaderGeoLookup(client, NullLogger<IpWhoIsDownloaderGeoLookup>.Instance);
+        var lookup = new IpWhoIsDownloaderGeoLookup(client, Enabled(true), NullLogger<IpWhoIsDownloaderGeoLookup>.Instance);
 
         var result = await lookup.FormatForNotificationAsync("8.8.8.8", CancellationToken.None);
 
@@ -32,7 +34,7 @@ public sealed class IpWhoIsDownloaderGeoLookupTests
         {
             BaseAddress = new Uri("https://ipwho.is/")
         };
-        var lookup = new IpWhoIsDownloaderGeoLookup(client, NullLogger<IpWhoIsDownloaderGeoLookup>.Instance);
+        var lookup = new IpWhoIsDownloaderGeoLookup(client, Enabled(true), NullLogger<IpWhoIsDownloaderGeoLookup>.Instance);
 
         var result = await lookup.FormatForNotificationAsync("1.1.1.1", CancellationToken.None);
 
@@ -44,12 +46,29 @@ public sealed class IpWhoIsDownloaderGeoLookupTests
     {
         var lookup = new IpWhoIsDownloaderGeoLookup(
             new HttpClient(new StubHandler(_ => throw new InvalidOperationException("Should not be called"))),
+            Enabled(true),
             NullLogger<IpWhoIsDownloaderGeoLookup>.Instance);
 
         var result = await lookup.FormatForNotificationAsync("10.0.0.4", CancellationToken.None);
 
         Assert.Equal("10.0.0.4", result);
     }
+
+    [Fact]
+    public async Task FormatForNotificationAsync_MakesNoRequestWhenDisabled()
+    {
+        var lookup = new IpWhoIsDownloaderGeoLookup(
+            new HttpClient(new StubHandler(_ => throw new InvalidOperationException("Geo lookup must not call out when disabled"))),
+            Enabled(false),
+            NullLogger<IpWhoIsDownloaderGeoLookup>.Instance);
+
+        Assert.Equal("8.8.8.8", await lookup.FormatForNotificationAsync("8.8.8.8", CancellationToken.None));
+        Assert.Equal("8.8.8.8", await lookup.FormatForNotificationAsync("::ffff:8.8.8.8", CancellationToken.None));
+        Assert.Equal("unknown", await lookup.FormatForNotificationAsync("", CancellationToken.None));
+    }
+
+    private static IOptions<AgoraOptions> Enabled(bool enabled) =>
+        Options.Create(new AgoraOptions { GeoLookup = new AgoraGeoLookupOptions { Enabled = enabled } });
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
     {

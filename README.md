@@ -60,6 +60,7 @@ docker run -d \
   -p 18080:18080 \
   -e ConnectionStrings__Default="Server=YOUR_SQL_HOST,1433;Database=Agora;User Id=agora;Password=YOUR_PASSWORD;TrustServerCertificate=true" \
   -e Agora__PublicBaseUrl="https://files.yourdomain.com" \
+  -e Agora__TrustedProxies="172.28.0.0/16" \
   -e Email__Provider="Resend" \
   -e Email__Resend__ApiToken="<your_token>" \
   -e Email__Resend__FromDisplayName="<display_name>" \
@@ -104,11 +105,30 @@ Type `exit` to quit `sqlcmd`.
 
 ### Reverse proxy headers
 
-If running behind Caddy/Nginx/Traefik, forward:
+If running behind Caddy/Nginx/Traefik, have the proxy send:
 
 - `X-Forwarded-For`
 - `X-Forwarded-Proto`
 - `X-Forwarded-Host`
+
+and list the proxy in `Agora__TrustedProxies` (IP addresses and CIDR networks, comma separated, for example
+`10.0.0.5,172.28.0.0/16`). Loopback is always trusted. Forwarded headers from any other peer are ignored, so with the
+setting empty a proxy on a Docker bridge network makes every client look like the proxy's address: download logs record
+the proxy and all anonymous visitors are throttled collectively by `Agora__RateLimits__AnonymousPerMinute` (1200/min by
+default), so a busy public instance starts answering `429` until the proxy is listed. Invalid entries stop startup.
+
+The proxy must set (overwrite) `X-Forwarded-Host` and `X-Forwarded-Proto` from its own view of the request, never pass
+through values sent by the client, and the app must not be reachable except through the proxy. Only the last
+`X-Forwarded-For` entry is used, so a proxy that appends to a client-supplied list is fine.
+
+Links that leave the browser (emails, share and upload links, Open Graph tags) are built from `Agora__PublicBaseUrl`
+only, never from the request host, so a spoofed host header cannot redirect a password-reset link.
+
+`AllowedHosts` defaults to `*` so a self-hosted instance can be reached under several names. For a production
+deployment set it to the public hostname(s) (`AllowedHosts=files.example.com`), and configure the proxy so it only
+forwards requests for those names rather than passing arbitrary `Host` values through; startup logs a warning in
+`Production` while it is `*`. `ASPNETCORE_FORWARDEDHEADERS_ENABLED` is unnecessary and harmless: the app configures
+forwarded headers itself and resets the trusted lists, so that variable cannot widen the trust to every peer.
 
 ### TrueNAS SCALE (Install via YAML)
 
@@ -131,6 +151,7 @@ services:
       - Email__Resend__FromAddress=YOUR_VERIFIED_FROM_EMAIL
       - Email__Resend__ApiUrl=https://api.resend.com
       - Agora__PublicBaseUrl=https://files.YOUR_DOMAIN
+      - Agora__TrustedProxies=YOUR_PROXY_IP_OR_NETWORK
     volumes:
       - /mnt/YOUR_POOL/apps/agora/data:/app/data
     restart: unless-stopped
@@ -141,7 +162,9 @@ services:
 Startup behavior:
 - The app applies EF Core migrations on startup (the migration set of the selected provider).
 - If migrations fail for any reason, startup logs a fatal error and the server stops.
-- A missing `ConnectionStrings__Default` or an unknown `Database__Provider` stops startup with a clear error.
+- A missing `ConnectionStrings__Default`, an unknown `Database__Provider`, a missing or invalid `Agora__PublicBaseUrl`
+  (outside `Development`/`E2E`) or an invalid `Agora__TrustedProxies` entry stops startup with a clear error.
+- In `Production`, startup logs a warning when `Agora__TrustedProxies` is empty or `AllowedHosts` is `*`.
 
 ### Core settings
 
@@ -149,7 +172,11 @@ Startup behavior:
 | --- | --- | --- |
 | `ConnectionStrings__Default` | *(required)* | Database connection string (also used for Hangfire job storage) |
 | `Database__Provider` | `SqlServer` | `SqlServer` or `Postgres` (case-insensitive); anything else is a startup error |
-| `Agora__PublicBaseUrl` | request host | Public base URL in generated links |
+| `Agora__PublicBaseUrl` | *(required)* | Public origin (`https://host[:port]`, no path) used for every link that leaves the browser: emails, share and upload links, Open Graph tags. Only `Development` and `E2E` fall back to the request host. |
+| `Agora__TrustedProxies` | empty (loopback only) | Reverse proxies whose `X-Forwarded-For/Proto/Host` are honoured: IP addresses and CIDR networks, comma separated (see "Reverse proxy headers") |
+| `AllowedHosts` | `*` | Host names the app answers for. Set it to the public hostname(s) in production (`files.example.com`, or `files.example.com;admin.example.com`); `*` serves any `Host` header |
+| `Agora__RateLimits__AnonymousPerMinute` | `1200` | Requests per minute one anonymous client (by IP address) may make site-wide; `0` disables this budget. Health endpoints and static files are exempt. Sizing: a download page with 20 files whose previews are still being generated polls about 480 requests/min, so the default leaves room for two such pages behind one address (shared office or NAT addresses count as one client). Signed-in users get 120/min per account. Sign-in, registration, password-reset and confirmation handlers are additionally limited to 10/min per IP, public uploads to 25/min per IP, downloads to 20/min per share and IP |
+| `Agora__GeoLookup__Enabled` | `true` | Download notifications show the downloader's city and country by sending the downloader's public IP address to the third-party service `https://ipwho.is/`. Set to `false` to keep downloader IPs in-house; notifications then show the bare address |
 | `DataProtection__KeysPath` | `<parent of StorageRoot>/keys` (`/app/data/keys` in the container) | Where DataProtection keys are persisted, so sign-ins survive restarts. Must be writable and persistent. |
 
 ### Database provider

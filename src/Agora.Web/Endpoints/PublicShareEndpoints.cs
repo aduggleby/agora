@@ -3,9 +3,11 @@ using Agora.Application.Models;
 using Agora.Application.Utilities;
 using Agora.Infrastructure.Services;
 using Agora.Web.Services;
+using Agora.Web.Startup;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 using System.Security.Cryptography;
+
 
 namespace Agora.Web.Endpoints;
 
@@ -159,7 +161,7 @@ public static class PublicShareEndpoints
             // DetectedContentType may hold a client-declared value from older uploads.
             var asAttachment = request.Query["download"].ToString() == "1";
             return ObjectResults.UserContent(request.HttpContext.Response, stored, file.OriginalFilename, forceAttachment: asAttachment);
-        }).RequireRateLimiting("DownloadEndpoints");
+        }).RequireRateLimiting(RateLimitSetup.DownloadEndpoints);
 
         app.MapGet("/s/{token}/files/{fileId:guid}/preview", async (
             ShareManager manager,
@@ -321,14 +323,14 @@ public static class PublicShareEndpoints
 
             previewJobService.QueueGeneration(share.Id, file.Id);
             return Results.Accepted();
-        }).RequireRateLimiting("DownloadEndpoints");
+        }).RequireRateLimiting(RateLimitSetup.DownloadEndpoints);
 
         app.MapGet("/s/{token}/gallery", (string token) => Results.Redirect($"/s/{token}"));
 
         app.MapGet("/s/{token}/download", (string token) =>
         {
             return Results.Redirect($"/s/{token}");
-        }).RequireRateLimiting("DownloadEndpoints");
+        }).RequireRateLimiting(RateLimitSetup.DownloadEndpoints);
 
         app.MapPost("/s/{token}/download", async (ShareManager manager, IObjectStore objectStore, IOptions<AgoraOptions> options, string token, HttpRequest request, CancellationToken ct) =>
         {
@@ -404,57 +406,19 @@ public static class PublicShareEndpoints
                         ct)
                     ?? Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=invalid_password");
             }
-        }).RequireRateLimiting("DownloadEndpoints");
+        }).RequireRateLimiting(RateLimitSetup.DownloadEndpoints);
 
         return app;
     }
 
+    /// <summary>
+    /// The downloader's address as seen by the connection. Behind a trusted proxy (Agora:TrustedProxies) the
+    /// forwarded-headers middleware has already replaced it with the client address; client-supplied headers are
+    /// never read here.
+    /// </summary>
     private static string ResolveRequesterIp(HttpRequest request)
     {
-        var remoteRaw = request.HttpContext.Connection.RemoteIpAddress?.ToString();
-        if (IpAddressUtilities.TryNormalizeIp(remoteRaw, out var remoteIp) && IpAddressUtilities.IsPublicRoutable(remoteIp))
-        {
-            return remoteIp;
-        }
-
-        var directHeaderCandidates = new[]
-        {
-            request.Headers["CF-Connecting-IP"].ToString(),
-            request.Headers["True-Client-IP"].ToString(),
-            request.Headers["X-Real-IP"].ToString()
-        };
-
-        foreach (var candidate in directHeaderCandidates)
-        {
-            if (!IpAddressUtilities.TryNormalizeIp(candidate, out var normalized))
-            {
-                continue;
-            }
-
-            if (IpAddressUtilities.IsPublicRoutable(normalized))
-            {
-                return normalized;
-            }
-        }
-
-        var forwardedForHeader = request.Headers["X-Forwarded-For"].ToString();
-        var fromForwardedFor = IpAddressUtilities.ExtractFromForwardedFor(forwardedForHeader, preferPublic: true);
-        if (!string.IsNullOrWhiteSpace(fromForwardedFor))
-        {
-            return fromForwardedFor;
-        }
-
-        if (!string.IsNullOrWhiteSpace(remoteIp))
-        {
-            return remoteIp;
-        }
-
-        var fallbackForwarded = IpAddressUtilities.ExtractFromForwardedFor(forwardedForHeader, preferPublic: false);
-        if (!string.IsNullOrWhiteSpace(fallbackForwarded))
-        {
-            return fallbackForwarded;
-        }
-
-        return "unknown";
+        var remote = request.HttpContext.Connection.RemoteIpAddress?.ToString();
+        return IpAddressUtilities.TryNormalizeIp(remote, out var normalized) ? normalized : "unknown";
     }
 }

@@ -1,9 +1,11 @@
 using Agora.Infrastructure.Auth;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace Agora.Web.Pages;
 
+[EnableRateLimiting("AuthEndpoints")]
 public class ResetPasswordModel(AuthService authService) : PageModel
 {
     public bool CanSubmit { get; private set; }

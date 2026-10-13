@@ -53,6 +53,7 @@ The container must run with only:
   - `/app/data` (contains scratch: staged uploads, drafts, `uploads/tmp`; DataProtection keys; logs; and, with `Storage__Provider=FileSystem`, the durable content)
 - Optional object storage: `Storage__Provider=S3` with `Storage__S3__*` (durable content in the bucket; `/app/data` still needs ≈3× the largest share × concurrent creations for scratch)
 - Health endpoints: `GET /live` (process up) and `GET /ready` (database and, in S3 mode, bucket reachable)
+- `Agora__PublicBaseUrl` is required outside `Development`/`E2E` (startup fails without it); links that leave the browser are never built from the request host. `Agora__TrustedProxies` lists the reverse proxies whose `X-Forwarded-*` headers are honoured (loopback only when empty).
 
 Default container port:
 

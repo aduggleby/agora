@@ -5,13 +5,12 @@ namespace Agora.Application.Tests;
 public sealed class IpAddressUtilitiesTests
 {
     [Fact]
-    public void ExtractFromForwardedFor_PrefersPublicAddress()
+    public void TryNormalizeIp_MapsIpv4MappedIpv6ToIpv4()
     {
-        var header = "10.0.0.12, 198.51.100.7, 8.8.8.8";
+        var ok = IpAddressUtilities.TryNormalizeIp("::ffff:203.0.113.9", out var normalized);
 
-        var result = IpAddressUtilities.ExtractFromForwardedFor(header, preferPublic: true);
-
-        Assert.Equal("8.8.8.8", result);
+        Assert.True(ok);
+        Assert.Equal("203.0.113.9", normalized);
     }
 
     [Fact]

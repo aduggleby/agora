@@ -4,16 +4,15 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Agora.Infrastructure.Auth;
 using Agora.Infrastructure.Persistence;
 using Agora.Web.Auth;
+using Agora.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.Extensions.Options;
-using Agora.Application.Models;
 
 namespace Agora.Web.Pages.Account;
 
 [Authorize]
-public class SettingsModel(AuthService authService, AgoraDbContext db, IOptions<AgoraOptions> options) : PageModel
+public class SettingsModel(AuthService authService, AgoraDbContext db, PublicBaseUrlResolver publicBaseUrls) : PageModel
 {
     public string CurrentEmail { get; private set; } = string.Empty;
     public string DisplayName { get; private set; } = string.Empty;
@@ -28,7 +27,7 @@ public class SettingsModel(AuthService authService, AgoraDbContext db, IOptions<
         DisplayName = User.FindFirstValue(ClaimTypes.Name) ?? email;
         var token = await authService.GetOrCreateUploadTokenAsync(email, ct);
         UploadToken = token ?? string.Empty;
-        var publicBaseUrl = ResolvePublicBaseUrl(options.Value.PublicBaseUrl, Request);
+        var publicBaseUrl = publicBaseUrls.Resolve(Request);
         UploadIntakeUrlPrefix = $"{publicBaseUrl}/u/";
         UploadIntakeUrl = string.IsNullOrWhiteSpace(token) ? string.Empty : $"{publicBaseUrl}/u/{Uri.EscapeDataString(token)}";
         ViewData["Title"] = "Account Settings";
@@ -40,8 +39,7 @@ public class SettingsModel(AuthService authService, AgoraDbContext db, IOptions<
         var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
         var newEmail = (Request.Form["newEmail"].ToString() ?? string.Empty).Trim();
         var currentPassword = Request.Form["currentPasswordForEmail"].ToString();
-        var publicBaseUrl = ResolvePublicBaseUrl(options.Value.PublicBaseUrl, Request);
-        var confirmationUrlBase = $"{publicBaseUrl}/auth/confirm-email-change";
+        var confirmationUrlBase = $"{publicBaseUrls.Resolve(Request)}/auth/confirm-email-change";
 
         var result = await authService.RequestEmailChangeAsync(email, newEmail, currentPassword, confirmationUrlBase, ct);
         if (!result.Success)
@@ -84,8 +82,7 @@ public class SettingsModel(AuthService authService, AgoraDbContext db, IOptions<
             return RedirectToPage("/Account/Settings", new { msg = "New passwords do not match" });
         }
 
-        var publicBaseUrl = ResolvePublicBaseUrl(options.Value.PublicBaseUrl, Request);
-        var confirmationUrlBase = $"{publicBaseUrl}/auth/confirm-password-change";
+        var confirmationUrlBase = $"{publicBaseUrls.Resolve(Request)}/auth/confirm-password-change";
         var result = await authService.RequestPasswordChangeAsync(email, currentPassword, newPassword, confirmationUrlBase, ct);
         return RedirectToPage("/Account/Settings", new { msg = result.Success ? "Check your email to confirm the password change" : result.Error });
     }
@@ -113,16 +110,5 @@ public class SettingsModel(AuthService authService, AgoraDbContext db, IOptions<
         }
 
         return RedirectToPage("/Account/Settings", new { msg = "Upload link updated" });
-    }
-
-    private static string ResolvePublicBaseUrl(string? configuredValue, HttpRequest request)
-    {
-        var configured = (configuredValue ?? string.Empty).Trim().TrimEnd('/');
-        if (configured.Length > 0 && Uri.TryCreate(configured, UriKind.Absolute, out var absolute))
-        {
-            return absolute.GetLeftPart(UriPartial.Authority);
-        }
-
-        return $"{request.Scheme}://{request.Host}";
     }
 }

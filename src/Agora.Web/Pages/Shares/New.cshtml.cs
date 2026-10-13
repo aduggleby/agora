@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Agora.Application.Models;
 using Agora.Infrastructure.Auth;
 using Agora.Infrastructure.Services;
+using Agora.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -9,7 +10,7 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 namespace Agora.Web.Pages.Shares;
 
 [Authorize]
-public class NewModel(AuthService authService, ShareManager manager, IOptions<AgoraOptions> options) : PageModel
+public class NewModel(AuthService authService, ShareManager manager, IOptions<AgoraOptions> options, PublicBaseUrlResolver publicBaseUrls) : PageModel
 {
     private readonly AgoraOptions _options = options.Value;
 
@@ -69,7 +70,7 @@ public class NewModel(AuthService authService, ShareManager manager, IOptions<Ag
         ShareToken = IsValidShareToken(requestedShareToken)
             ? requestedShareToken
             : await manager.GenerateUniqueShareTokenAsync(8, ct);
-        ShareLinkPrefix = $"{ResolvePublicBaseUrl(options.Value.PublicBaseUrl, Request)}/s/";
+        ShareLinkPrefix = $"{publicBaseUrls.Resolve(Request)}/s/";
 
         var suggestedShareToken = Request.Query["suggestedShareToken"].ToString().Trim();
         SuggestedShareToken = IsValidShareToken(suggestedShareToken)
@@ -96,16 +97,5 @@ public class NewModel(AuthService authService, ShareManager manager, IOptions<Ag
         }
 
         return true;
-    }
-
-    private static string ResolvePublicBaseUrl(string? configuredValue, HttpRequest request)
-    {
-        var configured = (configuredValue ?? string.Empty).Trim().TrimEnd('/');
-        if (configured.Length > 0 && Uri.TryCreate(configured, UriKind.Absolute, out var absolute))
-        {
-            return absolute.GetLeftPart(UriPartial.Authority);
-        }
-
-        return $"{request.Scheme}://{request.Host}";
     }
 }

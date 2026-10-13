@@ -65,12 +65,13 @@ function crc32(buffer: Buffer): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-export async function createE2EUser(request: APIRequestContext, suffix: string) {
+export async function createE2EUser(request: APIRequestContext, suffix: string, role: 'user' | 'admin' = 'user') {
   const email = `e2e-${suffix}-${Date.now()}@example.test`;
   const response = await request.post('/api/e2e/users', {
     form: {
       email,
-      password: 'P@ssw0rd!123'
+      password: 'P@ssw0rd!123',
+      role
     }
   });
 
