@@ -1,6 +1,6 @@
-using System.Security.Claims;
 using Agora.Application.Models;
 using Agora.Infrastructure.Services;
+using Agora.Web.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
@@ -13,8 +13,11 @@ public class LandingPageDesignerModel(ShareManager manager) : PageModel
 
     public async Task OnGet(CancellationToken ct)
     {
-        var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-        Template = await manager.GetAccountTemplateAsync(email, ct);
+        if (User.TryGetShareOwner(out var owner))
+        {
+            Template = await manager.GetAccountTemplateAsync(owner, ct);
+        }
+
         ViewData["Title"] = "Download Page Settings";
         ViewData["Message"] = Request.Query["msg"].ToString();
     }

@@ -2,9 +2,11 @@ using System.Security.Claims;
 using Agora.Application.Models;
 using Agora.Infrastructure.Auth;
 using Agora.Infrastructure.Services;
+using Agora.Web.Auth;
 using Agora.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
 namespace Agora.Web.Pages.Shares;
@@ -28,26 +30,30 @@ public class NewModel(AuthService authService, ShareManager manager, IOptions<Ag
     public long MaxTotalUploadBytes => _options.MaxTotalUploadBytes;
     public int MaxFilesPerShare => _options.MaxFilesPerShare;
 
-    public async Task OnGet(CancellationToken ct)
+    public async Task<IActionResult> OnGet(CancellationToken ct)
     {
-        var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+        if (User.UserId() is not { } userId)
+        {
+            return Redirect("/login");
+        }
+
         var requestedDraftShareId = Request.Query["draftShareId"].ToString();
         try
         {
-            DraftShareId = await manager.EnsureDraftShareAsync(email, requestedDraftShareId, ct);
+            DraftShareId = await manager.EnsureDraftShareAsync(userId, requestedDraftShareId, ct);
         }
         catch
         {
-            DraftShareId = await manager.EnsureDraftShareAsync(email, null, ct);
+            DraftShareId = await manager.EnsureDraftShareAsync(userId, null, ct);
         }
 
-        DraftTemplate = await manager.GetDraftTemplateAsync(email, DraftShareId, ct);
-        StagedUploads = await manager.ListStagedUploadsForDraftAsync(email, DraftShareId, ct);
+        DraftTemplate = await manager.GetDraftTemplateAsync(userId, DraftShareId, ct);
+        StagedUploads = await manager.ListStagedUploadsForDraftAsync(userId, DraftShareId, ct);
         TemplateModeForDraft = string.Equals(DraftTemplate.TemplateMode, "per_upload", StringComparison.OrdinalIgnoreCase)
             ? "per_upload"
             : "account_default";
 
-        var notifyMode = await authService.GetDefaultNotifyModeAsync(email, ct);
+        var notifyMode = await authService.GetDefaultNotifyModeAsync(userId, ct);
         AccountDefaultNotifyModeLabel = notifyMode switch
         {
             "none" => "None",
@@ -55,7 +61,7 @@ public class NewModel(AuthService authService, ShareManager manager, IOptions<Ag
             _ => "First download only"
         };
 
-        AccountDefaultExpiryMode = await authService.GetDefaultExpiryModeAsync(email, ct);
+        AccountDefaultExpiryMode = await authService.GetDefaultExpiryModeAsync(userId, ct);
         AccountDefaultExpiryModeLabel = AccountDefaultExpiryMode switch
         {
             "1_hour" => "1 hour",
@@ -79,6 +85,7 @@ public class NewModel(AuthService authService, ShareManager manager, IOptions<Ag
 
         ViewData["Title"] = "Share files";
         ViewData["Message"] = Request.Query["msg"].ToString();
+        return Page();
     }
 
     private static bool IsValidShareToken(string value)

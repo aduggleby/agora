@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Agora.Infrastructure.Services;
+using Agora.Web.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -14,18 +15,22 @@ public class LandingPageDesignerModel(ShareManager manager) : PageModel
 
     public async Task<IActionResult> OnGet(CancellationToken ct)
     {
-        var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+        if (User.UserId() is not { } userId)
+        {
+            return Redirect("/login");
+        }
+
         var requestedDraftShareId = Request.Query["draftShareId"].ToString();
         try
         {
-            DraftShareId = await manager.EnsureDraftShareAsync(email, requestedDraftShareId, ct);
+            DraftShareId = await manager.EnsureDraftShareAsync(userId, requestedDraftShareId, ct);
         }
         catch
         {
             return Redirect("/shares/new?msg=Unable%20to%20open%20share%20designer");
         }
 
-        DraftTemplate = await manager.GetDraftTemplateAsync(email, DraftShareId, ct);
+        DraftTemplate = await manager.GetDraftTemplateAsync(userId, DraftShareId, ct);
         ViewData["Title"] = "Share Download Page Designer";
         ViewData["Message"] = Request.Query["msg"].ToString();
         return Page();

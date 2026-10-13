@@ -106,12 +106,12 @@ public sealed class AuthServiceSecurityStampTests
         user.SecurityStamp = string.Empty;
         await harness.Db.SaveChangesAsync();
 
-        var first = await harness.Service.LoginAsync(Email, Password, CancellationToken.None);
+        var first = await harness.Service.LoginAsync(Email, Password, "203.0.113.1", CancellationToken.None);
         Assert.True(first.Success, first.Error);
         Assert.False(string.IsNullOrEmpty(user.SecurityStamp));
 
         var minted = user.SecurityStamp;
-        var second = await harness.Service.LoginAsync(Email, Password, CancellationToken.None);
+        var second = await harness.Service.LoginAsync(Email, Password, "203.0.113.1", CancellationToken.None);
         Assert.True(second.Success, second.Error);
         Assert.Equal(minted, user.SecurityStamp);
     }
@@ -123,7 +123,7 @@ public sealed class AuthServiceSecurityStampTests
         var user = await harness.UserAsync();
         var before = user.SecurityStamp;
 
-        var result = await harness.Service.SetDisplayNameAsync(Email, "New Name", CancellationToken.None);
+        var result = await harness.Service.SetDisplayNameAsync(user.Id, "New Name", CancellationToken.None);
 
         Assert.True(result.Success, result.Error);
         Assert.Equal(before, user.SecurityStamp);

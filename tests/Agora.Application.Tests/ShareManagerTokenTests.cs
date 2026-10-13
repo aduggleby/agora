@@ -20,6 +20,8 @@ namespace Agora.Application.Tests;
 /// </summary>
 public sealed class ShareManagerTokenTests
 {
+    private static readonly Guid UploaderId = Guid.NewGuid();
+
     [Fact]
     public async Task FindByTokenAsync_FindsShareByPlaintextToken()
     {
@@ -27,6 +29,7 @@ public sealed class ShareManagerTokenTests
         var share = new Share
         {
             Id = Guid.NewGuid(),
+            OwnerUserId = UploaderId,
             UploaderEmail = "uploader@example.com",
             ShareToken = "Token_123",
             ZipDisplayName = "files.zip",
@@ -53,6 +56,7 @@ public sealed class ShareManagerTokenTests
         harness.Db.Shares.Add(new Share
         {
             Id = Guid.NewGuid(),
+            OwnerUserId = UploaderId,
             UploaderEmail = "uploader@example.com",
             ShareToken = "existing_token",
             ZipDisplayName = "files.zip",
@@ -94,7 +98,7 @@ public sealed class ShareManagerTokenTests
     {
         await using var harness = await TestHarness.CreateAsync();
         const string draftShareId = "11111111111111111111111111111111";
-        const string uploader = "uploader@example.com";
+        var uploader = UploaderId;
         await harness.Manager.EnsureDraftShareAsync(uploader, draftShareId, CancellationToken.None);
         using var fileStream = await harness.CreateUploadStreamAsync("document.txt", "hello");
         using var backgroundStream = await harness.CreateUploadStreamAsync("bg.png", "png-data");
@@ -129,7 +133,7 @@ public sealed class ShareManagerTokenTests
     {
         await using var harness = await TestHarness.CreateAsync();
         const string draftShareId = "22222222222222222222222222222222";
-        const string uploader = "uploader@example.com";
+        var uploader = UploaderId;
         await harness.Manager.EnsureDraftShareAsync(uploader, draftShareId, CancellationToken.None);
         using var backgroundStream = await harness.CreateUploadStreamAsync("bg.webp", "webp-data");
 
@@ -164,7 +168,7 @@ public sealed class ShareManagerTokenTests
     {
         await using var harness = await TestHarness.CreateAsync();
         const string draftShareId = "33333333333333333333333333333333";
-        const string uploader = "uploader@example.com";
+        var uploader = UploaderId;
         await harness.Manager.EnsureDraftShareAsync(uploader, draftShareId, CancellationToken.None);
         using var htmlAsPng = await harness.CreateUploadStreamAsync("evil.png", "<script>alert(1)</script>");
         using var htmlFile = await harness.CreateUploadStreamAsync("page.html", "<html></html>");
@@ -194,6 +198,7 @@ public sealed class ShareManagerTokenTests
 
         var command = new CreateShareCommand
         {
+            OwnerUserId = UploaderId,
             UploaderEmail = "uploader@example.com",
             ShareToken = "content_type_token",
             NotifyMode = "none",
@@ -218,6 +223,7 @@ public sealed class ShareManagerTokenTests
     {
         return new CreateShareCommand
         {
+            OwnerUserId = UploaderId,
             UploaderEmail = "uploader@example.com",
             ShareToken = token,
             NotifyMode = "none",
@@ -253,6 +259,8 @@ public sealed class ShareManagerTokenTests
                 .Options;
             var db = new AgoraDbContext(options);
             await db.Database.EnsureCreatedAsync();
+            db.Users.Add(TestUsers.Seed(UploaderId, "uploader@example.com"));
+            await db.SaveChangesAsync();
 
             // Use a unique temp storage root per test to avoid cross-test filesystem coupling.
             var storageRoot = Path.Combine(Path.GetTempPath(), "agora-sharemanager-tests", Guid.NewGuid().ToString("N"));

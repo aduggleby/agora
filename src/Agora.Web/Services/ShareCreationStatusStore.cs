@@ -19,7 +19,8 @@ public sealed class ShareCreationStatusStore(IOptions<AgoraOptions> options)
 
     public sealed record Entry(
         string Token,
-        string UploaderEmail,
+        /// <summary>Owner of the share being created; null for entries written before owner ids existed (nobody's).</summary>
+        Guid? OwnerUserId,
         string State,
         string? Error,
         string? JobId,
@@ -34,12 +35,12 @@ public sealed class ShareCreationStatusStore(IOptions<AgoraOptions> options)
         string? Detail,
         DateTime? UpdatedAtUtc);
 
-    public Entry MarkQueued(string token, string uploaderEmail, string? jobId)
+    public Entry MarkQueued(string token, Guid ownerUserId, string? jobId)
     {
         var now = DateTime.UtcNow;
         var entry = new Entry(
             Token: token,
-            UploaderEmail: uploaderEmail.Trim(),
+            OwnerUserId: ownerUserId,
             State: "queued",
             Error: null,
             JobId: jobId,
@@ -57,7 +58,7 @@ public sealed class ShareCreationStatusStore(IOptions<AgoraOptions> options)
         var now = DateTime.UtcNow;
         var entry = new Entry(
             Token: token,
-            UploaderEmail: existing?.UploaderEmail ?? string.Empty,
+            OwnerUserId: existing?.OwnerUserId,
             State: "processing",
             Error: null,
             JobId: existing?.JobId,
@@ -74,7 +75,7 @@ public sealed class ShareCreationStatusStore(IOptions<AgoraOptions> options)
         var now = DateTime.UtcNow;
         var entry = new Entry(
             Token: token,
-            UploaderEmail: existing?.UploaderEmail ?? string.Empty,
+            OwnerUserId: existing?.OwnerUserId,
             State: "completed",
             Error: null,
             JobId: existing?.JobId,
@@ -105,7 +106,7 @@ public sealed class ShareCreationStatusStore(IOptions<AgoraOptions> options)
         }
         var entry = new Entry(
             Token: token,
-            UploaderEmail: existing?.UploaderEmail ?? string.Empty,
+            OwnerUserId: existing?.OwnerUserId,
             State: "failed",
             Error: message,
             JobId: existing?.JobId,
@@ -134,7 +135,7 @@ public sealed class ShareCreationStatusStore(IOptions<AgoraOptions> options)
 
         var entry = new Entry(
             Token: token,
-            UploaderEmail: existing?.UploaderEmail ?? string.Empty,
+            OwnerUserId: existing?.OwnerUserId,
             State: existing?.State ?? "processing",
             Error: existing?.Error,
             JobId: existing?.JobId,

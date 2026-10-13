@@ -395,6 +395,46 @@ HTTP works outside `Production`, for example with `ASPNETCORE_ENVIRONMENT=Develo
 > On a site reachable over plain HTTP from the public internet it lets anyone on the network path read the session
 > and CSRF cookies and take over the account. Prefer HTTPS.
 
+### Accounts
+
+- Sign-in failures are uniform: a wrong password, an unknown address, a disabled account and a locked address all
+  answer "Invalid credentials." and cost the same password verification, so neither the message nor the response time
+  reveals whether an address is registered. Only the correct password for an account that has not confirmed its email
+  yet leads to the "confirm your email" page.
+- Lockout is per account and client address: after 5 wrong passwords for one account from one address within
+  15 minutes, that address is refused for that account for 15 minutes (not announced); other addresses with the correct
+  password still sign in, so an attacker cannot lock the owner out. The lockout state is kept in process memory
+  (one running instance is assumed; a restart clears it). The per-account failure counters remain visible to admins,
+  and the per-IP limit of 10 auth requests per minute is the primary brake. Forgot-password and resend-confirmation
+  requests cost the same work whether or not the address is registered.
+- Registration always answers "check your email". A new address gets a confirmation link. An address with a confirmed
+  account is left untouched and its owner gets a notice that it is already registered. An address with an unconfirmed
+  account is claimed by the newest registrant: the password they chose replaces the earlier one, the earlier
+  confirmation link stops working and a fresh one is sent, so only whoever controls the mailbox can activate the
+  account, and with the password they chose themselves.
+- Emailed links (`/auth/confirm-email`, `/auth/confirm-email-change`, `/auth/confirm-password-change`, password reset)
+  share the per-IP auth rate limit and answer one "invalid or expired" message whether the address is unknown, the
+  token is wrong or the link was already used.
+- A confirmed email change is reported to both addresses: the previous address is told which address replaced it.
+- Any credential change (password change confirmed, password reset, email change confirmed) invalidates every pending
+  token of the account (email confirmation, pending email change, pending password change, password reset), so an
+  email change started before a password reset cannot be completed after it.
+- Shares and the download-page template belong to the account (`OwnerUserId`), never to the email address: they stay
+  with the account through an email change, deleting a user deletes its shares and template, and a later account
+  registered under a freed address never inherits anything. On the first start after upgrading, rows created earlier
+  are stamped once with the account registered under their uploader address; this backfill then records its completion
+  and never runs again. Rows that matched no account at that point are reachable by nobody; the startup log reports
+  how many there are.
+- Credential changes are guarded against concurrent edits of the same account: a confirmation that races a password
+  reset (or any other credential change) fails with "invalid or expired" instead of overwriting it; a signed-in
+  settings change that races one answers "Please try again." and sends nothing.
+- Signed-in operations (shares, drafts and staged uploads, upload code, profile and defaults, password and email
+  change requests) identify the account by its id from the session, never by the email address. Drafts written by an
+  earlier version carry no owner id and are usable by nobody; they are swept with the regular draft retention.
+- Deleting a user and creating a share for that user are serialized, so a share cannot be created for an account
+  that is being deleted; background jobs resolve the owner's address right before each email and send nothing when
+  the account or the share is gone.
+
 ### Email
 
 | Setting | Default | What it controls |

@@ -19,7 +19,7 @@ public sealed class AuthServiceUploadTokenTests
         user.UploadToken = string.Empty;
         await harness.Db.SaveChangesAsync();
 
-        var token = await service.GetOrCreateUploadTokenAsync("user@example.com", CancellationToken.None);
+        var token = await service.GetOrCreateUploadTokenAsync(harness.UserId, CancellationToken.None);
 
         Assert.False(string.IsNullOrWhiteSpace(token));
         Assert.Matches("^[A-Za-z0-9]{8}$", token!);
@@ -32,8 +32,8 @@ public sealed class AuthServiceUploadTokenTests
         await using var harness = await TestHarness.CreateAsync();
         var service = new AuthService(harness.Db, new NoopEmailSender());
 
-        var first = await service.GetOrCreateUploadTokenAsync("user@example.com", CancellationToken.None);
-        var second = await service.RegenerateUploadTokenAsync("user@example.com", CancellationToken.None);
+        var first = await service.GetOrCreateUploadTokenAsync(harness.UserId, CancellationToken.None);
+        var second = await service.RegenerateUploadTokenAsync(harness.UserId, CancellationToken.None);
 
         Assert.False(string.IsNullOrWhiteSpace(second));
         Assert.Matches("^[A-Za-z0-9]{8}$", second!);
@@ -46,7 +46,7 @@ public sealed class AuthServiceUploadTokenTests
         await using var harness = await TestHarness.CreateAsync();
         var service = new AuthService(harness.Db, new NoopEmailSender());
 
-        var result = await service.SetUploadTokenAsync("user@example.com", "AbC123xY", CancellationToken.None);
+        var result = await service.SetUploadTokenAsync(harness.UserId, "AbC123xY", CancellationToken.None);
 
         Assert.True(result.Success);
         Assert.Equal("AbC123xY", result.UploadToken);
@@ -59,7 +59,7 @@ public sealed class AuthServiceUploadTokenTests
         await using var harness = await TestHarness.CreateAsync();
         var service = new AuthService(harness.Db, new NoopEmailSender());
 
-        var result = await service.SetUploadTokenAsync("user@example.com", "invalid-token", CancellationToken.None);
+        var result = await service.SetUploadTokenAsync(harness.UserId, "invalid-token", CancellationToken.None);
 
         Assert.False(result.Success);
         Assert.Equal("Upload code must be 2-64 letters or numbers.", result.Error);
@@ -85,7 +85,7 @@ public sealed class AuthServiceUploadTokenTests
         });
         await harness.Db.SaveChangesAsync();
 
-        var result = await service.SetUploadTokenAsync("user@example.com", existing, CancellationToken.None);
+        var result = await service.SetUploadTokenAsync(harness.UserId, existing, CancellationToken.None);
 
         Assert.False(result.Success);
         Assert.Equal("That upload code is already in use.", result.Error);
@@ -97,7 +97,7 @@ public sealed class AuthServiceUploadTokenTests
         await using var harness = await TestHarness.CreateAsync();
         var service = new AuthService(harness.Db, new NoopEmailSender());
 
-        var result = await service.SetDisplayNameAsync("user@example.com", "Alex Example", CancellationToken.None);
+        var result = await service.SetDisplayNameAsync(harness.UserId, "Alex Example", CancellationToken.None);
 
         Assert.True(result.Success);
         Assert.Equal("Alex Example", result.DisplayName);
@@ -110,7 +110,7 @@ public sealed class AuthServiceUploadTokenTests
         await using var harness = await TestHarness.CreateAsync();
         var service = new AuthService(harness.Db, new NoopEmailSender());
 
-        var result = await service.SetDisplayNameAsync("user@example.com", "   ", CancellationToken.None);
+        var result = await service.SetDisplayNameAsync(harness.UserId, "   ", CancellationToken.None);
 
         Assert.False(result.Success);
         Assert.Equal("Name is required.", result.Error);
@@ -141,6 +141,9 @@ public sealed class AuthServiceUploadTokenTests
             Db = db;
         }
 
+        private static readonly Guid SeedUserId = Guid.NewGuid();
+        public Guid UserId => SeedUserId;
+
         public static async Task<TestHarness> CreateAsync()
         {
             var connection = new SqliteConnection("Data Source=:memory:");
@@ -152,7 +155,7 @@ public sealed class AuthServiceUploadTokenTests
             await db.Database.EnsureCreatedAsync();
             db.Users.Add(new UserAccount
             {
-                Id = Guid.NewGuid(),
+                Id = SeedUserId,
                 Email = "user@example.com",
                 EmailConfirmed = true,
                 PasswordHash = "hash",

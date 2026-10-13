@@ -3,7 +3,9 @@ using Agora.Application.Models;
 using Agora.Infrastructure.Services;
 using Hangfire;
 using Agora.Application.Abstractions;
+using Agora.Infrastructure.Persistence;
 using Hangfire.Console;
+using Microsoft.EntityFrameworkCore;
 using Hangfire.Server;
 using Microsoft.Extensions.Options;
 
@@ -14,6 +16,7 @@ namespace Agora.Web.Services;
 /// </summary>
 public sealed class QueuedShareCreationJob(
     ShareManager manager,
+    AgoraDbContext db,
     IBackgroundJobClient backgroundJobs,
     IEmailSender emailSender,
     ShareCreationStatusStore statusStore,
@@ -44,7 +47,9 @@ public sealed class QueuedShareCreationJob(
         string? TemplateBackgroundColorHex,
         string? TemplateContainerPosition,
         string? TemplateBackgroundUploadId,
-        IReadOnlyList<string> UploadedFileIds);
+        IReadOnlyList<string> UploadedFileIds,
+        // Defaulted so payloads queued before owner ids existed still deserialize; the manager then resolves the owner by email.
+        Guid? OwnerUserId = null);
 
     private readonly AgoraOptions _options = options.Value;
     private readonly EmailSenderOptions _emailSenderOptions = emailSenderOptions.Value;
@@ -52,7 +57,7 @@ public sealed class QueuedShareCreationJob(
     public string Queue(Payload payload)
     {
         var jobId = backgroundJobs.Enqueue<QueuedShareCreationJob>(x => x.ProcessAsync(payload, CancellationToken.None, null));
-        var queued = statusStore.MarkQueued(payload.ShareToken, payload.UploaderEmail, jobId);
+        var queued = statusStore.MarkQueued(payload.ShareToken, payload.OwnerUserId ?? Guid.Empty, jobId);
         _ = broadcaster.BroadcastAsync(queued);
         return jobId;
     }
@@ -66,14 +71,27 @@ public sealed class QueuedShareCreationJob(
         var processing = statusStore.MarkProcessing(token);
         await broadcaster.BroadcastAsync(processing, ct);
 
+        // The owner id is the only ownership key; the payload address serves scratch/draft lookup only. A payload
+        // queued before owner ids existed cannot be attributed and is refused rather than resolved by address.
+        if (payload.OwnerUserId is not { } ownerUserId)
+        {
+            // The draft cannot be authorized either; the zombie sweep removes its scratch after the retention.
+            const string legacyMessage = "This upload was queued before the owner-id upgrade and cannot be completed. Please create the share again.";
+            performContext?.WriteLine(legacyMessage);
+            var legacyFailed = statusStore.MarkFailed(token, legacyMessage);
+            await broadcaster.BroadcastAsync(legacyFailed, ct);
+            return;
+        }
+
         try
         {
             var validateActive = statusStore.UpdateStep(token, "validate", "active", "Validating queued request...");
             performContext?.WriteLine("Validating queued request...");
             await broadcaster.BroadcastAsync(validateActive, ct);
 
+
             var stagedUploads = await manager.ResolveStagedUploadsAsync(
-                payload.UploaderEmail,
+                ownerUserId,
                 payload.UploadedFileIds,
                 payload.DraftShareId,
                 ct);
@@ -114,7 +132,7 @@ public sealed class QueuedShareCreationJob(
             {
                 // Resolve template background from the dedicated upload purpose so it is never treated as share content.
                 var stagedBackground = await manager.ResolveStagedUploadsAsync(
-                    payload.UploaderEmail,
+                    ownerUserId,
                     [payload.TemplateBackgroundUploadId.Trim()],
                     payload.DraftShareId,
                     ct,
@@ -169,7 +187,7 @@ public sealed class QueuedShareCreationJob(
             await broadcaster.BroadcastAsync(createDone, ct);
 
             // The draft is sealed, so everything it left in scratch (submitted or not) can go now.
-            await CleanupDraftScratchAsync(payload, ct);
+            await CleanupDraftScratchAsync(ownerUserId, payload, ct);
             if (payload.ShowPreviews)
             {
                 var queuePreviewsActive = statusStore.UpdateStep(token, "queue_previews", "active", "Queuing preview generation...");
@@ -195,13 +213,26 @@ public sealed class QueuedShareCreationJob(
 
             try
             {
-                var shareUrl = publicOrigin.ShareUrl(result.Token);
-                var email = BuildCompletionEmail(payload, shareUrl);
-                await emailSender.SendAuthEmailAsync(email, ct);
+                // Resolved right before sending: the recipient is the owner's address now, and nothing is sent when
+                // the owner or the share disappeared while the archive was being built.
+                var recipientEmail = await db.Users.Where(x => x.Id == ownerUserId).Select(x => x.Email).SingleOrDefaultAsync(ct);
+                var shareStillExists = await db.Shares.AnyAsync(x => x.Id == result.ShareId && x.DeletedAtUtc == null, ct);
+                if (string.IsNullOrWhiteSpace(recipientEmail) || !shareStillExists)
+                {
+                    var notifySkipped = statusStore.UpdateStep(token, "notify_uploader", "completed", "No email sent: the owner account or the share no longer exists.");
+                    performContext?.WriteLine("Ready-link email skipped: owner account or share no longer exists.");
+                    await broadcaster.BroadcastAsync(notifySkipped, ct);
+                }
+                else
+                {
+                    var shareUrl = publicOrigin.ShareUrl(result.Token);
+                    var email = BuildCompletionEmail(payload, shareUrl, recipientEmail);
+                    await emailSender.SendAuthEmailAsync(email, ct);
 
-                var notifyDone = statusStore.UpdateStep(token, "notify_uploader", "completed");
-                performContext?.WriteLine("Ready-link email sent.");
-                await broadcaster.BroadcastAsync(notifyDone, ct);
+                    var notifyDone = statusStore.UpdateStep(token, "notify_uploader", "completed");
+                    performContext?.WriteLine("Ready-link email sent.");
+                    await broadcaster.BroadcastAsync(notifyDone, ct);
+                }
             }
             catch (Exception emailEx)
             {
@@ -233,7 +264,7 @@ public sealed class QueuedShareCreationJob(
             if (ex is UploadLimitException)
             {
                 // Refused by a budget: nothing will ever be built from this draft, so free its scratch right away.
-                await CleanupDraftScratchAsync(payload, CancellationToken.None);
+                await CleanupDraftScratchAsync(ownerUserId, payload, CancellationToken.None);
             }
 
             var failed = statusStore.MarkFailed(token, ex.Message);
@@ -241,11 +272,11 @@ public sealed class QueuedShareCreationJob(
         }
     }
 
-    private async Task CleanupDraftScratchAsync(Payload payload, CancellationToken ct)
+    private async Task CleanupDraftScratchAsync(Guid ownerUserId, Payload payload, CancellationToken ct)
     {
         try
         {
-            await manager.FinalizeDraftAsync(payload.UploaderEmail, payload.DraftShareId, ct);
+            await manager.FinalizeDraftAsync(ownerUserId, payload.DraftShareId, ct);
         }
         catch (Exception cleanupEx)
         {
@@ -274,7 +305,7 @@ public sealed class QueuedShareCreationJob(
         return lines.Count == 0 ? null : string.Join('\n', lines);
     }
 
-    private static AuthEmailMessage BuildCompletionEmailCore(Payload payload, string shareUrl, string configuredSenderDisplayName)
+    private static AuthEmailMessage BuildCompletionEmailCore(Payload payload, string shareUrl, string recipientEmail, string configuredSenderDisplayName)
     {
         var senderIdentity = BuildSenderIdentity(payload);
         var senderMessage = (payload.SenderMessage ?? string.Empty).Trim();
@@ -291,7 +322,7 @@ public sealed class QueuedShareCreationJob(
                 ? senderMessage
                 : "No message was included.";
             return new AuthEmailMessage(
-                To: payload.UploaderEmail,
+                To: recipientEmail,
                 Subject: "Files were sent to you and processed",
                 Preheader: "A sender uploaded files for you and processing is complete.",
                 Headline: "New files were sent to you",
@@ -304,7 +335,7 @@ public sealed class QueuedShareCreationJob(
         }
 
         return new AuthEmailMessage(
-            To: payload.UploaderEmail,
+            To: recipientEmail,
             Subject: "Your share link is ready",
             Preheader: "Your files finished processing and the share link is ready.",
             Headline: "Your share link is ready",
@@ -315,10 +346,10 @@ public sealed class QueuedShareCreationJob(
             SecondaryText: null);
     }
 
-    private AuthEmailMessage BuildCompletionEmail(Payload payload, string shareUrl)
+    private AuthEmailMessage BuildCompletionEmail(Payload payload, string shareUrl, string recipientEmail)
     {
         var configuredSenderDisplayName = (_emailSenderOptions.FromDisplayName ?? string.Empty).Trim();
-        return BuildCompletionEmailCore(payload, shareUrl, configuredSenderDisplayName);
+        return BuildCompletionEmailCore(payload, shareUrl, recipientEmail, configuredSenderDisplayName);
     }
 
     private static string BuildSenderIdentity(Payload payload)
@@ -373,6 +404,7 @@ public sealed class QueuedShareCreationJob(
                 var command = new CreateShareCommand
                 {
                     UploaderEmail = payload.UploaderEmail,
+                    OwnerUserId = payload.OwnerUserId ?? throw new InvalidOperationException("The queued payload carries no owner id."),
                     ShareToken = requestedToken,
                     Message = payload.Message,
                     SenderName = payload.SenderName,

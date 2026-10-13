@@ -24,12 +24,13 @@ namespace Agora.Application.Tests;
 public sealed class UploadQuotaTests
 {
     private const string Owner = "owner@example.com";
+    private static readonly Guid OwnerId = Guid.NewGuid();
 
     [Fact]
     public async Task StageUploadAsync_RejectsFileBeyondPerDraftCount()
     {
         await using var harness = await Harness.CreateAsync(o => o.MaxFilesPerShare = 2);
-        var draftId = await harness.Manager.EnsureDraftShareAsync(Owner, null, CancellationToken.None);
+        var draftId = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
 
         await harness.StageAsync(draftId, "a.txt", 3);
         var second = await harness.StageAsync(draftId, "b.txt", 3);
@@ -41,7 +42,7 @@ public sealed class UploadQuotaTests
         Assert.Equal(2, harness.StagedDirectoryCount());
 
         // Removing a file frees its slot again.
-        Assert.True(await harness.Manager.DeleteStagedUploadAsync(Owner, draftId, second.UploadId, CancellationToken.None));
+        Assert.True(await harness.Manager.DeleteStagedUploadAsync(OwnerId, draftId, second.UploadId, CancellationToken.None));
         await harness.StageAsync(draftId, "c.txt", 3);
         Assert.Equal(2, harness.StagedDirectoryCount());
     }
@@ -50,7 +51,7 @@ public sealed class UploadQuotaTests
     public async Task StageUploadAsync_RejectsBytesBeyondPerDraftTotal()
     {
         await using var harness = await Harness.CreateAsync(o => o.MaxTotalUploadBytes = 10);
-        var draftId = await harness.Manager.EnsureDraftShareAsync(Owner, null, CancellationToken.None);
+        var draftId = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
 
         await harness.StageAsync(draftId, "a.bin", 6);
         var ex = await Assert.ThrowsAsync<UploadLimitException>(() => harness.StageAsync(draftId, "b.bin", 6));
@@ -60,7 +61,7 @@ public sealed class UploadQuotaTests
         Assert.Equal(1, harness.StagedDirectoryCount());
 
         // Another draft has its own budget.
-        var otherDraft = await harness.Manager.EnsureDraftShareAsync(Owner, null, CancellationToken.None);
+        var otherDraft = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
         await harness.StageAsync(otherDraft, "c.bin", 6);
     }
 
@@ -68,7 +69,7 @@ public sealed class UploadQuotaTests
     public async Task StageUploadAsync_ParallelRequestsCannotExceedPerDraftCount()
     {
         await using var harness = await Harness.CreateAsync(o => o.MaxFilesPerShare = 5);
-        var draftId = await harness.Manager.EnsureDraftShareAsync(Owner, null, CancellationToken.None);
+        var draftId = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
 
         var attempts = Enumerable.Range(0, 20)
             .Select(async i =>
@@ -88,7 +89,7 @@ public sealed class UploadQuotaTests
 
         Assert.Equal(5, results.Count(x => x));
         Assert.Equal(5, harness.StagedDirectoryCount());
-        var listed = await harness.Manager.ListStagedUploadsForDraftAsync(Owner, draftId, CancellationToken.None);
+        var listed = await harness.Manager.ListStagedUploadsForDraftAsync(OwnerId, draftId, CancellationToken.None);
         Assert.Equal(5, listed.Count);
     }
 
@@ -96,10 +97,10 @@ public sealed class UploadQuotaTests
     public async Task StageUploadAsync_FailedCopyReleasesSlotAndDirectory()
     {
         await using var harness = await Harness.CreateAsync(o => o.MaxFilesPerShare = 1);
-        var draftId = await harness.Manager.EnsureDraftShareAsync(Owner, null, CancellationToken.None);
+        var draftId = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
 
         await Assert.ThrowsAsync<IOException>(() => harness.Manager.StageUploadAsync(
-            Owner, draftId, "broken.txt", 5, new ThrowingStream(), CancellationToken.None));
+            OwnerId, draftId, "broken.txt", 5, new ThrowingStream(), CancellationToken.None));
 
         Assert.Equal(0, harness.StagedDirectoryCount());
         await harness.StageAsync(draftId, "ok.txt", 5);
@@ -110,16 +111,16 @@ public sealed class UploadQuotaTests
     {
         await using var harness = await Harness.CreateAsync(o => o.PublicUploads.MaxOpenDraftsPerToken = 2);
 
-        var first = await harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.1", CancellationToken.None);
-        await harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        var first = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
         var ex = await Assert.ThrowsAsync<UploadLimitException>(() =>
-            harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.1", CancellationToken.None));
+            harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None));
         Assert.Equal(UploadLimitKind.TooManyOpenDrafts, ex.Kind);
         Assert.Equal(429, ex.StatusCode);
 
         // An already open draft is only touched, and another code has its own budget.
-        Assert.Equal(first, await harness.Manager.EnsurePublicUploadDraftAsync(Owner, first, "code1", "10.0.0.1", CancellationToken.None));
-        await harness.Manager.EnsurePublicUploadDraftAsync("other@example.com", NewId(), "code2", "10.0.0.1", CancellationToken.None);
+        Assert.Equal(first, await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, first, "code1", "10.0.0.1", CancellationToken.None));
+        await harness.Manager.EnsurePublicUploadDraftAsync(Guid.NewGuid(), NewId(), "code2", "10.0.0.1", CancellationToken.None);
     }
 
     [Fact]
@@ -127,12 +128,12 @@ public sealed class UploadQuotaTests
     {
         await using var harness = await Harness.CreateAsync(o => o.PublicUploads.MaxOpenDraftsPerIp = 1);
 
-        await harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "203.0.113.7", CancellationToken.None);
+        await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "203.0.113.7", CancellationToken.None);
         var ex = await Assert.ThrowsAsync<UploadLimitException>(() =>
-            harness.Manager.EnsurePublicUploadDraftAsync("other@example.com", NewId(), "code2", "203.0.113.7", CancellationToken.None));
+            harness.Manager.EnsurePublicUploadDraftAsync(Guid.NewGuid(), NewId(), "code2", "203.0.113.7", CancellationToken.None));
         Assert.Equal(UploadLimitKind.TooManyOpenDrafts, ex.Kind);
 
-        await harness.Manager.EnsurePublicUploadDraftAsync("other@example.com", NewId(), "code2", "203.0.113.8", CancellationToken.None);
+        await harness.Manager.EnsurePublicUploadDraftAsync(Guid.NewGuid(), NewId(), "code2", "203.0.113.8", CancellationToken.None);
         // The address is never stored in clear text in the index.
         var index = Path.Combine(harness.StorageRoot, "uploads", "draft-index");
         Assert.DoesNotContain(Directory.EnumerateDirectories(index, "*", SearchOption.AllDirectories), x => x.Contains("203.0.113", StringComparison.Ordinal));
@@ -147,14 +148,14 @@ public sealed class UploadQuotaTests
             o.PublicUploads.DraftRetentionHours = 1;
         });
 
-        var stale = await harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        var stale = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
         harness.BackdateDraft(stale, TimeSpan.FromHours(2));
-        var finished = await harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.2", CancellationToken.None);
+        var finished = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.2", CancellationToken.None);
         await Assert.ThrowsAsync<UploadLimitException>(() =>
-            harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.3", CancellationToken.None));
+            harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.3", CancellationToken.None));
 
-        await harness.Manager.DeleteDraftShareAsync(Owner, finished, CancellationToken.None);
-        await harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.3", CancellationToken.None);
+        await harness.Manager.DeleteDraftShareAsync(OwnerId, finished, CancellationToken.None);
+        await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.3", CancellationToken.None);
     }
 
     [Fact]
@@ -289,7 +290,7 @@ public sealed class UploadQuotaTests
         await using var harness = await Harness.CreateAsync(
             o => o.Scratch.MinFreeBytes = 1024,
             freeBytes: _ => 512);
-        var draftId = await harness.Manager.EnsureDraftShareAsync(Owner, null, CancellationToken.None);
+        var draftId = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
 
         var staged = await Assert.ThrowsAsync<UploadLimitException>(() => harness.StageAsync(draftId, "a.txt", 3));
         Assert.Equal(UploadLimitKind.InsufficientStorage, staged.Kind);
@@ -300,6 +301,7 @@ public sealed class UploadQuotaTests
         var created = await Assert.ThrowsAsync<UploadLimitException>(() => harness.Manager.CreateShareAsync(new CreateShareCommand
         {
             UploaderEmail = Owner,
+            OwnerUserId = OwnerId,
             ShareExperienceType = "archive",
             AccessMode = "download_only",
             ExpiryMode = ExpiryMode.Indefinite,
@@ -336,6 +338,23 @@ public sealed class UploadQuotaTests
         Assert.Single(results, x => x == UploadLimitKind.DailyQuotaExceeded);
         Assert.Single(await harness.Db.Shares.ToListAsync());
 
+        // The budget belongs to the owner id: a second submission under another address of the same owner is refused too.
+        await using var addressHarness = await Harness.CreateAsync(o => o.PublicUploads.MaxSharesPerCodePerDay = 1);
+        await addressHarness.Manager.CreateReceivedShareAsync(await addressHarness.ReceivedCommandAsync("a.txt"), CancellationToken.None);
+        var otherAddress = await addressHarness.ReceivedCommandAsync("b.txt");
+        var renamed = await Assert.ThrowsAsync<UploadLimitException>(() => addressHarness.Manager.CreateReceivedShareAsync(new CreateShareCommand
+        {
+            UploaderEmail = "renamed-owner@example.com",
+            OwnerUserId = OwnerId,
+            SenderName = otherAddress.SenderName,
+            SenderEmail = otherAddress.SenderEmail,
+            ExpiryMode = otherAddress.ExpiryMode,
+            NotifyMode = otherAddress.NotifyMode,
+            TemplateMode = otherAddress.TemplateMode,
+            Files = otherAddress.Files
+        }, CancellationToken.None));
+        Assert.Equal(UploadLimitKind.DailyQuotaExceeded, renamed.Kind);
+
         // Bytes are gated the same way; the owner's own shares never count.
         await using var bytesHarness = await Harness.CreateAsync(o => o.PublicUploads.MaxBytesPerCodePerDay = 8);
         await bytesHarness.Manager.CreateReceivedShareAsync(await bytesHarness.ReceivedCommandAsync("a.txt", "12345"), CancellationToken.None);
@@ -348,23 +367,23 @@ public sealed class UploadQuotaTests
     public async Task SealedDraft_RefusesStagingAndResubmission_AndFinalizeRemovesEverything()
     {
         await using var harness = await Harness.CreateAsync();
-        var draftId = await harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        var draftId = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
         var submitted = await harness.StageAsync(draftId, "submitted.txt", 4);
         var unsubmitted = await harness.StageAsync(draftId, "unsubmitted.txt", 4);
 
-        Assert.True(await harness.Manager.SealDraftAsync(Owner, draftId, CancellationToken.None));
-        Assert.False(await harness.Manager.SealDraftAsync(Owner, draftId, CancellationToken.None));
+        Assert.True(await harness.Manager.SealDraftAsync(OwnerId, draftId, CancellationToken.None));
+        Assert.False(await harness.Manager.SealDraftAsync(OwnerId, draftId, CancellationToken.None));
 
         var staged = await Assert.ThrowsAsync<UploadLimitException>(() => harness.StageAsync(draftId, "late.txt", 4));
         Assert.Equal(UploadLimitKind.DraftSealed, staged.Kind);
         Assert.Equal(409, staged.StatusCode);
         var reopened = await Assert.ThrowsAsync<UploadLimitException>(() =>
-            harness.Manager.EnsurePublicUploadDraftAsync(Owner, draftId, "code1", "10.0.0.1", CancellationToken.None));
+            harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, draftId, "code1", "10.0.0.1", CancellationToken.None));
         Assert.Equal(UploadLimitKind.DraftSealed, reopened.Kind);
         Assert.Equal(2, harness.StagedDirectoryCount());
 
         // Finalize drops the submitted and the unsubmitted payload, the slot markers and the draft itself.
-        await harness.Manager.FinalizeDraftAsync(Owner, draftId, CancellationToken.None);
+        await harness.Manager.FinalizeDraftAsync(OwnerId, draftId, CancellationToken.None);
         Assert.Equal(0, harness.StagedDirectoryCount());
         Assert.False(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "drafts", draftId)));
         Assert.False(Directory.Exists(submitted.DirectoryPath));
@@ -372,12 +391,12 @@ public sealed class UploadQuotaTests
 
         // The old id can only come back as a brand-new draft, through admission.
         await using var capped = await Harness.CreateAsync(o => o.PublicUploads.MaxOpenDraftsPerToken = 1);
-        var finished = await capped.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.1", CancellationToken.None);
-        await capped.Manager.SealDraftAsync(Owner, finished, CancellationToken.None);
-        await capped.Manager.FinalizeDraftAsync(Owner, finished, CancellationToken.None);
-        await capped.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        var finished = await capped.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        await capped.Manager.SealDraftAsync(OwnerId, finished, CancellationToken.None);
+        await capped.Manager.FinalizeDraftAsync(OwnerId, finished, CancellationToken.None);
+        await capped.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
         var refused = await Assert.ThrowsAsync<UploadLimitException>(() =>
-            capped.Manager.EnsurePublicUploadDraftAsync(Owner, finished, "code1", "10.0.0.1", CancellationToken.None));
+            capped.Manager.EnsurePublicUploadDraftAsync(OwnerId, finished, "code1", "10.0.0.1", CancellationToken.None));
         Assert.Equal(UploadLimitKind.TooManyOpenDrafts, refused.Kind);
     }
 
@@ -387,10 +406,10 @@ public sealed class UploadQuotaTests
         await using var harness = await Harness.CreateAsync();
 
         // Admitted, then finalized while the body was buffering: the late stage must not recreate anything.
-        var finalized = await harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        var finalized = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
         await harness.StageAsync(finalized, "early.txt", 3);
-        await harness.Manager.SealDraftAsync(Owner, finalized, CancellationToken.None);
-        await harness.Manager.FinalizeDraftAsync(Owner, finalized, CancellationToken.None);
+        await harness.Manager.SealDraftAsync(OwnerId, finalized, CancellationToken.None);
+        await harness.Manager.FinalizeDraftAsync(OwnerId, finalized, CancellationToken.None);
         var late = await Assert.ThrowsAsync<UploadLimitException>(() => harness.StageAsync(finalized, "late.txt", 3));
         Assert.Equal(UploadLimitKind.DraftClosed, late.Kind);
         Assert.Equal(409, late.StatusCode);
@@ -398,13 +417,13 @@ public sealed class UploadQuotaTests
         Assert.Equal(0, harness.StagedDirectoryCount());
 
         // Backgrounds take the same lock and the same checks: sealed and foreign drafts are refused.
-        var sealedDraft = await harness.Manager.EnsureDraftShareAsync(Owner, null, CancellationToken.None);
-        await harness.Manager.SealDraftAsync(Owner, sealedDraft, CancellationToken.None);
+        var sealedDraft = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
+        await harness.Manager.SealDraftAsync(OwnerId, sealedDraft, CancellationToken.None);
         var background = await Assert.ThrowsAsync<UploadLimitException>(() => harness.Manager.StageUploadAsync(
-            Owner, sealedDraft, "bg.png", 3, new MemoryStream("png"u8.ToArray()), CancellationToken.None, ShareManager.UploadPurposeTemplateBackground));
+            OwnerId, sealedDraft, "bg.png", 3, new MemoryStream("png"u8.ToArray()), CancellationToken.None, ShareManager.UploadPurposeTemplateBackground));
         Assert.Equal(UploadLimitKind.DraftSealed, background.Kind);
         var foreign = await Assert.ThrowsAsync<UploadLimitException>(() => harness.Manager.StageUploadAsync(
-            "someone-else@example.com", sealedDraft, "bg.png", 3, new MemoryStream("png"u8.ToArray()), CancellationToken.None, ShareManager.UploadPurposeTemplateBackground));
+            Guid.NewGuid(), sealedDraft, "bg.png", 3, new MemoryStream("png"u8.ToArray()), CancellationToken.None, ShareManager.UploadPurposeTemplateBackground));
         Assert.Equal(UploadLimitKind.DraftClosed, foreign.Kind);
         Assert.False(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "staged-template-backgrounds")));
         Assert.True(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "drafts", sealedDraft)));
@@ -414,15 +433,15 @@ public sealed class UploadQuotaTests
     public async Task Sweep_RemovesStaleDraftAndItsPayloadsTogether_AndNeverTouchesARevivedOne()
     {
         await using var harness = await Harness.CreateAsync(o => o.PublicUploads.DraftRetentionHours = 1);
-        var draftId = await harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        var draftId = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
         await harness.StageAsync(draftId, "old.txt", 3);
         harness.BackdateDraft(draftId, TimeSpan.FromHours(2));
 
         // Revived before the sweep reaches it: the touch happens under the draft lock, so the sweep keeps all of it.
-        await harness.Manager.EnsurePublicUploadDraftAsync(Owner, draftId, "code1", "10.0.0.1", CancellationToken.None);
+        await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, draftId, "code1", "10.0.0.1", CancellationToken.None);
         await harness.StageAsync(draftId, "fresh.txt", 3);
         await harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
-        Assert.Equal(2, (await harness.Manager.ListStagedUploadsForDraftAsync(Owner, draftId, CancellationToken.None)).Count);
+        Assert.Equal(2, (await harness.Manager.ListStagedUploadsForDraftAsync(OwnerId, draftId, CancellationToken.None)).Count);
 
         // Stale again: draft and payloads go in one locked section ...
         harness.BackdateDraft(draftId, TimeSpan.FromHours(2));
@@ -431,31 +450,31 @@ public sealed class UploadQuotaTests
         Assert.Equal(0, harness.StagedDirectoryCount());
 
         // ... so a GUID revived afterwards starts clean and keeps what it stages through the next sweep.
-        await harness.Manager.EnsurePublicUploadDraftAsync(Owner, draftId, "code1", "10.0.0.1", CancellationToken.None);
+        await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, draftId, "code1", "10.0.0.1", CancellationToken.None);
         await harness.StageAsync(draftId, "after.txt", 3);
         await harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
-        Assert.Single(await harness.Manager.ListStagedUploadsForDraftAsync(Owner, draftId, CancellationToken.None));
+        Assert.Single(await harness.Manager.ListStagedUploadsForDraftAsync(OwnerId, draftId, CancellationToken.None));
     }
 
     [Fact]
     public async Task SealDraftForSubmissionAsync_UnsealsWhenEnqueueFailsAndAllowsARetry()
     {
         await using var harness = await Harness.CreateAsync();
-        var draftId = await harness.Manager.EnsureDraftShareAsync(Owner, null, CancellationToken.None);
+        var draftId = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
         await harness.StageAsync(draftId, "a.txt", 3);
 
         var failed = await Assert.ThrowsAsync<UploadLimitException>(() => harness.Manager.SealDraftForSubmissionAsync(
-            Owner, draftId, () => throw new InvalidOperationException("queue down"), CancellationToken.None));
+            OwnerId, draftId, () => throw new InvalidOperationException("queue down"), CancellationToken.None));
         Assert.Equal(UploadLimitKind.QueueUnavailable, failed.Kind);
         Assert.Equal(503, failed.StatusCode);
         Assert.False(harness.Manager.IsDraftSealed(draftId));
         await harness.StageAsync(draftId, "b.txt", 3); // still open
 
         var enqueued = 0;
-        Assert.True(await harness.Manager.SealDraftForSubmissionAsync(Owner, draftId, () => { enqueued++; return Task.CompletedTask; }, CancellationToken.None));
+        Assert.True(await harness.Manager.SealDraftForSubmissionAsync(OwnerId, draftId, () => { enqueued++; return Task.CompletedTask; }, CancellationToken.None));
         Assert.Equal(1, enqueued);
         Assert.True(harness.Manager.IsDraftSealed(draftId));
-        Assert.False(await harness.Manager.SealDraftForSubmissionAsync(Owner, draftId, () => { enqueued++; return Task.CompletedTask; }, CancellationToken.None));
+        Assert.False(await harness.Manager.SealDraftForSubmissionAsync(OwnerId, draftId, () => { enqueued++; return Task.CompletedTask; }, CancellationToken.None));
         Assert.Equal(1, enqueued);
     }
 
@@ -463,12 +482,12 @@ public sealed class UploadQuotaTests
     public async Task Sweep_WaitsForInFlightStageAndKeepsTheTouchedDraft()
     {
         await using var harness = await Harness.CreateAsync(o => o.ZombieUploadRetentionHours = 1);
-        var draftId = await harness.Manager.EnsureDraftShareAsync(Owner, null, CancellationToken.None);
+        var draftId = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
         harness.BackdateDraft(draftId, TimeSpan.FromHours(2));
 
         // A stage holds the draft lock while its payload streams in; gate the stream so it is in flight.
         var gate = new GateStream(Encoding.ASCII.GetBytes("payload"));
-        var staging = harness.Manager.StageUploadAsync(Owner, draftId, "slow.txt", 7, gate, CancellationToken.None);
+        var staging = harness.Manager.StageUploadAsync(OwnerId, draftId, "slow.txt", 7, gate, CancellationToken.None);
         await gate.Started.Task;
 
         var sweep = harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
@@ -482,7 +501,7 @@ public sealed class UploadQuotaTests
 
         // The stage refreshed the draft's activity under the lock, so the sweep re-read it as fresh and kept it.
         Assert.True(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "drafts", draftId)));
-        Assert.Single(await harness.Manager.ListStagedUploadsForDraftAsync(Owner, draftId, CancellationToken.None));
+        Assert.Single(await harness.Manager.ListStagedUploadsForDraftAsync(OwnerId, draftId, CancellationToken.None));
     }
 
     [Fact]
@@ -494,20 +513,20 @@ public sealed class UploadQuotaTests
             o.PublicUploads.DraftRetentionHours = 1;
         });
 
-        var stale = await harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        var stale = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
         harness.BackdateDraft(stale, TimeSpan.FromHours(2));
-        var fresh = await harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        var fresh = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
 
         // The stale draft is not counted, but reviving it needs a free slot, which "fresh" occupies.
         var refused = await Assert.ThrowsAsync<UploadLimitException>(() =>
-            harness.Manager.EnsurePublicUploadDraftAsync(Owner, stale, "code1", "10.0.0.1", CancellationToken.None));
+            harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, stale, "code1", "10.0.0.1", CancellationToken.None));
         Assert.Equal(UploadLimitKind.TooManyOpenDrafts, refused.Kind);
 
-        await harness.Manager.DeleteDraftShareAsync(Owner, fresh, CancellationToken.None);
-        Assert.Equal(stale, await harness.Manager.EnsurePublicUploadDraftAsync(Owner, stale, "code1", "10.0.0.1", CancellationToken.None));
+        await harness.Manager.DeleteDraftShareAsync(OwnerId, fresh, CancellationToken.None);
+        Assert.Equal(stale, await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, stale, "code1", "10.0.0.1", CancellationToken.None));
         // Revived: it counts again.
         await Assert.ThrowsAsync<UploadLimitException>(() =>
-            harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.1", CancellationToken.None));
+            harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None));
     }
 
     [Fact]
@@ -519,8 +538,8 @@ public sealed class UploadQuotaTests
             o.ZombieUploadRetentionHours = 24;
         });
 
-        var anonymous = await harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.1", CancellationToken.None);
-        var signedIn = await harness.Manager.EnsureDraftShareAsync(Owner, null, CancellationToken.None);
+        var anonymous = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        var signedIn = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
         await harness.StageAsync(anonymous, "a.txt", 3);
         await harness.StageAsync(signedIn, "b.txt", 3);
         harness.BackdateDraft(anonymous, TimeSpan.FromHours(2));
@@ -530,8 +549,8 @@ public sealed class UploadQuotaTests
 
         Assert.False(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "drafts", anonymous)));
         Assert.True(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "drafts", signedIn)));
-        Assert.Empty(await harness.Manager.ListStagedUploadsForDraftAsync(Owner, anonymous, CancellationToken.None));
-        Assert.Single(await harness.Manager.ListStagedUploadsForDraftAsync(Owner, signedIn, CancellationToken.None));
+        Assert.Empty(await harness.Manager.ListStagedUploadsForDraftAsync(OwnerId, anonymous, CancellationToken.None));
+        Assert.Single(await harness.Manager.ListStagedUploadsForDraftAsync(OwnerId, signedIn, CancellationToken.None));
     }
 
     [Fact]
@@ -548,15 +567,15 @@ public sealed class UploadQuotaTests
             ReceivedShare(Owner, now.AddHours(-1), 100, 200),
             deleted,
             ReceivedShare(Owner, now.AddHours(-25), 1000),
-            ReceivedShare("someone-else@example.com", now.AddHours(-1), 1000),
+            ReceivedShare(Guid.NewGuid(), "someone-else@example.com", now.AddHours(-1), 1000),
             ownShare);
         await harness.Db.SaveChangesAsync();
 
-        var usage = await harness.Manager.GetReceivedShareUsageAsync("Owner@Example.com", now.AddHours(-24), CancellationToken.None);
+        var usage = await harness.Manager.GetReceivedShareUsageAsync(ShareOwner.For(OwnerId, "Owner@Example.com"), now.AddHours(-24), CancellationToken.None);
 
         Assert.Equal(2, usage.Count);
         Assert.Equal(350, usage.Bytes);
-        Assert.Equal(new ShareManager.ReceivedShareUsage(0, 0), await harness.Manager.GetReceivedShareUsageAsync("nobody@example.com", now.AddHours(-24), CancellationToken.None));
+        Assert.Equal(new ShareManager.ReceivedShareUsage(0, 0), await harness.Manager.GetReceivedShareUsageAsync(ShareOwner.For(Guid.NewGuid(), "nobody@example.com"), now.AddHours(-24), CancellationToken.None));
     }
 
     [Theory]
@@ -628,9 +647,9 @@ public sealed class UploadQuotaTests
         await File.WriteAllTextAsync(freshStatus, "{}");
         File.SetLastWriteTimeUtc(staleStatus, DateTime.UtcNow.AddHours(-2));
 
-        var staleDraft = await harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        var staleDraft = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
         harness.BackdateDraft(staleDraft, TimeSpan.FromHours(2));
-        var freshDraft = await harness.Manager.EnsurePublicUploadDraftAsync(Owner, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        var freshDraft = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
         await harness.StageAsync(freshDraft, "keep.txt", 3);
 
         // An upload still streaming in (payload, no metadata yet) must survive a sweep that runs meanwhile.
@@ -644,7 +663,7 @@ public sealed class UploadQuotaTests
         Assert.False(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "drafts", staleDraft)));
         Assert.True(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "drafts", freshDraft)));
         Assert.True(Directory.Exists(inFlight));
-        Assert.Single(await harness.Manager.ListStagedUploadsForDraftAsync(Owner, freshDraft, CancellationToken.None));
+        Assert.Single(await harness.Manager.ListStagedUploadsForDraftAsync(OwnerId, freshDraft, CancellationToken.None));
 
         var markers = Directory.EnumerateFiles(Path.Combine(harness.StorageRoot, "uploads", "draft-index"), "*", SearchOption.AllDirectories)
             .Select(Path.GetFileName)
@@ -655,9 +674,12 @@ public sealed class UploadQuotaTests
 
     private static string NewId() => Guid.NewGuid().ToString("N");
 
-    private static Share ReceivedShare(string owner, DateTime createdAtUtc, params long[] fileSizes) => new()
+    private static Share ReceivedShare(string owner, DateTime createdAtUtc, params long[] fileSizes) => ReceivedShare(OwnerId, owner, createdAtUtc, fileSizes);
+
+    private static Share ReceivedShare(Guid ownerUserId, string owner, DateTime createdAtUtc, params long[] fileSizes) => new()
     {
         Id = Guid.NewGuid(),
+        OwnerUserId = ownerUserId,
         UploaderEmail = owner,
         ShareToken = Guid.NewGuid().ToString("N")[..10],
         ZipDisplayName = "files.zip",
@@ -712,6 +734,8 @@ public sealed class UploadQuotaTests
             await connection.OpenAsync();
             var db = new AgoraDbContext(new DbContextOptionsBuilder<AgoraDbContext>().UseSqlite(connection).Options);
             await db.Database.EnsureCreatedAsync();
+            db.Users.Add(TestUsers.Seed(OwnerId, Owner));
+            await db.SaveChangesAsync();
 
             var storageRoot = Path.Combine(Path.GetTempPath(), "agora-quota-tests", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(storageRoot);
@@ -735,7 +759,7 @@ public sealed class UploadQuotaTests
         public Task<ShareManager.StagedUploadFile> StageAsync(string draftId, string fileName, int bytes)
         {
             var stream = new MemoryStream(Encoding.ASCII.GetBytes(new string('x', bytes)));
-            return Manager.StageUploadAsync(Owner, draftId, fileName, bytes, stream, CancellationToken.None);
+            return Manager.StageUploadAsync(OwnerId, draftId, fileName, bytes, stream, CancellationToken.None);
         }
 
         public async Task<CreateShareCommand> ReceivedCommandAsync(string fileName, string content = "hello")
@@ -745,6 +769,7 @@ public sealed class UploadQuotaTests
             return new CreateShareCommand
             {
                 UploaderEmail = Owner,
+                OwnerUserId = OwnerId,
                 SenderName = "Sender",
                 SenderEmail = "sender@example.com",
                 ShareExperienceType = "archive",

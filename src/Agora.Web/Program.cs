@@ -183,6 +183,8 @@ builder.Services.AddHangfireServer(options =>
     options.Queues = ["previews"];
     options.WorkerCount = Math.Max(1, Environment.ProcessorCount / 4);
 });
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<LoginLockouts>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<ShareManager>();
 builder.Services.AddSingleton<KeyedAsyncLock>();
@@ -277,10 +279,26 @@ using (var scope = app.Services.CreateScope())
     {
         await db.Database.MigrateAsync();
         app.Logger.LogInformation("Applied EF Core migrations successfully.");
+        var backfilled = await OwnerBackfill.RunAsync(db, CancellationToken.None);
+        if (!backfilled.Skipped)
+        {
+            app.Logger.LogInformation(
+                "Owner-id backfill completed: {ShareCount} share(s) and {TemplateCount} account template(s) stamped.",
+                backfilled.Shares,
+                backfilled.Templates);
+        }
+
+        if (backfilled.QuarantinedShares > 0 || backfilled.QuarantinedTemplates > 0)
+        {
+            app.Logger.LogWarning(
+                "{ShareCount} share(s) and {TemplateCount} account template(s) have no owner and are reachable by nobody.",
+                backfilled.QuarantinedShares,
+                backfilled.QuarantinedTemplates);
+        }
     }
     catch (Exception ex)
     {
-        app.Logger.LogCritical(ex, "EF Core migration failed during startup. Stopping application.");
+        app.Logger.LogCritical(ex, "EF Core migration or owner backfill failed during startup. Stopping application.");
         throw;
     }
 }
@@ -338,7 +356,7 @@ app.MapPost("/login", async (HttpContext httpContext, AuthService authService, I
     var email = form["email"].ToString();
     var password = form["password"].ToString();
 
-    var result = await authService.LoginAsync(email, password, ct);
+    var result = await authService.LoginAsync(email, password, httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown", ct);
     if (!result.Success || result.User is null)
     {
         if (string.Equals(result.Error, AuthService.EmailConfirmationRequiredError, StringComparison.Ordinal))
@@ -387,13 +405,7 @@ app.MapPost("/register", async (HttpContext httpContext, AuthService authService
     return Results.Redirect("/login?msg=Check%20your%20email%20to%20confirm%20your%20account");
 }).RequireRateLimiting(RateLimitSetup.AuthEndpoints);
 
-app.MapGet("/auth/confirm-email", async (AuthService authService, string email, string token, CancellationToken ct) =>
-{
-    var result = await authService.ConfirmEmailAsync(email, token, ct);
-    return Results.Redirect(result.Success
-        ? "/login?msg=Email%20confirmed.%20You%20can%20now%20sign%20in"
-        : $"/login?msg={Uri.EscapeDataString(result.Error)}");
-});
+app.MapAuthConfirmationEndpoints();
 
 app.MapPost("/auth/resend-confirmation", async (HttpContext httpContext, AuthService authService, PublicBaseUrlResolver publicBaseUrls, CancellationToken ct) =>
 {
@@ -409,35 +421,6 @@ app.MapPost("/auth/resend-confirmation", async (HttpContext httpContext, AuthSer
     await authService.ResendEmailConfirmationAsync(email, confirmUrlBase, ct);
     return Results.Redirect("/login?msg=If%20the%20account%20is%20unconfirmed%2C%20a%20confirmation%20email%20was%20sent");
 }).RequireRateLimiting(RateLimitSetup.AuthEndpoints);
-
-app.MapGet("/auth/confirm-email-change", async (HttpContext context, AuthService authService, string email, string token, CancellationToken ct) =>
-{
-    var result = await authService.ConfirmEmailChangeAsync(email, token, ct);
-    if (!result.Success)
-    {
-        return Results.Redirect($"/account/settings?msg={Uri.EscapeDataString(result.Error)}");
-    }
-
-    if (context.User.Identity?.IsAuthenticated == true)
-    {
-        await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
-    }
-
-    return Results.Redirect("/login?msg=Email%20updated.%20Please%20sign%20in%20again");
-});
-
-app.MapGet("/auth/confirm-password-change", async (HttpContext context, AuthService authService, string email, string token, CancellationToken ct) =>
-{
-    var result = await authService.ConfirmPasswordChangeAsync(email, token, ct);
-    if (context.User.Identity?.IsAuthenticated == true)
-    {
-        await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
-    }
-
-    return Results.Redirect(result.Success
-        ? "/login?msg=Password%20updated.%20Please%20sign%20in%20again"
-        : $"/login?msg={Uri.EscapeDataString(result.Error)}");
-});
 
 if (isE2E)
 {
@@ -490,9 +473,10 @@ if (isE2E)
             uploadToken = TokenCodec.GenerateAlphanumericToken(8);
         }
 
+        var userId = Guid.NewGuid();
         db.Users.Add(new UserAccount
         {
-            Id = Guid.NewGuid(),
+            Id = userId,
             Email = email,
             DisplayName = email.Contains('@', StringComparison.Ordinal) ? email[..email.IndexOf('@', StringComparison.Ordinal)] : email,
             EmailConfirmed = true,
@@ -510,6 +494,7 @@ if (isE2E)
         db.AccountTemplates.Add(new AccountTemplate
         {
             Id = Guid.NewGuid(),
+            OwnerUserId = userId,
             UploaderEmail = email,
             Title = $"by {email}",
             H1 = "A file was shared with you",
@@ -717,20 +702,18 @@ app.MapPost("/admin/settings/registration", async (HttpRequest request, AuthServ
 
 app.MapPost("/shares/{id:guid}/delete", async (Guid id, HttpContext context, ShareManager manager, CancellationToken ct) =>
 {
-    var email = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(email))
+    if (!context.User.TryGetShareOwner(out var owner))
     {
         return Results.Unauthorized();
     }
 
-    var ok = await manager.DeleteShareAsync(id, email, ct);
+    var ok = await manager.DeleteShareAsync(id, owner, ct);
     return Results.Redirect(ok ? "/?msg=Share%20deleted" : "/?msg=Unable%20to%20delete%20share");
 }).RequireAuthorization();
 
 app.MapPost("/shares/delete-batch", async (HttpContext context, ShareManager manager, HttpRequest request, CancellationToken ct) =>
 {
-    var email = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(email))
+    if (!context.User.TryGetShareOwner(out var owner))
     {
         return Results.Unauthorized();
     }
@@ -757,7 +740,7 @@ app.MapPost("/shares/delete-batch", async (HttpContext context, ShareManager man
     var deleted = 0;
     foreach (var shareId in shareIds)
     {
-        if (await manager.DeleteShareAsync(shareId, email, ct))
+        if (await manager.DeleteShareAsync(shareId, owner, ct))
         {
             deleted += 1;
         }
@@ -768,13 +751,12 @@ app.MapPost("/shares/delete-batch", async (HttpContext context, ShareManager man
 
 app.MapPost("/shares/{id:guid}/reenable", async (Guid id, HttpContext context, ShareManager manager, CancellationToken ct) =>
 {
-    var email = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(email))
+    if (!context.User.TryGetShareOwner(out var owner))
     {
         return Results.Unauthorized();
     }
 
-    var ok = await manager.ReenableShareFor24HoursAsync(id, email, ct);
+    var ok = await manager.ReenableShareFor24HoursAsync(id, owner, ct);
     return Results.Redirect(ok
         ? "/?msg=Share%20re-enabled%20for%2024%20hours"
         : "/?msg=Unable%20to%20re-enable%20share");
@@ -782,13 +764,12 @@ app.MapPost("/shares/{id:guid}/reenable", async (Guid id, HttpContext context, S
 
 app.MapPost("/shares/{id:guid}/show-link", async (Guid id, HttpContext context, ShareManager manager, CancellationToken ct) =>
 {
-    var email = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(email))
+    if (!context.User.TryGetShareOwner(out var owner))
     {
         return Results.Unauthorized();
     }
 
-    var token = await manager.GetCopyableShareTokenAsync(id, email, ct);
+    var token = await manager.GetCopyableShareTokenAsync(id, owner, ct);
     if (string.IsNullOrWhiteSpace(token))
     {
         return Results.Redirect("/?msg=Unable%20to%20open%20share%20link");
@@ -799,8 +780,7 @@ app.MapPost("/shares/{id:guid}/show-link", async (Guid id, HttpContext context, 
 
 app.MapGet("/api/shares/{token}/status", async (string token, HttpContext context, ShareManager manager, ShareCreationStatusStore statusStore, CancellationToken ct) =>
 {
-    var email = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(email))
+    if (!context.User.TryGetShareOwner(out var owner))
     {
         return Results.Unauthorized();
     }
@@ -808,7 +788,7 @@ app.MapGet("/api/shares/{token}/status", async (string token, HttpContext contex
     var share = await manager.FindByTokenAsync(token, ct);
     if (share is not null)
     {
-        if (!string.Equals(share.UploaderEmail, email, StringComparison.OrdinalIgnoreCase))
+        if (!owner.Owns(share.OwnerUserId))
         {
             return Results.NotFound();
         }
@@ -822,7 +802,7 @@ app.MapGet("/api/shares/{token}/status", async (string token, HttpContext contex
     }
 
     var status = statusStore.Read(token);
-    if (status is null || !string.Equals(status.UploaderEmail, email, StringComparison.OrdinalIgnoreCase))
+    if (status is null || status.OwnerUserId != owner.UserId)
     {
         return Results.NotFound();
     }
@@ -851,13 +831,12 @@ app.MapPost("/api/account/template", async (HttpContext context, ShareManager ma
     }
 
     var form = await request.ReadFormAsync(ct);
-    var email = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(email))
+    if (!context.User.TryGetShareOwner(out var owner))
     {
         return Results.Unauthorized();
     }
 
-    var existingTemplate = await manager.GetAccountTemplateAsync(email, ct);
+    var existingTemplate = await manager.GetAccountTemplateAsync(owner, ct);
     var backgroundImageUrl = existingTemplate.BackgroundImageUrl;
     var backgroundColorMode = form["backgroundColorMode"].ToString();
     var backgroundColorHex = string.Equals(backgroundColorMode, "custom", StringComparison.OrdinalIgnoreCase)
@@ -913,7 +892,7 @@ app.MapPost("/api/account/template", async (HttpContext context, ShareManager ma
         backgroundImageUrl = $"internal:{key}";
     }
 
-    await manager.UpsertAccountTemplateAsync(email, new ShareTemplateData(
+    await manager.UpsertAccountTemplateAsync(owner, new ShareTemplateData(
         string.IsNullOrWhiteSpace(form["title"].ToString()) ? "Shared file" : form["title"].ToString(),
         string.IsNullOrWhiteSpace(form["h1"].ToString()) ? "A file was shared with you" : form["h1"].ToString(),
         string.IsNullOrWhiteSpace(form["description"].ToString()) ? "Use the button below to download your file." : form["description"].ToString(),
@@ -931,14 +910,13 @@ app.MapPost("/api/share-drafts/{draftShareId}/template", async (HttpContext cont
         return Results.BadRequest("Expected form data");
     }
 
-    var email = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(email))
+    if (!context.User.TryGetShareOwner(out var owner))
     {
         return Results.Unauthorized();
     }
     try
     {
-        draftShareId = await manager.EnsureDraftShareAsync(email, draftShareId, ct);
+        draftShareId = await manager.EnsureDraftShareAsync(owner.UserId, draftShareId, ct);
     }
     catch (Exception ex) when (ex is InvalidOperationException or UploadLimitException)
     {
@@ -960,7 +938,7 @@ app.MapPost("/api/share-drafts/{draftShareId}/template", async (HttpContext cont
         try
         {
             await manager.ResolveStagedUploadsAsync(
-                email,
+                owner.UserId,
                 [backgroundUploadId],
                 draftShareId,
                 ct,
@@ -972,14 +950,13 @@ app.MapPost("/api/share-drafts/{draftShareId}/template", async (HttpContext cont
         }
     }
 
-    await manager.SaveDraftTemplateAsync(email, draftShareId, "per_upload", template, backgroundUploadId, ct);
+    await manager.SaveDraftTemplateAsync(owner.UserId, draftShareId, "per_upload", template, backgroundUploadId, ct);
     return Results.Redirect($"/shares/new?draftShareId={Uri.EscapeDataString(draftShareId)}&msg=Share%20design%20saved");
 }).RequireAuthorization();
 
 app.MapGet("/api/share-drafts/{draftShareId}/background-preview", async (HttpContext context, ShareManager manager, string draftShareId, string uploadId, CancellationToken ct) =>
 {
-    var email = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(email))
+    if (!context.User.TryGetShareOwner(out var owner))
     {
         return Results.Unauthorized();
     }
@@ -993,7 +970,7 @@ app.MapGet("/api/share-drafts/{draftShareId}/background-preview", async (HttpCon
     try
     {
         staged = await manager.ResolveStagedUploadsAsync(
-            email,
+            owner.UserId,
             [uploadId],
             draftShareId,
             ct,
@@ -1015,8 +992,7 @@ app.MapGet("/api/share-drafts/{draftShareId}/background-preview", async (HttpCon
 
 app.MapPost("/api/account/settings", async (HttpContext context, AuthService authService, HttpRequest request, CancellationToken ct) =>
 {
-    var email = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(email))
+    if (!context.User.TryGetShareOwner(out var owner))
     {
         return Results.Unauthorized();
     }
@@ -1024,21 +1000,20 @@ app.MapPost("/api/account/settings", async (HttpContext context, AuthService aut
     var form = await request.ReadFormAsync(ct);
     var defaultNotifyMode = form["defaultNotifyMode"].ToString();
     var defaultExpiryMode = form["defaultExpiryMode"].ToString();
-    var notifyOk = await authService.SetDefaultNotifyModeAsync(email, defaultNotifyMode, ct);
-    var expiryOk = await authService.SetDefaultExpiryModeAsync(email, defaultExpiryMode, ct);
+    var notifyOk = await authService.SetDefaultNotifyModeAsync(owner.UserId, defaultNotifyMode, ct);
+    var expiryOk = await authService.SetDefaultExpiryModeAsync(owner.UserId, defaultExpiryMode, ct);
     var ok = notifyOk && expiryOk;
     return Results.Redirect(ok ? "/account/settings?msg=Account%20defaults%20saved" : "/account/settings?msg=Unable%20to%20save%20account%20defaults");
 }).RequireAuthorization();
 
 app.MapGet("/account/template/background", async (HttpContext context, ShareManager manager, IObjectStore objectStore, CancellationToken ct) =>
 {
-    var email = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(email))
+    if (!context.User.TryGetShareOwner(out var owner))
     {
         return Results.Unauthorized();
     }
 
-    var template = await manager.GetAccountTemplateAsync(email, ct);
+    var template = await manager.GetAccountTemplateAsync(owner, ct);
     var key = ObjectKey.FromInternalMarker(template.BackgroundImageUrl);
     if (key is null || await objectStore.OpenReadAsync(key, ct) is not { } background)
     {
@@ -1094,7 +1069,7 @@ app.MapPost("/api/public-uploads/create-share", async (
 
     try
     {
-        draftShareId = await manager.EnsurePublicUploadDraftAsync(user.Email, draftShareId, user.UploadToken, ClientAddress(context), ct);
+        draftShareId = await manager.EnsurePublicUploadDraftAsync(user.Id, draftShareId, user.UploadToken, ClientAddress(context), ct);
     }
     catch (InvalidOperationException ex)
     {
@@ -1115,7 +1090,7 @@ app.MapPost("/api/public-uploads/create-share", async (
     IReadOnlyList<ShareManager.StagedUploadFile> stagedUploads;
     try
     {
-        stagedUploads = await manager.ResolveStagedUploadsAsync(user.Email, uploadedFileIds, draftShareId, ct);
+        stagedUploads = await manager.ResolveStagedUploadsAsync(user.Id, uploadedFileIds, draftShareId, ct);
     }
     catch (InvalidOperationException ex)
     {
@@ -1162,7 +1137,7 @@ app.MapPost("/api/public-uploads/create-share", async (
     // Fast path for the daily budget of received shares (counted per owner account, so rotating the code does not
     // reset it); the job re-checks it under a per-owner lock before the share is committed.
     var nowUtc = DateTime.UtcNow;
-    var usage = await manager.GetReceivedShareUsageAsync(user.Email, nowUtc.AddHours(-24), ct);
+    var usage = await manager.GetReceivedShareUsageAsync(ShareOwner.For(user.Id, user.Email), nowUtc.AddHours(-24), ct);
     var quotaError = PublicUploadPolicy.CheckDailyQuota(usage.Count, usage.Bytes, total, cfg.PublicUploads);
     if (quotaError is not null)
     {
@@ -1180,12 +1155,12 @@ app.MapPost("/api/public-uploads/create-share", async (
     }
 
     // Received shares follow the owner's default expiry; "indefinite" only when the owner chose it explicitly.
-    var ownerExpiryMode = await authService.GetDefaultExpiryModeAsync(user.Email, ct);
+    var ownerExpiryMode = await authService.GetDefaultExpiryModeAsync(user.Id, ct);
     var expiry = PublicUploadPolicy.ResolveExpiry(ownerExpiryMode, cfg.PublicUploads.DefaultExpiryDays, nowUtc);
     var expiryModeRaw = expiry.Mode;
     var expiresAtUtc = expiry.ExpiresAtUtc;
 
-    var notifyMode = await authService.GetDefaultNotifyModeAsync(user.Email, ct);
+    var notifyMode = await authService.GetDefaultNotifyModeAsync(user.Id, ct);
     if (notifyMode is not ("none" or "once" or "every_time"))
     {
         notifyMode = "once";
@@ -1215,13 +1190,14 @@ app.MapPost("/api/public-uploads/create-share", async (
         TemplateBackgroundColorHex: null,
         TemplateContainerPosition: null,
         TemplateBackgroundUploadId: null,
-        UploadedFileIds: uploadedFileIds);
+        UploadedFileIds: uploadedFileIds,
+        OwnerUserId: user.Id);
 
     // Sealing stops further staging into this draft and makes a second submission of it a 409; a failed enqueue
     // unseals it again and reports 503 so the sender can retry.
     try
     {
-        if (!await manager.SealDraftForSubmissionAsync(user.Email, draftShareId, () => { queuedShareCreationJob.Queue(queued); return Task.CompletedTask; }, ct))
+        if (!await manager.SealDraftForSubmissionAsync(user.Id, draftShareId, () => { queuedShareCreationJob.Queue(queued); return Task.CompletedTask; }, ct))
         {
             return Results.Text("This upload was already submitted.", statusCode: StatusCodes.Status409Conflict);
         }
@@ -1246,8 +1222,7 @@ app.MapPost("/api/uploads/remove", async (
         return Results.BadRequest(new { error = "Expected form data." });
     }
 
-    var uploaderEmail = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(uploaderEmail))
+    if (!context.User.TryGetShareOwner(out var owner))
     {
         return Results.Unauthorized();
     }
@@ -1260,7 +1235,7 @@ app.MapPost("/api/uploads/remove", async (
         return Results.BadRequest(new { error = "draftShareId and uploadId are required." });
     }
 
-    var ok = await manager.DeleteStagedUploadAsync(uploaderEmail, draftShareId, uploadId, ct);
+    var ok = await manager.DeleteStagedUploadAsync(owner.UserId, draftShareId, uploadId, ct);
     return ok
         ? Results.Ok(new { removed = true })
         : Results.NotFound(new { error = "Upload not found." });
@@ -1278,8 +1253,7 @@ app.MapPost("/api/uploads/cancel", async (
         return Results.BadRequest(new { error = "Expected form data." });
     }
 
-    var uploaderEmail = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(uploaderEmail))
+    if (!context.User.TryGetShareOwner(out var owner))
     {
         return Results.Unauthorized();
     }
@@ -1293,7 +1267,7 @@ app.MapPost("/api/uploads/cancel", async (
 
     try
     {
-        draftShareId = await manager.EnsureDraftShareAsync(uploaderEmail, draftShareId, ct);
+        draftShareId = await manager.EnsureDraftShareAsync(owner.UserId, draftShareId, ct);
     }
     catch (InvalidOperationException ex)
     {
@@ -1305,7 +1279,7 @@ app.MapPost("/api/uploads/cancel", async (
     }
 
     var jobId = backgroundJobs.Enqueue<ShareManager>(x =>
-        x.DeleteStagedUploadsForDraftAsync(uploaderEmail, draftShareId, CancellationToken.None));
+        x.DeleteStagedUploadsForDraftAsync(owner.UserId, draftShareId, CancellationToken.None));
 
     return Results.Ok(new { canceled = true, cleanupJobId = jobId });
 }).RequireAuthorization();
@@ -1325,12 +1299,12 @@ app.MapPost("/api/shares", async (
         return Results.BadRequest("Expected multipart/form-data");
     }
 
-    var uploaderEmail = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(uploaderEmail))
+    if (!context.User.TryGetShareOwner(out var owner))
     {
         return Results.Unauthorized();
     }
 
+    var uploaderEmail = owner.Email;
     var cfg = options.Value;
     // API clients may post files directly here (the UI stages first), so the multipart buffer is reserved against
     // the scratch budget before the body is read, like on the stage endpoints.
@@ -1352,7 +1326,7 @@ app.MapPost("/api/shares", async (
 
     try
     {
-        draftShareId = await manager.EnsureDraftShareAsync(uploaderEmail, draftShareId, ct);
+        draftShareId = await manager.EnsureDraftShareAsync(owner.UserId, draftShareId, ct);
     }
     catch (InvalidOperationException ex)
     {
@@ -1397,7 +1371,7 @@ app.MapPost("/api/shares", async (
     IReadOnlyList<ShareManager.StagedUploadFile> stagedUploads;
     try
     {
-        stagedUploads = await manager.ResolveStagedUploadsAsync(uploaderEmail, uploadedFileIds, draftShareId, ct);
+        stagedUploads = await manager.ResolveStagedUploadsAsync(owner.UserId, uploadedFileIds, draftShareId, ct);
     }
     catch (InvalidOperationException ex)
     {
@@ -1443,7 +1417,7 @@ app.MapPost("/api/shares", async (
     var expiryModeRaw = form["expiryMode"].ToString().Trim().ToLowerInvariant();
     if (expiryModeRaw == "account_default")
     {
-        expiryModeRaw = await authService.GetDefaultExpiryModeAsync(uploaderEmail, ct);
+        expiryModeRaw = await authService.GetDefaultExpiryModeAsync(owner.UserId, ct);
     }
     var nowUtc = DateTime.UtcNow;
     DateTime? expiresAtUtc = expiryModeRaw switch
@@ -1478,7 +1452,7 @@ app.MapPost("/api/shares", async (
 
     var notifyModeRaw = form["notifyMode"].ToString().Trim().ToLowerInvariant();
     var notifyMode = notifyModeRaw == "account_default"
-        ? await authService.GetDefaultNotifyModeAsync(uploaderEmail, ct)
+        ? await authService.GetDefaultNotifyModeAsync(owner.UserId, ct)
         : notifyModeRaw;
     if (notifyMode is not ("none" or "once" or "every_time"))
     {
@@ -1505,7 +1479,7 @@ app.MapPost("/api/shares", async (
         try
         {
             var stagedBackground = await manager.ResolveStagedUploadsAsync(
-                uploaderEmail,
+                owner.UserId,
                 [templateBackgroundUploadId],
                 draftShareId,
                 ct,
@@ -1549,13 +1523,14 @@ app.MapPost("/api/shares", async (
         TemplateBackgroundColorHex: NormalizeHexColor(form["template.backgroundColorHex"].ToString()),
         TemplateContainerPosition: NormalizeContainerPosition(form["template.containerPosition"].ToString()),
         TemplateBackgroundUploadId: templateBackgroundUploadId,
-        UploadedFileIds: uploadedFileIds);
+        UploadedFileIds: uploadedFileIds,
+        OwnerUserId: owner.UserId);
 
     // Sealing stops further staging into this draft and makes a second submission of it a 409; a failed enqueue
     // unseals it again and reports 503 so the user can retry.
     try
     {
-        if (!await manager.SealDraftForSubmissionAsync(uploaderEmail, draftShareId, () => { queuedShareCreationJob.Queue(queued); return Task.CompletedTask; }, ct))
+        if (!await manager.SealDraftForSubmissionAsync(owner.UserId, draftShareId, () => { queuedShareCreationJob.Queue(queued); return Task.CompletedTask; }, ct))
         {
             return Results.Text("This share was already submitted.", statusCode: StatusCodes.Status409Conflict);
         }

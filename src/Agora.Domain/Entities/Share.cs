@@ -6,6 +6,13 @@ namespace Agora.Domain.Entities;
 public sealed class Share
 {
     public Guid Id { get; set; }
+    /// <summary>
+    /// Owning <see cref="UserAccount"/>; null only for rows created before owners were tracked whose uploader address
+    /// matched no account at backfill time. Ownership checks use this id and fall back to <see cref="UploaderEmail"/>
+    /// only while it is null.
+    /// </summary>
+    public Guid? OwnerUserId { get; set; }
+    /// <summary>Uploader address at creation time, kept for display and notifications; not an ownership key.</summary>
     public string UploaderEmail { get; set; } = string.Empty;
     /// <summary>
     /// Public URL token used to resolve the share at <c>/s/{token}</c>.

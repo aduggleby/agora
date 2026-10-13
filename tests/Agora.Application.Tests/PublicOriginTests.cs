@@ -1,5 +1,6 @@
 using Agora.Application.Abstractions;
 using Agora.Application.Models;
+using Agora.Application.Utilities;
 using Agora.Domain.Entities;
 using Agora.Infrastructure.Persistence;
 using Agora.Infrastructure.Services;
@@ -34,10 +35,22 @@ public sealed class PublicOriginTests
         await using var db = new AgoraDbContext(options);
         await db.Database.EnsureCreatedAsync();
 
+        var owner = new UserAccount
+        {
+            Id = Guid.NewGuid(),
+            Email = "owner@example.com",
+            EmailConfirmed = true,
+            PasswordHash = "x:y",
+            SecurityStamp = SecurityStamps.New(),
+            UploadToken = "owner001",
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        db.Users.Add(owner);
         var share = new Share
         {
             Id = Guid.NewGuid(),
-            UploaderEmail = "owner@example.com",
+            OwnerUserId = owner.Id,
+            UploaderEmail = "stale-address@example.com",
             ShareToken = "tok-1",
             ZipDisplayName = "files.zip",
             ZipDiskPath = "zips/tok-1.zip",
@@ -67,6 +80,7 @@ public sealed class PublicOriginTests
 
         var notification = Assert.Single(sender.Sent);
         Assert.Equal(expectedUrl, notification.ShareUrl);
+        // The recipient is the owner account's current address, not the address stored on the share.
         Assert.Equal("owner@example.com", notification.To);
         Assert.True((await db.DownloadEvents.SingleAsync(x => x.Id == downloadEvent.Id)).NotificationSent);
     }

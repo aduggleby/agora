@@ -48,6 +48,9 @@ namespace Agora.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<Guid?>("OwnerUserId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<string>("Title")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
@@ -62,10 +65,12 @@ namespace Agora.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("OwnerUserId");
+
                     b.HasIndex("UploaderEmail")
                         .IsUnique();
 
-                    b.ToTable("AccountTemplates");
+                    b.ToTable("AccountTemplates", (string)null);
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.DownloadEvent", b =>
@@ -103,7 +108,7 @@ namespace Agora.Infrastructure.Migrations
 
                     b.HasIndex("ShareId");
 
-                    b.ToTable("DownloadEvents");
+                    b.ToTable("DownloadEvents", (string)null);
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.Share", b =>
@@ -144,6 +149,9 @@ namespace Agora.Infrastructure.Migrations
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
+
+                    b.Property<Guid?>("OwnerUserId")
+                        .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("PageBackgroundColorHex")
                         .HasMaxLength(16)
@@ -209,10 +217,12 @@ namespace Agora.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("OwnerUserId");
+
                     b.HasIndex("ShareToken")
                         .IsUnique();
 
-                    b.ToTable("Shares");
+                    b.ToTable("Shares", (string)null);
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.ShareFile", b =>
@@ -250,7 +260,7 @@ namespace Agora.Infrastructure.Migrations
 
                     b.HasIndex("ShareId");
 
-                    b.ToTable("ShareFiles");
+                    b.ToTable("ShareFiles", (string)null);
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.SystemSetting", b =>
@@ -269,7 +279,7 @@ namespace Agora.Infrastructure.Migrations
 
                     b.HasKey("Key");
 
-                    b.ToTable("SystemSettings");
+                    b.ToTable("SystemSettings", (string)null);
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.UserAccount", b =>
@@ -387,7 +397,7 @@ namespace Agora.Infrastructure.Migrations
                     b.HasIndex("UploadToken")
                         .IsUnique();
 
-                    b.ToTable("Users");
+                    b.ToTable("Users", (string)null);
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.DownloadEvent", b =>

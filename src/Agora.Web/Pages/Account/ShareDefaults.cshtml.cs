@@ -1,5 +1,5 @@
-using System.Security.Claims;
 using Agora.Infrastructure.Auth;
+using Agora.Web.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -12,23 +12,32 @@ public class ShareDefaultsModel(AuthService authService) : PageModel
     public string DefaultNotifyMode { get; private set; } = "once";
     public string DefaultExpiryMode { get; private set; } = "7_days";
 
-    public async Task OnGet(CancellationToken ct)
+    public async Task<IActionResult> OnGet(CancellationToken ct)
     {
-        var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-        DefaultNotifyMode = await authService.GetDefaultNotifyModeAsync(email, ct);
-        DefaultExpiryMode = await authService.GetDefaultExpiryModeAsync(email, ct);
+        if (User.UserId() is not { } userId)
+        {
+            return RedirectToPage("/Login");
+        }
+
+        DefaultNotifyMode = await authService.GetDefaultNotifyModeAsync(userId, ct);
+        DefaultExpiryMode = await authService.GetDefaultExpiryModeAsync(userId, ct);
         ViewData["Title"] = "Share Defaults";
         ViewData["Message"] = Request.Query["msg"].ToString();
+        return Page();
     }
 
     public async Task<IActionResult> OnPostAsync(CancellationToken ct)
     {
-        var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+        if (User.UserId() is not { } userId)
+        {
+            return RedirectToPage("/Login");
+        }
+
         var defaultNotifyMode = (Request.Form["defaultNotifyMode"].ToString() ?? string.Empty).Trim();
         var defaultExpiryMode = (Request.Form["defaultExpiryMode"].ToString() ?? string.Empty).Trim();
 
-        var notifyOk = await authService.SetDefaultNotifyModeAsync(email, defaultNotifyMode, ct);
-        var expiryOk = await authService.SetDefaultExpiryModeAsync(email, defaultExpiryMode, ct);
+        var notifyOk = await authService.SetDefaultNotifyModeAsync(userId, defaultNotifyMode, ct);
+        var expiryOk = await authService.SetDefaultExpiryModeAsync(userId, defaultExpiryMode, ct);
         var ok = notifyOk && expiryOk;
         return RedirectToPage("/Account/ShareDefaults", new { msg = ok ? "Share defaults saved" : "Unable to save share defaults" });
     }

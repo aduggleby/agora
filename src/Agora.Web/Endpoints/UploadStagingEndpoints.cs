@@ -7,6 +7,8 @@ using Agora.Web.Startup;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
+using Agora.Web.Auth;
+
 namespace Agora.Web.Endpoints;
 
 /// <summary>
@@ -63,8 +65,7 @@ public static class UploadStagingEndpoints
             return Results.BadRequest(new { error = "Expected multipart/form-data." });
         }
 
-        var uploaderEmail = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(uploaderEmail))
+        if (!context.User.TryGetShareOwner(out var owner))
         {
             return Results.Unauthorized();
         }
@@ -79,7 +80,7 @@ public static class UploadStagingEndpoints
         var cfg = options.Value;
         try
         {
-            draftShareId = await manager.EnsureDraftShareAsync(uploaderEmail, draftShareId, ct);
+            draftShareId = await manager.EnsureDraftShareAsync(owner.UserId, draftShareId, ct);
             ReserveRequestBuffer(context, scratchSpace, cfg.MaxFileSizeBytes);
         }
         catch (InvalidOperationException ex)
@@ -91,7 +92,7 @@ public static class UploadStagingEndpoints
             return UploadLimitJson(ex);
         }
 
-        return await StageFormFileAsync(request, manager, cfg, uploaderEmail, draftShareId, ShareManager.UploadPurposeShareFile, "A file is required.", ct);
+        return await StageFormFileAsync(request, manager, cfg, owner.UserId, draftShareId, ShareManager.UploadPurposeShareFile, "A file is required.", ct);
     }
 
     private static async Task<IResult> StageTemplateBackgroundAsync(
@@ -107,8 +108,7 @@ public static class UploadStagingEndpoints
             return Results.BadRequest(new { error = "Expected multipart/form-data." });
         }
 
-        var uploaderEmail = context.User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(uploaderEmail))
+        if (!context.User.TryGetShareOwner(out var owner))
         {
             return Results.Unauthorized();
         }
@@ -122,7 +122,7 @@ public static class UploadStagingEndpoints
         var cfg = options.Value;
         try
         {
-            draftShareId = await manager.EnsureDraftShareAsync(uploaderEmail, draftShareId, ct);
+            draftShareId = await manager.EnsureDraftShareAsync(owner.UserId, draftShareId, ct);
             ReserveRequestBuffer(context, scratchSpace, cfg.MaxFileSizeBytes);
         }
         catch (InvalidOperationException ex)
@@ -146,7 +146,7 @@ public static class UploadStagingEndpoints
             return Results.BadRequest(new { error = "Only JPG, PNG, or WEBP files are allowed." });
         }
 
-        return await StageFileAsync(file, manager, cfg, uploaderEmail, draftShareId, ShareManager.UploadPurposeTemplateBackground, ct);
+        return await StageFileAsync(file, manager, cfg, owner.UserId, draftShareId, ShareManager.UploadPurposeTemplateBackground, ct);
     }
 
     private static async Task<IResult> StagePublicUploadAsync(
@@ -182,7 +182,7 @@ public static class UploadStagingEndpoints
             // Scratch first, so a 507 leaves no empty draft behind; a new draft then counts against the open-draft
             // caps of this upload code and of the client address.
             ReserveRequestBuffer(context, scratchSpace, cfg.MaxFileSizeBytes);
-            draftShareId = await manager.EnsurePublicUploadDraftAsync(user.Email, draftShareId, user.UploadToken, ClientAddress(context), ct);
+            draftShareId = await manager.EnsurePublicUploadDraftAsync(user.Id, draftShareId, user.UploadToken, ClientAddress(context), ct);
         }
         catch (InvalidOperationException ex)
         {
@@ -193,7 +193,7 @@ public static class UploadStagingEndpoints
             return UploadLimitJson(ex);
         }
 
-        return await StageFormFileAsync(request, manager, cfg, user.Email, draftShareId, ShareManager.UploadPurposeShareFile, "A file is required.", ct);
+        return await StageFormFileAsync(request, manager, cfg, user.Id, draftShareId, ShareManager.UploadPurposeShareFile, "A file is required.", ct);
     }
 
     /// <summary>
@@ -210,7 +210,7 @@ public static class UploadStagingEndpoints
         HttpRequest request,
         ShareManager manager,
         AgoraOptions cfg,
-        string uploaderEmail,
+        Guid ownerUserId,
         string draftShareId,
         string purpose,
         string missingFileError,
@@ -223,14 +223,14 @@ public static class UploadStagingEndpoints
             return Results.BadRequest(new { error = missingFileError });
         }
 
-        return await StageFileAsync(file, manager, cfg, uploaderEmail, draftShareId, purpose, ct);
+        return await StageFileAsync(file, manager, cfg, ownerUserId, draftShareId, purpose, ct);
     }
 
     private static async Task<IResult> StageFileAsync(
         IFormFile file,
         ShareManager manager,
         AgoraOptions cfg,
-        string uploaderEmail,
+        Guid ownerUserId,
         string draftShareId,
         string purpose,
         CancellationToken ct)
@@ -244,7 +244,7 @@ public static class UploadStagingEndpoints
         ShareManager.StagedUploadFile staged;
         try
         {
-            staged = await manager.StageUploadAsync(uploaderEmail, draftShareId, file.FileName, file.Length, stream, ct, purpose);
+            staged = await manager.StageUploadAsync(ownerUserId, draftShareId, file.FileName, file.Length, stream, ct, purpose);
         }
         catch (InvalidOperationException ex)
         {

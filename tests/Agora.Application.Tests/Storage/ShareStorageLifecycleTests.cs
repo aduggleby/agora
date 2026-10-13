@@ -30,6 +30,7 @@ namespace Agora.Application.Tests.Storage;
 /// </summary>
 public sealed class ShareStorageLifecycleTests : IAsyncLifetime
 {
+    private static readonly Guid OwnerId = Guid.NewGuid();
     private static readonly CancellationToken Ct = CancellationToken.None;
     private readonly string _root = Path.Combine(Path.GetTempPath(), "agora-lifecycle-tests", Guid.NewGuid().ToString("N"));
     private readonly SqliteConnection _connection = new("Data Source=:memory:");
@@ -48,6 +49,8 @@ public sealed class ShareStorageLifecycleTests : IAsyncLifetime
             .AddInterceptors(_saveInterceptor)
             .Options);
         await _db.Database.EnsureCreatedAsync();
+        _db.Users.Add(TestUsers.Seed(OwnerId, "uploader@example.com"));
+        await _db.SaveChangesAsync();
         _store = new RecordingObjectStore(new FileSystemObjectStore(StorageRoot));
     }
 
@@ -518,6 +521,7 @@ public sealed class ShareStorageLifecycleTests : IAsyncLifetime
         return new CreateShareCommand
         {
             UploaderEmail = "uploader@example.com",
+            OwnerUserId = OwnerId,
             DownloadPassword = password,
             NotifyMode = "none",
             ExpiryMode = ExpiryMode.Date,

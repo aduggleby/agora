@@ -1,6 +1,6 @@
-using System.Security.Claims;
 using Agora.Application.Models;
 using Agora.Infrastructure.Services;
+using Agora.Web.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -22,9 +22,11 @@ public class IndexModel(ShareManager manager, IOptions<AgoraOptions> options) : 
 
     public async Task OnGet(CancellationToken ct)
     {
-        var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
         IsAdmin = User.IsInRole("admin");
-        var shares = (await manager.ListRecentSharesForUploaderAsync(email, 100, ct))
+        var shares = User.TryGetShareOwner(out var owner)
+            ? await manager.ListRecentSharesForUploaderAsync(owner, 100, ct)
+            : [];
+        shares = shares
             .OrderByDescending(x => x.CreatedAtUtc)
             .ToList();
         ReceivedShares = shares
@@ -33,7 +35,7 @@ public class IndexModel(ShareManager manager, IOptions<AgoraOptions> options) : 
         OwnShares = shares
             .Where(x => string.IsNullOrWhiteSpace(x.SenderEmail))
             .ToList();
-        QuickDraftShareId = await manager.EnsureDraftShareAsync(email, null, ct);
+        QuickDraftShareId = User.UserId() is { } userId ? await manager.EnsureDraftShareAsync(userId, null, ct) : string.Empty;
 
         ViewData["Title"] = "Agora";
         ViewData["Message"] = Request.Query["msg"].ToString();

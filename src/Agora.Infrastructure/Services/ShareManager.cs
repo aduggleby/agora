@@ -73,7 +73,7 @@ public sealed class ShareManager(
 
     private sealed record StagedUploadMetadata(
         string UploadId,
-        string UploaderEmail,
+        Guid? OwnerUserId,
         string DraftShareId,
         string OriginalFileName,
         long OriginalSizeBytes,
@@ -83,7 +83,7 @@ public sealed class ShareManager(
 
     private sealed record DraftShareMetadata(
         string DraftShareId,
-        string UploaderEmail,
+        Guid? OwnerUserId,
         DateTime LastActivityUtc,
         string TemplateMode,
         string Title,
@@ -110,6 +110,7 @@ public sealed class ShareManager(
     public async Task<CreateShareResult> CreateShareAsync(CreateShareCommand command, CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
+        var owner = OwnerOf(command);
         var requestedToken = command.ShareToken?.Trim();
         var hasRequestedToken = !string.IsNullOrWhiteSpace(requestedToken);
         var shareExperienceType = ShareModes.ToStorageValue(ShareModes.ParseExperienceType(command.ShareExperienceType));
@@ -202,6 +203,14 @@ public sealed class ShareManager(
                     copiedMarker ?? "<none>");
             }
 
+            // Serialized with account deletion: the owner must still exist (and be enabled) when the row is inserted,
+            // otherwise the uploaded objects are removed again by the failure path below.
+            using var ownerLock = await draftLocks.LockAsync(OwnerLockKey(owner.UserId), cancellationToken);
+            if (!await db.Users.AnyAsync(x => x.Id == owner.UserId && x.IsEnabled, cancellationToken))
+            {
+                throw new InvalidOperationException("The account that owns this share no longer exists.");
+            }
+
             for (var attempt = 0; attempt < 16; attempt += 1)
             {
                 var token = hasRequestedToken
@@ -211,7 +220,8 @@ public sealed class ShareManager(
                 var share = new Share
                 {
                     Id = Guid.NewGuid(),
-                    UploaderEmail = EmailAddress.Normalize(command.UploaderEmail),
+                    OwnerUserId = owner.UserId,
+                    UploaderEmail = owner.Email,
                     ShareToken = token,
                     ZipDisplayName = zipName,
                     ZipDiskPath = archiveDiskPath,
@@ -313,9 +323,11 @@ public sealed class ShareManager(
     /// </summary>
     public async Task<CreateShareResult> CreateReceivedShareAsync(CreateShareCommand command, CancellationToken cancellationToken)
     {
-        var owner = EmailAddress.Normalize(command.UploaderEmail);
+        var owner = OwnerOf(command);
         var incomingBytes = command.Files.Sum(x => Math.Max(0, x.OriginalSizeBytes));
-        using (await draftLocks.LockAsync($"received-quota:{owner}", cancellationToken))
+        // Keyed on the immutable owner id, so submissions through the same link under different addresses share one
+        // budget; every database access happens under the lock.
+        using (await draftLocks.LockAsync($"received-quota:{owner.UserId:N}", cancellationToken))
         {
             var usage = await GetReceivedShareUsageAsync(owner, DateTime.UtcNow.AddHours(-24), cancellationToken);
             var error = PublicUploadPolicy.CheckDailyQuota(usage.Count, usage.Bytes, incomingBytes, _options.PublicUploads);
@@ -399,19 +411,37 @@ public sealed class ShareManager(
             .SingleOrDefaultAsync(x => x.ShareToken == token, cancellationToken);
     }
 
-    public Task<Share?> FindByTokenForUploaderAsync(string token, string uploaderEmail, CancellationToken cancellationToken)
+    public Task<Share?> FindByTokenForUploaderAsync(string token, ShareOwner owner, CancellationToken cancellationToken)
     {
-        var normalizedEmail = EmailAddress.Normalize(uploaderEmail);
-        return db.Shares
-            .SingleOrDefaultAsync(x => x.ShareToken == token && x.UploaderEmail == normalizedEmail, cancellationToken);
+        return SharesOwnedBy(owner)
+            .SingleOrDefaultAsync(x => x.ShareToken == token, cancellationToken);
     }
 
-    public Task<List<UserShareSummary>> ListRecentSharesForUploaderAsync(string uploaderEmail, int take, CancellationToken cancellationToken)
+    /// <summary>
+    /// Rows are owned by user id and nothing else; a row whose owner id is null (never backfilled) belongs to no one.
+    /// </summary>
+    private IQueryable<Share> SharesOwnedBy(ShareOwner owner)
     {
-        var normalizedEmail = EmailAddress.Normalize(uploaderEmail);
-        return db.Shares
+        var userId = owner.UserId;
+        return db.Shares.Where(x => x.OwnerUserId == userId);
+    }
+
+    private IQueryable<AccountTemplate> TemplatesOwnedBy(ShareOwner owner)
+    {
+        var userId = owner.UserId;
+        return db.AccountTemplates.Where(x => x.OwnerUserId == userId);
+    }
+
+    private static ShareOwner OwnerOf(CreateShareCommand command) => ShareOwner.For(command.OwnerUserId, command.UploaderEmail);
+
+    /// <summary>Lock key shared with account deletion (<c>AuthService.DeleteUserAsync</c>).</summary>
+    public static string OwnerLockKey(Guid ownerUserId) => $"owner:{ownerUserId:N}";
+
+    public Task<List<UserShareSummary>> ListRecentSharesForUploaderAsync(ShareOwner owner, int take, CancellationToken cancellationToken)
+    {
+        return SharesOwnedBy(owner)
             .AsNoTracking()
-            .Where(x => x.UploaderEmail == normalizedEmail && x.DeletedAtUtc == null)
+            .Where(x => x.DeletedAtUtc == null)
             .OrderByDescending(x => x.CreatedAtUtc)
             .Take(take)
             .Select(x => new UserShareSummary(
@@ -434,10 +464,9 @@ public sealed class ShareManager(
             .ToListAsync(cancellationToken);
     }
 
-    public async Task<bool> DeleteShareAsync(Guid shareId, string uploaderEmail, CancellationToken cancellationToken)
+    public async Task<bool> DeleteShareAsync(Guid shareId, ShareOwner owner, CancellationToken cancellationToken)
     {
-        var normalizedEmail = EmailAddress.Normalize(uploaderEmail);
-        var share = await db.Shares.SingleOrDefaultAsync(x => x.Id == shareId && x.UploaderEmail == normalizedEmail, cancellationToken);
+        var share = await SharesOwnedBy(owner).SingleOrDefaultAsync(x => x.Id == shareId, cancellationToken);
         if (share is null)
         {
             return false;
@@ -453,11 +482,10 @@ public sealed class ShareManager(
         return true;
     }
 
-    public async Task<bool> ReenableShareFor24HoursAsync(Guid shareId, string uploaderEmail, CancellationToken cancellationToken)
+    public async Task<bool> ReenableShareFor24HoursAsync(Guid shareId, ShareOwner owner, CancellationToken cancellationToken)
     {
-        var normalizedEmail = EmailAddress.Normalize(uploaderEmail);
-        var share = await db.Shares.SingleOrDefaultAsync(
-            x => x.Id == shareId && x.UploaderEmail == normalizedEmail && x.DeletedAtUtc == null,
+        var share = await SharesOwnedBy(owner).SingleOrDefaultAsync(
+            x => x.Id == shareId && x.DeletedAtUtc == null,
             cancellationToken);
         if (share is null)
         {
@@ -480,11 +508,10 @@ public sealed class ShareManager(
         return true;
     }
 
-    public async Task<string?> GetCopyableShareTokenAsync(Guid shareId, string uploaderEmail, CancellationToken cancellationToken)
+    public async Task<string?> GetCopyableShareTokenAsync(Guid shareId, ShareOwner owner, CancellationToken cancellationToken)
     {
-        var normalizedEmail = EmailAddress.Normalize(uploaderEmail);
-        var share = await db.Shares.SingleOrDefaultAsync(
-            x => x.Id == shareId && x.UploaderEmail == normalizedEmail && x.DeletedAtUtc == null,
+        var share = await SharesOwnedBy(owner).SingleOrDefaultAsync(
+            x => x.Id == shareId && x.DeletedAtUtc == null,
             cancellationToken);
         if (share is null)
         {
@@ -620,16 +647,16 @@ public sealed class ShareManager(
         }
     }
 
-    public async Task UpsertAccountTemplateAsync(string uploaderEmail, ShareTemplateData template, CancellationToken cancellationToken)
+    public async Task UpsertAccountTemplateAsync(ShareOwner owner, ShareTemplateData template, CancellationToken cancellationToken)
     {
-        var normalizedEmail = EmailAddress.Normalize(uploaderEmail);
-        var existing = await db.AccountTemplates.SingleOrDefaultAsync(x => x.UploaderEmail == normalizedEmail, cancellationToken);
+        var existing = await TemplatesOwnedBy(owner).FirstOrDefaultAsync(cancellationToken);
         if (existing is null)
         {
             db.AccountTemplates.Add(new AccountTemplate
             {
                 Id = Guid.NewGuid(),
-                UploaderEmail = normalizedEmail,
+                OwnerUserId = owner.UserId,
+                UploaderEmail = owner.Email,
                 Title = template.Title,
                 H1 = template.H1,
                 Description = template.Description,
@@ -653,14 +680,13 @@ public sealed class ShareManager(
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task<ShareTemplateData> GetAccountTemplateAsync(string uploaderEmail, CancellationToken cancellationToken)
+    public async Task<ShareTemplateData> GetAccountTemplateAsync(ShareOwner owner, CancellationToken cancellationToken)
     {
-        var normalizedEmail = EmailAddress.Normalize(uploaderEmail);
-        var existing = await db.AccountTemplates.SingleOrDefaultAsync(x => x.UploaderEmail == normalizedEmail, cancellationToken);
+        var existing = await TemplatesOwnedBy(owner).AsNoTracking().FirstOrDefaultAsync(cancellationToken);
         if (existing is null)
         {
             return new ShareTemplateData(
-                $"by {normalizedEmail}",
+                $"by {owner.Email}",
                 "A file was shared with you",
                 string.Empty,
                 null,
@@ -710,7 +736,7 @@ public sealed class ShareManager(
     }
 
     public async Task<StagedUploadFile> StageUploadAsync(
-        string uploaderEmail,
+        Guid ownerUserId,
         string draftShareId,
         string originalFileName,
         long originalSizeBytes,
@@ -732,7 +758,7 @@ public sealed class ShareManager(
         using (await draftLocks.LockAsync(DraftLockKey(draftShareId), cancellationToken))
         {
             var draft = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
-            if (draft is null || !string.Equals(draft.UploaderEmail, uploaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
+            if (draft is null || draft.OwnerUserId != ownerUserId)
             {
                 throw new UploadLimitException(UploadLimitKind.DraftClosed, "This upload is no longer open; reload the page to start a new one.");
             }
@@ -763,7 +789,7 @@ public sealed class ShareManager(
                 markerDirectory = GetDraftStagedIndexDirectory(draftShareId);
             }
 
-            var staged = await WriteStagedUploadAsync(uploaderEmail, draftShareId, originalFileName, originalSizeBytes, source, normalizedPurpose, markerDirectory, cancellationToken);
+            var staged = await WriteStagedUploadAsync(ownerUserId, draftShareId, originalFileName, originalSizeBytes, source, normalizedPurpose, markerDirectory, cancellationToken);
             await TouchDraftAsync(draftShareId, cancellationToken);
             return staged;
         }
@@ -771,7 +797,7 @@ public sealed class ShareManager(
 
     /// <summary>Reserves scratch, streams the payload and writes metadata last (metadata present = upload complete).</summary>
     private async Task<StagedUploadFile> WriteStagedUploadAsync(
-        string uploaderEmail,
+        Guid ownerUserId,
         string draftShareId,
         string originalFileName,
         long originalSizeBytes,
@@ -807,7 +833,7 @@ public sealed class ShareManager(
 
             metadata = new StagedUploadMetadata(
                 UploadId: uploadId,
-                UploaderEmail: uploaderEmail.Trim(),
+                OwnerUserId: ownerUserId,
                 DraftShareId: draftShareId,
                 OriginalFileName: sanitizedName,
                 OriginalSizeBytes: originalSizeBytes,
@@ -837,7 +863,7 @@ public sealed class ShareManager(
     }
 
     public async Task<IReadOnlyList<StagedUploadFile>> ResolveStagedUploadsAsync(
-        string uploaderEmail,
+        Guid ownerUserId,
         IReadOnlyCollection<string> uploadIds,
         string? expectedDraftShareId,
         CancellationToken cancellationToken,
@@ -849,7 +875,6 @@ public sealed class ShareManager(
         }
 
         var resolved = new List<StagedUploadFile>(uploadIds.Count);
-        var normalizedUploader = uploaderEmail.Trim();
         var normalizedPurpose = NormalizeUploadPurpose(requiredPurpose);
 
         foreach (var rawId in uploadIds)
@@ -885,7 +910,7 @@ public sealed class ShareManager(
                 throw new InvalidOperationException($"Uploaded file '{uploadId}' has invalid metadata.");
             }
 
-            if (!string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+            if (metadata.OwnerUserId != ownerUserId)
             {
                 throw new InvalidOperationException($"Uploaded file '{uploadId}' does not belong to the current user.");
             }
@@ -916,7 +941,7 @@ public sealed class ShareManager(
     }
 
     public async Task<IReadOnlyList<StagedUploadFile>> ListStagedUploadsForDraftAsync(
-        string uploaderEmail,
+        Guid ownerUserId,
         string draftShareId,
         CancellationToken cancellationToken)
     {
@@ -925,8 +950,6 @@ public sealed class ShareManager(
         {
             return [];
         }
-
-        var normalizedUploader = uploaderEmail.Trim();
         var result = new List<StagedUploadFile>();
         foreach (var stagingDirectory in Directory.EnumerateDirectories(stagingRoot))
         {
@@ -954,7 +977,7 @@ public sealed class ShareManager(
                 continue;
             }
 
-            if (!string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+            if (metadata.OwnerUserId != ownerUserId)
             {
                 continue;
             }
@@ -982,12 +1005,11 @@ public sealed class ShareManager(
     }
 
     public async Task<bool> DeleteStagedUploadAsync(
-        string uploaderEmail,
+        Guid ownerUserId,
         string draftShareId,
         string uploadId,
         CancellationToken cancellationToken)
     {
-        var normalizedUploader = uploaderEmail.Trim();
         var normalizedUploadId = (uploadId ?? string.Empty).Trim();
         if (normalizedUploadId.Length == 0)
         {
@@ -1018,7 +1040,7 @@ public sealed class ShareManager(
             return false;
         }
 
-        if (!string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+        if (metadata.OwnerUserId != ownerUserId)
         {
             return false;
         }
@@ -1085,20 +1107,19 @@ public sealed class ShareManager(
     /// against the open-draft caps of the upload code and of the client address; an existing draft is just touched.
     /// </summary>
     public async Task<string> EnsurePublicUploadDraftAsync(
-        string uploaderEmail,
+        Guid ownerUserId,
         string? requestedDraftShareId,
         string uploadToken,
         string clientAddress,
         CancellationToken cancellationToken)
     {
-        var normalizedUploader = uploaderEmail.Trim();
         if (TryNormalizeDraftShareId(requestedDraftShareId, out var existingId) &&
             await ReadDraftMetadataAsync(existingId, cancellationToken) is { } existing &&
             existing.LastActivityUtc > DateTime.UtcNow - DraftRetention(existing.PublicUpload))
         {
             // Already open and counted; this also verifies ownership and refuses sealed drafts. A draft idle for
             // longer than the retention is not counted any more, so reviving it goes through admission again.
-            return await EnsureDraftShareAsync(normalizedUploader, existingId, cancellationToken, publicUpload: true);
+            return await EnsureDraftShareAsync(ownerUserId, existingId, cancellationToken, publicUpload: true);
         }
 
         var tokenHash = Sha256Hex(uploadToken.Trim());
@@ -1122,7 +1143,7 @@ public sealed class ShareManager(
                     "Too many uploads are in progress from your network. Please try again later.");
             }
 
-            var draftShareId = await EnsureDraftShareAsync(normalizedUploader, requestedDraftShareId, cancellationToken, publicUpload: true);
+            var draftShareId = await EnsureDraftShareAsync(ownerUserId, requestedDraftShareId, cancellationToken, publicUpload: true);
             WriteDraftIndexMarker("token", tokenHash, draftShareId);
             WriteDraftIndexMarker("ip", addressHash, draftShareId);
             return draftShareId;
@@ -1130,11 +1151,10 @@ public sealed class ShareManager(
     }
 
     /// <summary>Shares this account received through its upload link since <paramref name="sinceUtc"/>, with their total original bytes.</summary>
-    public async Task<ReceivedShareUsage> GetReceivedShareUsageAsync(string ownerEmail, DateTime sinceUtc, CancellationToken cancellationToken)
+    public async Task<ReceivedShareUsage> GetReceivedShareUsageAsync(ShareOwner owner, DateTime sinceUtc, CancellationToken cancellationToken)
     {
-        var normalizedOwner = EmailAddress.Normalize(ownerEmail);
         // Received shares are the ones carrying a sender address; deleted ones still count (the cost was incurred).
-        var received = db.Shares.Where(x => x.UploaderEmail == normalizedOwner && x.SenderEmail != null && x.CreatedAtUtc >= sinceUtc);
+        var received = SharesOwnedBy(owner).Where(x => x.SenderEmail != null && x.CreatedAtUtc >= sinceUtc);
         var count = await received.CountAsync(cancellationToken);
         if (count == 0)
         {
@@ -1181,7 +1201,7 @@ public sealed class ShareManager(
     /// Marks the draft as submitted: nothing can be staged into it afterwards and a second submission is refused.
     /// Returns false when it was already sealed.
     /// </summary>
-    public async Task<bool> SealDraftAsync(string uploaderEmail, string draftShareId, CancellationToken cancellationToken)
+    public async Task<bool> SealDraftAsync(Guid ownerUserId, string draftShareId, CancellationToken cancellationToken)
     {
         if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId))
         {
@@ -1191,7 +1211,7 @@ public sealed class ShareManager(
         using (await draftLocks.LockAsync(DraftLockKey(normalizedId), cancellationToken))
         {
             var metadata = await ReadDraftMetadataAsync(normalizedId, cancellationToken);
-            if (metadata is null || !string.Equals(metadata.UploaderEmail, uploaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
+            if (metadata is null || metadata.OwnerUserId != ownerUserId)
             {
                 throw new InvalidOperationException("Draft share does not belong to the current user.");
             }
@@ -1211,9 +1231,9 @@ public sealed class ShareManager(
     /// already submitted. If enqueueing throws the seal is removed again so the sender can retry, and the failure is
     /// reported as a retryable 503.
     /// </summary>
-    public async Task<bool> SealDraftForSubmissionAsync(string uploaderEmail, string draftShareId, Func<Task> enqueue, CancellationToken cancellationToken)
+    public async Task<bool> SealDraftForSubmissionAsync(Guid ownerUserId, string draftShareId, Func<Task> enqueue, CancellationToken cancellationToken)
     {
-        if (!await SealDraftAsync(uploaderEmail, draftShareId, cancellationToken))
+        if (!await SealDraftAsync(ownerUserId, draftShareId, cancellationToken))
         {
             return false;
         }
@@ -1226,14 +1246,14 @@ public sealed class ShareManager(
         catch (Exception ex)
         {
             logger.LogError(ex, "Queueing share creation for draft {DraftShareId} failed; the draft was unsealed for a retry", draftShareId);
-            await UnsealDraftAsync(uploaderEmail, draftShareId, CancellationToken.None);
+            await UnsealDraftAsync(ownerUserId, draftShareId, CancellationToken.None);
             throw new UploadLimitException(
                 UploadLimitKind.QueueUnavailable,
                 "The upload could not be queued for processing right now. Please try again in a moment.");
         }
     }
 
-    public async Task UnsealDraftAsync(string uploaderEmail, string draftShareId, CancellationToken cancellationToken)
+    public async Task UnsealDraftAsync(Guid ownerUserId, string draftShareId, CancellationToken cancellationToken)
     {
         if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId))
         {
@@ -1243,7 +1263,7 @@ public sealed class ShareManager(
         using (await draftLocks.LockAsync(DraftLockKey(normalizedId), cancellationToken))
         {
             var metadata = await ReadDraftMetadataAsync(normalizedId, cancellationToken);
-            if (metadata is not null && string.Equals(metadata.UploaderEmail, uploaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
+            if (metadata is not null && metadata.OwnerUserId == ownerUserId)
             {
                 ScratchFiles.TryDelete(GetDraftSealPath(normalizedId));
             }
@@ -1254,7 +1274,7 @@ public sealed class ShareManager(
     /// Removes everything a draft left in scratch: every staged upload that references it (submitted or not, any
     /// purpose), its slot markers and the draft directory itself. Open-draft index markers go stale and are swept.
     /// </summary>
-    public async Task<int> FinalizeDraftAsync(string uploaderEmail, string draftShareId, CancellationToken cancellationToken)
+    public async Task<int> FinalizeDraftAsync(Guid ownerUserId, string draftShareId, CancellationToken cancellationToken)
     {
         if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId))
         {
@@ -1263,9 +1283,9 @@ public sealed class ShareManager(
 
         using (await draftLocks.LockAsync(DraftLockKey(normalizedId), cancellationToken))
         {
-            var removed = await DeleteStagedUploadsForDraftAsync(uploaderEmail, normalizedId, cancellationToken);
+            var removed = await DeleteStagedUploadsForDraftAsync(ownerUserId, normalizedId, cancellationToken);
             var metadata = await ReadDraftMetadataAsync(normalizedId, cancellationToken);
-            if (metadata is not null && string.Equals(metadata.UploaderEmail, uploaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
+            if (metadata is not null && metadata.OwnerUserId == ownerUserId)
             {
                 TryDeleteDirectory(GetDraftDirectory(normalizedId));
             }
@@ -1377,12 +1397,18 @@ public sealed class ShareManager(
         }
     }
 
-    public async Task<int> DeleteStagedUploadsForDraftAsync(
-        string uploaderEmail,
+    public Task<int> DeleteStagedUploadsForDraftAsync(
+        Guid ownerUserId,
+        string draftShareId,
+        CancellationToken cancellationToken) =>
+        DeleteStagedUploadsForDraftCoreAsync(ownerUserId, draftShareId, cancellationToken);
+
+    /// <summary>A null owner skips the ownership check; only the zombie sweep uses that, so legacy drafts can still be swept.</summary>
+    private async Task<int> DeleteStagedUploadsForDraftCoreAsync(
+        Guid? ownerUserId,
         string draftShareId,
         CancellationToken cancellationToken)
     {
-        var normalizedUploader = uploaderEmail.Trim();
         var normalizedDraftShareId = (draftShareId ?? string.Empty).Trim();
         if (normalizedDraftShareId.Length == 0)
         {
@@ -1423,7 +1449,7 @@ public sealed class ShareManager(
                     continue;
                 }
 
-                if (!string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+                if (ownerUserId is not null && metadata.OwnerUserId != ownerUserId)
                 {
                     continue;
                 }
@@ -1528,19 +1554,18 @@ public sealed class ShareManager(
     }
 
     public async Task<string> EnsureDraftShareAsync(
-        string uploaderEmail,
+        Guid ownerUserId,
         string? requestedDraftShareId,
         CancellationToken cancellationToken,
         bool publicUpload = false)
     {
-        var normalizedUploader = uploaderEmail.Trim();
         var draftShareId = TryNormalizeDraftShareId(requestedDraftShareId, out var normalizedId)
             ? normalizedId
             : Guid.NewGuid().ToString("N");
         using (await draftLocks.LockAsync(DraftLockKey(draftShareId), cancellationToken))
         {
             var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
-            if (metadata is not null && !string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+            if (metadata is not null && metadata.OwnerUserId != ownerUserId)
             {
                 throw new InvalidOperationException("Draft share does not belong to the current user.");
             }
@@ -1554,7 +1579,7 @@ public sealed class ShareManager(
             var next = metadata is null
                 ? new DraftShareMetadata(
                     DraftShareId: draftShareId,
-                    UploaderEmail: normalizedUploader,
+                    OwnerUserId: ownerUserId,
                     LastActivityUtc: now,
                     TemplateMode: "account_default",
                     Title: string.Empty,
@@ -1572,10 +1597,10 @@ public sealed class ShareManager(
         }
     }
 
-    public async Task<DraftTemplateState> GetDraftTemplateAsync(string uploaderEmail, string draftShareId, CancellationToken cancellationToken)
+    public async Task<DraftTemplateState> GetDraftTemplateAsync(Guid ownerUserId, string draftShareId, CancellationToken cancellationToken)
     {
         var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
-        if (metadata is null || !string.Equals(metadata.UploaderEmail, uploaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
+        if (metadata is null || metadata.OwnerUserId != ownerUserId)
         {
             return new DraftTemplateState(draftShareId, "account_default", string.Empty, string.Empty, string.Empty, null, null, null, "center");
         }
@@ -1599,14 +1624,13 @@ public sealed class ShareManager(
     }
 
     public async Task SaveDraftTemplateAsync(
-        string uploaderEmail,
+        Guid ownerUserId,
         string draftShareId,
         string templateMode,
         ShareTemplateData template,
         string? backgroundUploadId,
         CancellationToken cancellationToken)
     {
-        var normalizedUploader = uploaderEmail.Trim();
         if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId))
         {
             throw new InvalidOperationException("draftShareId is invalid.");
@@ -1615,14 +1639,14 @@ public sealed class ShareManager(
         using (await draftLocks.LockAsync(DraftLockKey(normalizedId), cancellationToken))
         {
             var metadata = await ReadDraftMetadataAsync(normalizedId, cancellationToken);
-            if (metadata is not null && !string.Equals(metadata.UploaderEmail, normalizedUploader, StringComparison.OrdinalIgnoreCase))
+            if (metadata is not null && metadata.OwnerUserId != ownerUserId)
             {
                 throw new InvalidOperationException("Draft share does not belong to the current user.");
             }
 
             var next = new DraftShareMetadata(
                 DraftShareId: normalizedId,
-                UploaderEmail: normalizedUploader,
+                OwnerUserId: ownerUserId,
                 LastActivityUtc: DateTime.UtcNow,
                 TemplateMode: string.Equals(templateMode, "per_upload", StringComparison.OrdinalIgnoreCase) ? "per_upload" : "account_default",
                 Title: template.Title,
@@ -1638,7 +1662,7 @@ public sealed class ShareManager(
         }
     }
 
-    public async Task DeleteDraftShareAsync(string uploaderEmail, string draftShareId, CancellationToken cancellationToken)
+    public async Task DeleteDraftShareAsync(Guid ownerUserId, string draftShareId, CancellationToken cancellationToken)
     {
         if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId))
         {
@@ -1648,7 +1672,7 @@ public sealed class ShareManager(
         using (await draftLocks.LockAsync(DraftLockKey(normalizedId), cancellationToken))
         {
             var metadata = await ReadDraftMetadataAsync(normalizedId, cancellationToken);
-            if (metadata is null || !string.Equals(metadata.UploaderEmail, uploaderEmail.Trim(), StringComparison.OrdinalIgnoreCase))
+            if (metadata is null || metadata.OwnerUserId != ownerUserId)
             {
                 return;
             }
@@ -1670,11 +1694,12 @@ public sealed class ShareManager(
                 NormalizeContainerPosition(command.TemplateContainerPosition));
         }
 
-        var template = await db.AccountTemplates.SingleOrDefaultAsync(x => x.UploaderEmail == EmailAddress.Normalize(command.UploaderEmail), cancellationToken);
+        var owner = OwnerOf(command);
+        var template = await TemplatesOwnedBy(owner).AsNoTracking().FirstOrDefaultAsync(cancellationToken);
         if (template is null)
         {
             return new ShareTemplateData(
-                $"by {command.UploaderEmail.Trim()}",
+                $"by {owner.Email}",
                 "A file was shared with you",
                 string.Empty,
                 null,
@@ -1893,7 +1918,7 @@ public sealed class ShareManager(
 
                 if (metadata is not null)
                 {
-                    removed += await DeleteStagedUploadsForDraftAsync(metadata.UploaderEmail, draftShareId, cancellationToken);
+                    removed += await DeleteStagedUploadsForDraftCoreAsync(null, draftShareId, cancellationToken);
                 }
 
                 Directory.Delete(draftDirectory, recursive: true);

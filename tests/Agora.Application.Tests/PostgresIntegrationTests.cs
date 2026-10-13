@@ -79,6 +79,50 @@ public sealed class PostgresIntegrationTests(PostgresFixture fixture) : IClassFi
     }
 
     [SkippableFact]
+    public async Task Owner_backfill_stamps_legacy_rows_by_lower_cased_address()
+    {
+        await using var app = await CreateAppAsync();
+        await using var scope = app.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AgoraDbContext>();
+        var user = new UserAccount
+        {
+            Id = Guid.NewGuid(),
+            Email = "uploader@example.com",
+            EmailConfirmed = true,
+            PasswordHash = "x:y",
+            SecurityStamp = SecurityStamps.New(),
+            UploadToken = "backfill",
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        var share = NewShare("backfill-share", DateTime.UtcNow);
+        share.OwnerUserId = null;
+        share.UploaderEmail = "Uploader@Example.com";
+        var orphan = NewShare("backfill-orphan", DateTime.UtcNow);
+        orphan.OwnerUserId = null;
+        orphan.UploaderEmail = "gone@example.com";
+        db.Users.Add(user);
+        db.Shares.AddRange(share, orphan);
+        db.AccountTemplates.Add(new AccountTemplate { Id = Guid.NewGuid(), UploaderEmail = "UPLOADER@example.com", UpdatedAtUtc = DateTime.UtcNow });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var first = await OwnerBackfill.RunAsync(db, CancellationToken.None);
+        Assert.Equal(new OwnerBackfill.Result(false, 1, 1, 1, 0), first);
+        Assert.Equal(user.Id, (await db.Shares.SingleAsync(x => x.ShareToken == "backfill-share")).OwnerUserId);
+        Assert.Null((await db.Shares.SingleAsync(x => x.ShareToken == "backfill-orphan")).OwnerUserId);
+        Assert.Equal(user.Id, (await db.AccountTemplates.SingleAsync()).OwnerUserId);
+
+        // Completed once: a later start never assigns rows again, even when they would match an account now.
+        var late = NewShare("backfill-late", DateTime.UtcNow);
+        late.OwnerUserId = null;
+        db.Shares.Add(late);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        Assert.Equal(new OwnerBackfill.Result(true, 0, 0, 2, 0), await OwnerBackfill.RunAsync(db, CancellationToken.None));
+        Assert.Null((await db.Shares.SingleAsync(x => x.ShareToken == "backfill-late")).OwnerUserId);
+    }
+
+    [SkippableFact]
     public async Task Login_is_case_insensitive_for_email()
     {
         await using var app = await CreateAppAsync();
@@ -94,7 +138,7 @@ public sealed class PostgresIntegrationTests(PostgresFixture fixture) : IClassFi
         user.EmailConfirmed = true;
         await db.SaveChangesAsync();
 
-        var login = await auth.LoginAsync("MIXED.case@example.com", "CorrectHorseBatteryStaple!", CancellationToken.None);
+        var login = await auth.LoginAsync("MIXED.case@example.com", "CorrectHorseBatteryStaple!", "203.0.113.1", CancellationToken.None);
         Assert.True(login.Success, login.Error);
     }
 
@@ -151,6 +195,7 @@ public sealed class PostgresIntegrationTests(PostgresFixture fixture) : IClassFi
         await using var app = await CreateAppAsync();
         await using var scope = app.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AgoraDbContext>();
+        db.Users.Add(TestUsers.Seed(UploaderId, "uploader@example.com"));
         db.Shares.Add(NewShare("taken_token", DateTime.UtcNow));
         await db.SaveChangesAsync();
 
@@ -165,6 +210,7 @@ public sealed class PostgresIntegrationTests(PostgresFixture fixture) : IClassFi
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => manager.CreateShareAsync(new CreateShareCommand
             {
                 UploaderEmail = "Uploader@Example.com",
+                OwnerUserId = UploaderId,
                 ShareToken = "taken_token",
                 NotifyMode = "none",
                 ExpiryMode = ExpiryMode.Date,
@@ -352,9 +398,12 @@ public sealed class PostgresIntegrationTests(PostgresFixture fixture) : IClassFi
         return new ShareManager(db, options, new ShareContentStore(objectStore), objectStore, jobs, new KeyedAsyncLock(), scratch, NullLogger<ShareManager>.Instance);
     }
 
+    private static readonly Guid UploaderId = Guid.NewGuid();
+
     private static Share NewShare(string token, DateTime createdAtUtc) => new()
     {
         Id = Guid.NewGuid(),
+        OwnerUserId = UploaderId,
         UploaderEmail = EmailAddress.Normalize("uploader@example.com"),
         ShareToken = token,
         ZipDisplayName = "files.zip",

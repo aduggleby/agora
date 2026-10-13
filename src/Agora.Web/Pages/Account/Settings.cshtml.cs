@@ -20,28 +20,38 @@ public class SettingsModel(AuthService authService, AgoraDbContext db, PublicBas
     public string UploadIntakeUrlPrefix { get; private set; } = string.Empty;
     public string UploadToken { get; private set; } = string.Empty;
 
-    public async Task OnGet(CancellationToken ct)
+    public async Task<IActionResult> OnGet(CancellationToken ct)
     {
+        if (User.UserId() is not { } userId)
+        {
+            return RedirectToPage("/Login");
+        }
+
         var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
         CurrentEmail = email;
         DisplayName = User.FindFirstValue(ClaimTypes.Name) ?? email;
-        var token = await authService.GetOrCreateUploadTokenAsync(email, ct);
+        var token = await authService.GetOrCreateUploadTokenAsync(userId, ct);
         UploadToken = token ?? string.Empty;
         var publicBaseUrl = publicBaseUrls.Resolve(Request);
         UploadIntakeUrlPrefix = $"{publicBaseUrl}/u/";
         UploadIntakeUrl = string.IsNullOrWhiteSpace(token) ? string.Empty : $"{publicBaseUrl}/u/{Uri.EscapeDataString(token)}";
         ViewData["Title"] = "Account Settings";
         ViewData["Message"] = Request.Query["msg"].ToString();
+        return Page();
     }
 
     public async Task<IActionResult> OnPostChangeEmailAsync(CancellationToken ct)
     {
-        var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+        if (User.UserId() is not { } userId)
+        {
+            return RedirectToPage("/Login");
+        }
+
         var newEmail = (Request.Form["newEmail"].ToString() ?? string.Empty).Trim();
         var currentPassword = Request.Form["currentPasswordForEmail"].ToString();
         var confirmationUrlBase = $"{publicBaseUrls.Resolve(Request)}/auth/confirm-email-change";
 
-        var result = await authService.RequestEmailChangeAsync(email, newEmail, currentPassword, confirmationUrlBase, ct);
+        var result = await authService.RequestEmailChangeAsync(userId, newEmail, currentPassword, confirmationUrlBase, ct);
         if (!result.Success)
         {
             return RedirectToPage("/Account/Settings", new { msg = result.Error });
@@ -52,9 +62,13 @@ public class SettingsModel(AuthService authService, AgoraDbContext db, PublicBas
 
     public async Task<IActionResult> OnPostUpdateProfileAsync(CancellationToken ct)
     {
-        var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+        if (User.UserId() is not { } userId)
+        {
+            return RedirectToPage("/Login");
+        }
+
         var displayName = Request.Form["displayName"].ToString();
-        var result = await authService.SetDisplayNameAsync(email, displayName, ct);
+        var result = await authService.SetDisplayNameAsync(userId, displayName, ct);
         if (!result.Success)
         {
             return RedirectToPage("/Account/Settings", new { msg = result.Error });
@@ -72,7 +86,11 @@ public class SettingsModel(AuthService authService, AgoraDbContext db, PublicBas
 
     public async Task<IActionResult> OnPostChangePasswordAsync(CancellationToken ct)
     {
-        var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+        if (User.UserId() is not { } userId)
+        {
+            return RedirectToPage("/Login");
+        }
+
         var currentPassword = Request.Form["currentPasswordForPassword"].ToString();
         var newPassword = Request.Form["newPassword"].ToString();
         var confirmPassword = Request.Form["confirmPassword"].ToString();
@@ -83,14 +101,18 @@ public class SettingsModel(AuthService authService, AgoraDbContext db, PublicBas
         }
 
         var confirmationUrlBase = $"{publicBaseUrls.Resolve(Request)}/auth/confirm-password-change";
-        var result = await authService.RequestPasswordChangeAsync(email, currentPassword, newPassword, confirmationUrlBase, ct);
+        var result = await authService.RequestPasswordChangeAsync(userId, currentPassword, newPassword, confirmationUrlBase, ct);
         return RedirectToPage("/Account/Settings", new { msg = result.Success ? "Check your email to confirm the password change" : result.Error });
     }
 
     public async Task<IActionResult> OnPostRegenerateUploadLinkAsync(CancellationToken ct)
     {
-        var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
-        var token = await authService.RegenerateUploadTokenAsync(email, ct);
+        if (User.UserId() is not { } userId)
+        {
+            return RedirectToPage("/Login");
+        }
+
+        var token = await authService.RegenerateUploadTokenAsync(userId, ct);
         if (string.IsNullOrWhiteSpace(token))
         {
             return RedirectToPage("/Account/Settings", new { msg = "Unable to regenerate upload link" });
@@ -101,9 +123,13 @@ public class SettingsModel(AuthService authService, AgoraDbContext db, PublicBas
 
     public async Task<IActionResult> OnPostSetUploadLinkAsync(CancellationToken ct)
     {
-        var email = User.FindFirstValue(ClaimTypes.Email) ?? string.Empty;
+        if (User.UserId() is not { } userId)
+        {
+            return RedirectToPage("/Login");
+        }
+
         var requestedToken = Request.Form["uploadToken"].ToString();
-        var result = await authService.SetUploadTokenAsync(email, requestedToken, ct);
+        var result = await authService.SetUploadTokenAsync(userId, requestedToken, ct);
         if (!result.Success)
         {
             return RedirectToPage("/Account/Settings", new { msg = result.Error });

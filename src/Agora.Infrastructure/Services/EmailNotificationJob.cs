@@ -43,6 +43,20 @@ public sealed class EmailNotificationJob(
             return;
         }
 
+        // The recipient is the account that owns the share, looked up at send time; the address stored on the share
+        // is display data and may be stale.
+        var ownerUserId = share.OwnerUserId;
+        var recipient = ownerUserId is null || share.DeletedAtUtc is not null
+            ? null
+            : await db.Users.Where(x => x.Id == ownerUserId).Select(x => x.Email).SingleOrDefaultAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(recipient))
+        {
+            performContext?.WriteLine("Notification skipped: share deleted or owner not found.");
+            downloadEvent.NotificationError = "Share deleted or owner not found.";
+            await db.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
         try
         {
             var downloadCount = await db.DownloadEvents.CountAsync(x => x.ShareId == share.Id, cancellationToken);
@@ -51,7 +65,7 @@ public sealed class EmailNotificationJob(
             var downloaderIpDisplay = await downloaderGeoLookup.FormatForNotificationAsync(downloadEvent.IpAddress, cancellationToken);
 
             var notification = new DownloadNotification(
-                To: share.UploaderEmail,
+                To: recipient,
                 ShareId: share.Id.ToString(),
                 ShareUrl: shareUrl,
                 ZipDisplayName: share.ZipDisplayName,
@@ -70,7 +84,7 @@ public sealed class EmailNotificationJob(
             downloadEvent.NotificationSent = true;
             downloadEvent.NotificationError = null;
             await db.SaveChangesAsync(cancellationToken);
-            performContext?.WriteLine($"Download notification sent to '{share.UploaderEmail}'.");
+            performContext?.WriteLine($"Download notification sent to '{recipient}'.");
         }
         catch (Exception ex)
         {

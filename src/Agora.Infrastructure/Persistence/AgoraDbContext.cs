@@ -32,6 +32,7 @@ public class AgoraDbContext : DbContext
             builder.HasKey(x => x.Id);
             // ShareToken is now the canonical lookup key for public links.
             builder.HasIndex(x => x.ShareToken).IsUnique();
+            builder.HasIndex(x => x.OwnerUserId);
             builder.Property(x => x.UploaderEmail).HasMaxLength(320);
             builder.Property(x => x.ShareToken).HasMaxLength(120);
             builder.Property(x => x.NotifyMode).HasMaxLength(20);
@@ -65,6 +66,7 @@ public class AgoraDbContext : DbContext
         {
             builder.HasKey(x => x.Id);
             builder.HasIndex(x => x.UploaderEmail).IsUnique();
+            builder.HasIndex(x => x.OwnerUserId);
             builder.Property(x => x.UploaderEmail).HasMaxLength(320);
             builder.Property(x => x.BackgroundColorHex).HasMaxLength(16);
             builder.Property(x => x.ContainerPosition).HasMaxLength(32);
@@ -80,7 +82,9 @@ public class AgoraDbContext : DbContext
             builder.Property(x => x.UploadToken).HasMaxLength(120);
             builder.Property(x => x.PasswordHash).HasMaxLength(1000);
             builder.Property(x => x.Role).HasMaxLength(20);
-            builder.Property(x => x.SecurityStamp).HasMaxLength(64);
+            // Concurrency token: every credential change rotates it in the same save, so a stale concurrent write
+            // of the user row fails with DbUpdateConcurrencyException instead of silently overwriting the change.
+            builder.Property(x => x.SecurityStamp).HasMaxLength(64).IsConcurrencyToken();
             builder.Property(x => x.DefaultNotifyMode).HasMaxLength(20);
             builder.Property(x => x.DefaultExpiryMode).HasMaxLength(20);
             builder.Property(x => x.EmailConfirmationTokenHash).HasMaxLength(64);

@@ -7,6 +7,7 @@ using Agora.Infrastructure.Persistence;
 using Agora.Infrastructure.Services;
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using System.Net.Mail;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
@@ -16,13 +17,27 @@ namespace Agora.Infrastructure.Auth;
 public sealed class AuthService(
     AgoraDbContext db,
     IEmailSender emailSender,
-    IBackgroundJobClient? backgroundJobs = null)
+    IBackgroundJobClient? backgroundJobs = null,
+    LoginLockouts? loginLockouts = null,
+    KeyedAsyncLock? ownerLocks = null)
 {
+    public const string TryAgainError = "Please try again.";
+    private readonly LoginLockouts _lockouts = loginLockouts ?? new LoginLockouts(new MemoryCache(new MemoryCacheOptions()));
+    /// <summary>Shared with <see cref="ShareManager"/>: share creation and account deletion serialize per owner.</summary>
+    private readonly KeyedAsyncLock _ownerLocks = ownerLocks ?? new KeyedAsyncLock();
+
     public const string DevelopmentUserEmail = "dev@example.com";
     public const string EmailConfirmationRequiredError = "Please confirm your email before signing in.";
-    private const int MaxFailedLoginAttempts = 5;
+    /// <summary>The one failure message sign-in returns for a wrong password, an unknown, disabled or locked account.</summary>
+    public const string LoginFailedError = "Invalid credentials.";
+    private const string ConfirmationLinkError = "This confirmation link is invalid or expired.";
+    private const string PasswordResetLinkError = "This password reset link is invalid or expired.";
+    /// <summary>
+    /// Verified against when the account does not exist, so an unknown address costs the same PBKDF2 work as a wrong
+    /// password and the response time does not reveal whether the address is registered.
+    /// </summary>
+    private static readonly string DummyPasswordHash = PasswordHasher.Hash(Convert.ToHexString(RandomNumberGenerator.GetBytes(16)));
     private static readonly TimeSpan FailedAttemptWindow = TimeSpan.FromMinutes(15);
-    private static readonly TimeSpan LockoutDuration = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan EmailConfirmationTokenLifetime = TimeSpan.FromHours(24);
     private static readonly TimeSpan PasswordResetTokenLifetime = TimeSpan.FromHours(2);
     private const int UploadTokenLength = 8;
@@ -53,80 +68,130 @@ public sealed class AuthService(
             return (false, "Registration is currently disabled.");
         }
 
+        // An address that is already registered gets the same "check your email" outcome as a new one, so the
+        // response reveals nothing about the account, and every branch costs one PBKDF2 run.
         var existing = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
-        UserAccount user;
         if (existing is not null)
         {
+            if (!existing.EmailConfirmed && existing.IsEnabled)
+            {
+                // Unconfirmed: whoever controls the mailbox claims the account. The newest registrant's password is
+                // the one that becomes active when the address is confirmed; the stamp rotates and the earlier
+                // confirmation link stops working, so a first registrant cannot plant a password the mailbox owner
+                // later activates.
+                existing.PasswordHash = PasswordHasher.Hash(password);
+                existing.SecurityStamp = SecurityStamps.New();
+                var claimToken = IssueEmailConfirmationToken(existing, DateTime.UtcNow);
+                try
+                {
+                    await db.SaveChangesAsync(cancellationToken);
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    // A concurrent change (for example the mailbox owner confirming) won; same response either way.
+                    return (true, string.Empty);
+                }
+
+                await QueueAuthEmailAsync(ConfirmationEmail(existing.Email, confirmEmailUrlBase, claimToken), cancellationToken);
+                return (true, string.Empty);
+            }
+
+            PasswordHasher.Verify(password, DummyPasswordHash);
             if (existing.EmailConfirmed)
             {
-                return (false, "A user with this email already exists.");
+                await QueueAuthEmailAsync(new AuthEmailMessage(
+                    To: existing.Email,
+                    Subject: "You already have an Agora account",
+                    Preheader: "Registration attempted for an existing account",
+                    Headline: "This address is already registered",
+                    IntroText: "Someone (probably you) tried to register an Agora account with this email address, but an account already exists.",
+                    DetailText: "If this was you, sign in with your existing password or use \"Forgot password\" to set a new one.",
+                    ActionLabel: null,
+                    ActionUrl: null,
+                    SecondaryText: "If this was not you, no action is needed; nothing about your account was changed."), cancellationToken);
             }
 
-            user = existing;
-            user.PasswordHash = PasswordHasher.Hash(password);
-            user.SecurityStamp = SecurityStamps.New();
-            user.IsEnabled = true;
-            if (string.IsNullOrWhiteSpace(user.UploadToken))
-            {
-                user.UploadToken = await GenerateUniqueUploadTokenAsync(cancellationToken);
-                user.UploadTokenUpdatedAtUtc = DateTime.UtcNow;
-            }
-            if (string.IsNullOrWhiteSpace(user.DisplayName))
-            {
-                user.DisplayName = DefaultDisplayNameForEmail(email);
-            }
+            // A disabled unconfirmed account stays disabled and untouched.
+            return (true, string.Empty);
         }
-        else
+
+        var isFirstUser = userCount == 0;
+        var user = new UserAccount
         {
-            var isFirstUser = userCount == 0;
-            user = new UserAccount
-            {
-                Id = Guid.NewGuid(),
-                Email = email,
-                DisplayName = DefaultDisplayNameForEmail(email),
-                EmailConfirmed = false,
-                PasswordHash = PasswordHasher.Hash(password),
-                SecurityStamp = SecurityStamps.New(),
-                Role = isFirstUser ? "admin" : "user",
-                DefaultNotifyMode = "once",
-                DefaultExpiryMode = "7_days",
-                IsEnabled = true,
-                UploadToken = await GenerateUniqueUploadTokenAsync(cancellationToken),
-                UploadTokenUpdatedAtUtc = DateTime.UtcNow,
-                CreatedAtUtc = DateTime.UtcNow
-            };
+            Id = Guid.NewGuid(),
+            Email = email,
+            DisplayName = DefaultDisplayNameForEmail(email),
+            EmailConfirmed = false,
+            PasswordHash = PasswordHasher.Hash(password),
+            SecurityStamp = SecurityStamps.New(),
+            Role = isFirstUser ? "admin" : "user",
+            DefaultNotifyMode = "once",
+            DefaultExpiryMode = "7_days",
+            IsEnabled = true,
+            UploadToken = await GenerateUniqueUploadTokenAsync(cancellationToken),
+            UploadTokenUpdatedAtUtc = DateTime.UtcNow,
+            CreatedAtUtc = DateTime.UtcNow
+        };
 
-            db.Users.Add(user);
-            db.AccountTemplates.Add(new AccountTemplate
-            {
-                Id = Guid.NewGuid(),
-                UploaderEmail = email,
-                Title = $"by {email}",
-                H1 = "A file was shared with you",
-                Description = string.Empty,
-                UpdatedAtUtc = DateTime.UtcNow
-            });
-        }
-
+        db.Users.Add(user);
+        await EnsureAccountTemplateAsync(user, cancellationToken);
         var token = IssueEmailConfirmationToken(user, DateTime.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
 
-        await QueueAuthEmailAsync(new AuthEmailMessage(
-            To: user.Email,
-            Subject: "Confirm your email address",
-            Preheader: "Complete your registration",
-            Headline: "Confirm your email",
-            IntroText: "Please confirm your email address before signing in to Agora.",
-            DetailText: "If you did not request this account, you can ignore this email.",
-            ActionLabel: "Confirm email",
-            ActionUrl: BuildConfirmationUrl(confirmEmailUrlBase, user.Email, token),
-            SecondaryText: "This link expires in 24 hours."), cancellationToken);
-
+        await QueueAuthEmailAsync(ConfirmationEmail(user.Email, confirmEmailUrlBase, token), cancellationToken);
         return (true, string.Empty);
+    }
+
+    private static AuthEmailMessage ConfirmationEmail(string email, string confirmEmailUrlBase, string token) => new(
+        To: email,
+        Subject: "Confirm your email address",
+        Preheader: "Complete your registration",
+        Headline: "Confirm your email",
+        IntroText: "Please confirm your email address before signing in to Agora.",
+        DetailText: "If you did not request this account, you can ignore this email.",
+        ActionLabel: "Confirm email",
+        ActionUrl: BuildConfirmationUrl(confirmEmailUrlBase, email, token),
+        SecondaryText: "This link expires in 24 hours.");
+
+    /// <summary>
+    /// Gives a new account its template row. A row left under the same address by an earlier account (deleted before
+    /// templates were owned by id, or never backfilled) is reused with default content instead of inserting a
+    /// duplicate address, so re-registering an address never fails on the unique index and never inherits the
+    /// previous owner's design.
+    /// </summary>
+    private async Task EnsureAccountTemplateAsync(UserAccount user, CancellationToken cancellationToken)
+    {
+        var template = await db.AccountTemplates.SingleOrDefaultAsync(x => x.UploaderEmail == user.Email, cancellationToken);
+        if (template is not null && template.OwnerUserId is { } ownerId && ownerId != user.Id &&
+            await db.Users.AnyAsync(x => x.Id == ownerId, cancellationToken))
+        {
+            // Stale address on a live account's template (its owner changed email): point it at that account's
+            // current address and give the newcomer a row of their own.
+            template.UploaderEmail = await db.Users.Where(x => x.Id == ownerId).Select(x => x.Email).SingleAsync(cancellationToken);
+            template = null;
+        }
+
+        if (template is null)
+        {
+            template = new AccountTemplate { Id = Guid.NewGuid() };
+            db.AccountTemplates.Add(template);
+        }
+
+        template.OwnerUserId = user.Id;
+        template.UploaderEmail = user.Email;
+        template.Title = $"by {user.Email}";
+        template.H1 = "A file was shared with you";
+        template.Description = string.Empty;
+        template.BackgroundImageUrl = null;
+        template.BackgroundColorHex = null;
+        template.ContainerPosition = "center";
+        template.UpdatedAtUtc = DateTime.UtcNow;
     }
 
     public async Task ResendEmailConfirmationAsync(string email, string confirmEmailUrlBase, CancellationToken cancellationToken)
     {
+        // Same cost for every account state, so timing reveals nothing about the address.
+        PasswordHasher.Verify(string.Empty, DummyPasswordHash);
         email = NormalizeEmail(email);
         if (string.IsNullOrWhiteSpace(email) || !IsValidEmail(email))
         {
@@ -139,63 +204,71 @@ public sealed class AuthService(
             return;
         }
 
-        var token = IssueEmailConfirmationToken(user, DateTime.UtcNow);
-        await db.SaveChangesAsync(cancellationToken);
-
-        await QueueAuthEmailAsync(new AuthEmailMessage(
-            To: user.Email,
-            Subject: "Confirm your email address",
-            Preheader: "Complete your registration",
-            Headline: "Confirm your email",
-            IntroText: "Please confirm your email address before signing in to Agora.",
-            DetailText: "If you did not request this account, you can ignore this email.",
-            ActionLabel: "Confirm email",
-            ActionUrl: BuildConfirmationUrl(confirmEmailUrlBase, user.Email, token),
-            SecondaryText: "This link expires in 24 hours."), cancellationToken);
+        await ResendEmailConfirmationAsync(user, confirmEmailUrlBase, cancellationToken);
     }
 
-    public async Task<(bool Success, string Error, UserAccount? User)> LoginAsync(string email, string password, CancellationToken cancellationToken)
+    private async Task ResendEmailConfirmationAsync(UserAccount user, string confirmEmailUrlBase, CancellationToken cancellationToken)
+    {
+        var token = IssueEmailConfirmationToken(user, DateTime.UtcNow);
+        await db.SaveChangesAsync(cancellationToken);
+        await QueueAuthEmailAsync(ConfirmationEmail(user.Email, confirmEmailUrlBase, token), cancellationToken);
+    }
+
+    /// <summary>
+    /// Signs in with an email and password. <paramref name="clientIp"/> keys the per-(account, address) lockout: five
+    /// wrong passwords for one account from one address refuse that address for that account for a while, while other
+    /// addresses with the correct password still sign in (so one attacker cannot lock the owner out).
+    /// </summary>
+    public async Task<(bool Success, string Error, UserAccount? User)> LoginAsync(string email, string password, string clientIp, CancellationToken cancellationToken)
     {
         email = NormalizeEmail(email);
         var nowUtc = DateTime.UtcNow;
         var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
+
+        // Every failure path costs one password verification and ends in the same message: an unknown address,
+        // a wrong password, a disabled account and a locked address are indistinguishable to the caller. Only a
+        // caller who presented the correct password learns that the account still needs its email confirmed.
+        var passwordMatches = PasswordHasher.Verify(password ?? string.Empty, user?.PasswordHash ?? DummyPasswordHash);
         if (user is null)
         {
-            return (false, "Invalid credentials.", null);
+            return (false, LoginFailedError, null);
         }
 
+        if (_lockouts.IsLockedOut(user.Id, clientIp))
+        {
+            // Locked for this address: the correct password is refused as well, and nothing is recorded.
+            return (false, LoginFailedError, null);
+        }
+
+        if (!passwordMatches)
+        {
+            // Unconfirmed accounts accumulate nothing: they cannot be signed into anyway.
+            if (user.EmailConfirmed)
+            {
+                RegisterFailedLoginAttempt(user, nowUtc);
+                _lockouts.RecordFailure(user.Id, clientIp);
+                try
+                {
+                    await db.SaveChangesAsync(cancellationToken);
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    // A credential change raced the counter update; the counter is informational only.
+                }
+            }
+
+            return (false, LoginFailedError, null);
+        }
+
+        _lockouts.Reset(user.Id, clientIp);
         if (!user.IsEnabled)
         {
-            return (false, "This account is disabled.", null);
+            return (false, LoginFailedError, null);
         }
 
         if (!user.EmailConfirmed)
         {
             return (false, EmailConfirmationRequiredError, null);
-        }
-
-        if (user.LockoutEndUtc is not null && user.LockoutEndUtc > nowUtc)
-        {
-            return (false, "Too many failed login attempts. Try again later.", null);
-        }
-
-        var lockoutExpired = user.LockoutEndUtc is not null && user.LockoutEndUtc <= nowUtc;
-        if (lockoutExpired)
-        {
-            user.LockoutEndUtc = null;
-            user.FailedLoginCount = 0;
-        }
-
-        if (!PasswordHasher.Verify(password, user.PasswordHash))
-        {
-            RegisterFailedLoginAttempt(user, nowUtc);
-            await db.SaveChangesAsync(cancellationToken);
-            if (user.LockoutEndUtc is not null && user.LockoutEndUtc > nowUtc)
-            {
-                return (false, "Too many failed login attempts. Try again later.", null);
-            }
-
-            return (false, "Invalid credentials.", null);
         }
 
         var changed = false;
@@ -217,7 +290,15 @@ public sealed class AuthService(
 
         if (changed)
         {
-            await db.SaveChangesAsync(cancellationToken);
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // The credentials changed underneath this sign-in; the caller has to try again with the new ones.
+                return (false, LoginFailedError, null);
+            }
         }
 
         return (true, string.Empty, user);
@@ -319,15 +400,7 @@ public sealed class AuthService(
         };
 
         db.Users.Add(user);
-        db.AccountTemplates.Add(new AccountTemplate
-        {
-            Id = Guid.NewGuid(),
-            UploaderEmail = email,
-            Title = $"by {email}",
-            H1 = "A file was shared with you",
-            Description = string.Empty,
-            UpdatedAtUtc = DateTime.UtcNow
-        });
+        await EnsureAccountTemplateAsync(user, cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
         return (user, true, generatedPassword);
     }
@@ -367,8 +440,7 @@ public sealed class AuthService(
 
         user.Role = role;
         user.SecurityStamp = SecurityStamps.New();
-        await db.SaveChangesAsync(cancellationToken);
-        return true;
+        return await TrySaveUserChangeAsync(cancellationToken);
     }
 
     public async Task<bool> SetEnabledAsync(Guid userId, bool enabled, CancellationToken cancellationToken)
@@ -395,8 +467,21 @@ public sealed class AuthService(
 
         user.IsEnabled = enabled;
         user.SecurityStamp = SecurityStamps.New();
-        await db.SaveChangesAsync(cancellationToken);
-        return true;
+        return await TrySaveUserChangeAsync(cancellationToken);
+    }
+
+    /// <summary>Saves a change of the user row; false when a concurrent change of the same row won (stamp mismatch).</summary>
+    private async Task<bool> TrySaveUserChangeAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return false;
+        }
     }
 
     public async Task<bool> DeleteUserAsync(Guid userId, CancellationToken cancellationToken)
@@ -416,8 +501,38 @@ public sealed class AuthService(
             }
         }
 
-        db.Users.Remove(user);
-        await db.SaveChangesAsync(cancellationToken);
+        // Everything the account owns goes with it: the template row (its address would otherwise block
+        // re-registration on the unique index) and the shares, which take the regular delete path (soft-deleted now,
+        // content removed by the background job), so nothing is left for a later account under the same address.
+        // The per-owner lock keeps a share creation from slipping in between the snapshot and the delete.
+        List<Share> shares;
+        using (await _ownerLocks.LockAsync(ShareManager.OwnerLockKey(userId), cancellationToken))
+        {
+            var templates = await db.AccountTemplates.Where(x => x.OwnerUserId == userId).ToListAsync(cancellationToken);
+            db.AccountTemplates.RemoveRange(templates);
+            shares = await db.Shares.Where(x => x.OwnerUserId == userId && x.DeletedAtUtc == null).ToListAsync(cancellationToken);
+            var now = DateTime.UtcNow;
+            foreach (var share in shares)
+            {
+                share.DeletedAtUtc = now;
+            }
+
+            db.Users.Remove(user);
+            if (!await TrySaveUserChangeAsync(cancellationToken))
+            {
+                return false;
+            }
+        }
+
+        if (backgroundJobs is not null)
+        {
+            foreach (var share in shares)
+            {
+                var shareId = share.Id;
+                backgroundJobs.Enqueue<ShareManager>(x => x.DeleteShareFilesAsync(shareId, CancellationToken.None));
+            }
+        }
+
         return true;
     }
 
@@ -434,15 +549,12 @@ public sealed class AuthService(
             cancellationToken);
     }
 
-    public async Task<string?> GetOrCreateUploadTokenAsync(string email, CancellationToken cancellationToken)
-    {
-        email = NormalizeEmail(email);
-        if (string.IsNullOrWhiteSpace(email))
-        {
-            return null;
-        }
+    // Signed-in operations identify the account by the id claim of the session; the email is never an authorization
+    // key. A save that loses against a concurrent change of the same row returns a controlled failure.
 
-        var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
+    public async Task<string?> GetOrCreateUploadTokenAsync(Guid userId, CancellationToken cancellationToken)
+    {
+        var user = await db.Users.SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
         if (user is null)
         {
             return null;
@@ -455,19 +567,12 @@ public sealed class AuthService(
 
         user.UploadToken = await GenerateUniqueUploadTokenAsync(cancellationToken);
         user.UploadTokenUpdatedAtUtc = DateTime.UtcNow;
-        await db.SaveChangesAsync(cancellationToken);
-        return user.UploadToken;
+        return await TrySaveUserChangeAsync(cancellationToken) ? user.UploadToken : null;
     }
 
-    public async Task<string?> RegenerateUploadTokenAsync(string email, CancellationToken cancellationToken)
+    public async Task<string?> RegenerateUploadTokenAsync(Guid userId, CancellationToken cancellationToken)
     {
-        email = NormalizeEmail(email);
-        if (string.IsNullOrWhiteSpace(email))
-        {
-            return null;
-        }
-
-        var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
+        var user = await db.Users.SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
         if (user is null)
         {
             return null;
@@ -475,18 +580,11 @@ public sealed class AuthService(
 
         user.UploadToken = await GenerateUniqueUploadTokenAsync(cancellationToken);
         user.UploadTokenUpdatedAtUtc = DateTime.UtcNow;
-        await db.SaveChangesAsync(cancellationToken);
-        return user.UploadToken;
+        return await TrySaveUserChangeAsync(cancellationToken) ? user.UploadToken : null;
     }
 
-    public async Task<(bool Success, string Error, string? DisplayName)> SetDisplayNameAsync(string email, string displayName, CancellationToken cancellationToken)
+    public async Task<(bool Success, string Error, string? DisplayName)> SetDisplayNameAsync(Guid userId, string displayName, CancellationToken cancellationToken)
     {
-        email = NormalizeEmail(email);
-        if (string.IsNullOrWhiteSpace(email))
-        {
-            return (false, "Account not found.", null);
-        }
-
         var normalized = (displayName ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(normalized))
         {
@@ -498,32 +596,27 @@ public sealed class AuthService(
             return (false, "Name must be 200 characters or fewer.", null);
         }
 
-        var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
+        var user = await db.Users.SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
         if (user is null)
         {
             return (false, "Account not found.", null);
         }
 
         user.DisplayName = normalized;
-        await db.SaveChangesAsync(cancellationToken);
-        return (true, string.Empty, user.DisplayName);
+        return await TrySaveUserChangeAsync(cancellationToken)
+            ? (true, string.Empty, user.DisplayName)
+            : (false, TryAgainError, null);
     }
 
-    public async Task<(bool Success, string Error, string? UploadToken)> SetUploadTokenAsync(string email, string requestedToken, CancellationToken cancellationToken)
+    public async Task<(bool Success, string Error, string? UploadToken)> SetUploadTokenAsync(Guid userId, string requestedToken, CancellationToken cancellationToken)
     {
-        email = NormalizeEmail(email);
         var normalizedToken = NormalizeUploadToken(requestedToken);
-        if (string.IsNullOrWhiteSpace(email))
-        {
-            return (false, "Account not found.", null);
-        }
-
         if (!IsValidUploadToken(normalizedToken))
         {
             return (false, "Upload code must be 2-64 letters or numbers.", null);
         }
 
-        var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
+        var user = await db.Users.SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
         if (user is null)
         {
             return (false, "Account not found.", null);
@@ -542,6 +635,10 @@ public sealed class AuthService(
         try
         {
             await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return (false, TryAgainError, null);
         }
         catch (DbUpdateException ex) when (IsUploadTokenConflict(ex))
         {
@@ -605,56 +702,40 @@ public sealed class AuthService(
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task<string> GetDefaultNotifyModeAsync(string email, CancellationToken cancellationToken)
+    public async Task<string> GetDefaultNotifyModeAsync(Guid userId, CancellationToken cancellationToken)
     {
-        email = NormalizeEmail(email);
-        var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
-        if (user is null)
-        {
-            return "once";
-        }
-
-        return NormalizeNotifyMode(user.DefaultNotifyMode);
+        var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
+        return user is null ? "once" : NormalizeNotifyMode(user.DefaultNotifyMode);
     }
 
-    public async Task<bool> SetDefaultNotifyModeAsync(string email, string notifyMode, CancellationToken cancellationToken)
+    public async Task<bool> SetDefaultNotifyModeAsync(Guid userId, string notifyMode, CancellationToken cancellationToken)
     {
-        email = NormalizeEmail(email);
-        var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
+        var user = await db.Users.SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
         if (user is null)
         {
             return false;
         }
 
         user.DefaultNotifyMode = NormalizeNotifyMode(notifyMode);
-        await db.SaveChangesAsync(cancellationToken);
-        return true;
+        return await TrySaveUserChangeAsync(cancellationToken);
     }
 
-    public async Task<string> GetDefaultExpiryModeAsync(string email, CancellationToken cancellationToken)
+    public async Task<string> GetDefaultExpiryModeAsync(Guid userId, CancellationToken cancellationToken)
     {
-        email = NormalizeEmail(email);
-        var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
-        if (user is null)
-        {
-            return "7_days";
-        }
-
-        return NormalizeExpiryMode(user.DefaultExpiryMode);
+        var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
+        return user is null ? "7_days" : NormalizeExpiryMode(user.DefaultExpiryMode);
     }
 
-    public async Task<bool> SetDefaultExpiryModeAsync(string email, string expiryMode, CancellationToken cancellationToken)
+    public async Task<bool> SetDefaultExpiryModeAsync(Guid userId, string expiryMode, CancellationToken cancellationToken)
     {
-        email = NormalizeEmail(email);
-        var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
+        var user = await db.Users.SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
         if (user is null)
         {
             return false;
         }
 
         user.DefaultExpiryMode = NormalizeExpiryMode(expiryMode);
-        await db.SaveChangesAsync(cancellationToken);
-        return true;
+        return await TrySaveUserChangeAsync(cancellationToken);
     }
 
     public async Task<(bool Success, string Error)> ConfirmEmailAsync(string email, string token, CancellationToken cancellationToken)
@@ -662,41 +743,35 @@ public sealed class AuthService(
         email = NormalizeEmail(email);
         if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(token))
         {
-            return (false, "Invalid confirmation link.");
+            return (false, ConfirmationLinkError);
         }
 
+        // Unknown address, already confirmed account and bad token all read the same, so the link endpoint cannot be
+        // used to probe which addresses have an account or whether it was confirmed.
         var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
-        if (user is null)
+        if (user is null || user.EmailConfirmed ||
+            !IsTokenValid(user.EmailConfirmationTokenHash, user.EmailConfirmationTokenExpiresAtUtc, token, DateTime.UtcNow))
         {
-            return (false, "Invalid confirmation link.");
-        }
-
-        if (user.EmailConfirmed)
-        {
-            return (true, string.Empty);
-        }
-
-        if (!IsTokenValid(user.EmailConfirmationTokenHash, user.EmailConfirmationTokenExpiresAtUtc, token, DateTime.UtcNow))
-        {
-            return (false, "This confirmation link is invalid or expired.");
+            return (false, ConfirmationLinkError);
         }
 
         user.EmailConfirmed = true;
         user.EmailConfirmedAtUtc = DateTime.UtcNow;
         user.EmailConfirmationTokenHash = null;
         user.EmailConfirmationTokenExpiresAtUtc = null;
-        await db.SaveChangesAsync(cancellationToken);
-        return (true, string.Empty);
+        // Rotated so a registration that loaded this row before the confirmation (a claim in flight) fails its save
+        // instead of replacing the password the confirming owner just activated.
+        user.SecurityStamp = SecurityStamps.New();
+        return await TrySaveUserChangeAsync(cancellationToken) ? (true, string.Empty) : (false, ConfirmationLinkError);
     }
 
     public async Task<(bool Success, string Error)> RequestEmailChangeAsync(
-        string currentEmail,
+        Guid userId,
         string newEmail,
         string currentPassword,
         string confirmEmailChangeUrlBase,
         CancellationToken cancellationToken)
     {
-        currentEmail = NormalizeEmail(currentEmail);
         newEmail = NormalizeEmail(newEmail);
 
         if (string.IsNullOrWhiteSpace(newEmail))
@@ -714,7 +789,7 @@ public sealed class AuthService(
             return (false, "Current password is required.");
         }
 
-        var user = await db.Users.SingleOrDefaultAsync(x => x.Email == currentEmail, cancellationToken);
+        var user = await db.Users.SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
         if (user is null)
         {
             return (false, "Account not found.");
@@ -736,7 +811,10 @@ public sealed class AuthService(
         }
 
         var token = IssuePendingEmailToken(user, newEmail, DateTime.UtcNow);
-        await db.SaveChangesAsync(cancellationToken);
+        if (!await TrySaveUserChangeAsync(cancellationToken))
+        {
+            return (false, TryAgainError);
+        }
 
         var confirmationUrl = BuildConfirmationUrl(confirmEmailChangeUrlBase, user.Email, token);
         await QueueAuthEmailAsync(new AuthEmailMessage(
@@ -758,18 +836,13 @@ public sealed class AuthService(
         currentEmail = NormalizeEmail(currentEmail);
         if (string.IsNullOrWhiteSpace(currentEmail) || string.IsNullOrWhiteSpace(token))
         {
-            return (false, "Invalid confirmation link.");
+            return (false, ConfirmationLinkError);
         }
 
         var user = await db.Users.SingleOrDefaultAsync(x => x.Email == currentEmail, cancellationToken);
-        if (user is null)
+        if (user is null || !IsTokenValid(user.PendingEmailTokenHash, user.PendingEmailTokenExpiresAtUtc, token, DateTime.UtcNow))
         {
-            return (false, "Invalid confirmation link.");
-        }
-
-        if (!IsTokenValid(user.PendingEmailTokenHash, user.PendingEmailTokenExpiresAtUtc, token, DateTime.UtcNow))
-        {
-            return (false, "This confirmation link is invalid or expired.");
+            return (false, ConfirmationLinkError);
         }
 
         var nextEmail = NormalizeEmail(user.PendingEmail ?? string.Empty);
@@ -784,24 +857,80 @@ public sealed class AuthService(
         }
 
         var previousEmail = user.Email;
-        user.Email = nextEmail;
-        user.PendingEmail = null;
-        user.PendingEmailTokenHash = null;
-        user.PendingEmailTokenExpiresAtUtc = null;
-        user.SecurityStamp = SecurityStamps.New();
+        var userId = user.Id;
 
-        var accountTemplate = await db.AccountTemplates.SingleOrDefaultAsync(x => x.UploaderEmail == previousEmail, cancellationToken);
-        if (accountTemplate is not null)
+        // The user row, the template, the share display addresses and the token consumption change together or not
+        // at all; a concurrent credential change (stamp mismatch) rolls everything back.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        try
         {
-            accountTemplate.UploaderEmail = nextEmail;
-            var expectedOldTitle = $"by {previousEmail}";
-            if (string.Equals(accountTemplate.Title, expectedOldTitle, StringComparison.OrdinalIgnoreCase))
+            // A template row left at the new address by an earlier account would collide on the unique index: a row
+            // whose owner still exists is pointed at that owner's current address, an orphan is removed. Saved first
+            // so the rename below never races it.
+            var staleTemplates = await db.AccountTemplates
+                .Where(x => x.UploaderEmail == nextEmail && x.OwnerUserId != userId)
+                .ToListAsync(cancellationToken);
+            foreach (var stale in staleTemplates)
             {
-                accountTemplate.Title = $"by {nextEmail}";
+                var ownerId = stale.OwnerUserId;
+                var ownerEmail = ownerId is null
+                    ? null
+                    : await db.Users.Where(x => x.Id == ownerId).Select(x => x.Email).SingleOrDefaultAsync(cancellationToken);
+                if (ownerEmail is null)
+                {
+                    db.AccountTemplates.Remove(stale);
+                }
+                else
+                {
+                    stale.UploaderEmail = ownerEmail;
+                }
             }
+
+            if (staleTemplates.Count > 0)
+            {
+                await db.SaveChangesAsync(cancellationToken);
+            }
+
+            user.Email = nextEmail;
+            ClearPendingCredentialTokens(user);
+            user.SecurityStamp = SecurityStamps.New();
+
+            var accountTemplate = await db.AccountTemplates.SingleOrDefaultAsync(x => x.OwnerUserId == userId, cancellationToken);
+            if (accountTemplate is not null)
+            {
+                accountTemplate.UploaderEmail = nextEmail;
+                var expectedOldTitle = $"by {previousEmail}";
+                if (string.Equals(accountTemplate.Title, expectedOldTitle, StringComparison.OrdinalIgnoreCase))
+                {
+                    accountTemplate.Title = $"by {nextEmail}";
+                }
+            }
+
+            await db.SaveChangesAsync(cancellationToken);
+
+            // Shares are owned by id; their display address follows the account.
+            await db.Shares
+                .Where(x => x.OwnerUserId == userId)
+                .ExecuteUpdateAsync(set => set.SetProperty(x => x.UploaderEmail, nextEmail), cancellationToken);
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return (false, ConfirmationLinkError);
         }
 
-        await db.SaveChangesAsync(cancellationToken);
+        // The previous address is told first: it is the one that can still act if the change was not legitimate.
+        await QueueAuthEmailAsync(new AuthEmailMessage(
+            To: previousEmail,
+            Subject: "Your email address was changed",
+            Preheader: "Account email updated",
+            Headline: "Email address changed",
+            IntroText: $"The email address of your Agora account was changed from this address to {user.Email}.",
+            DetailText: "Sign-in and all account emails now go to the new address; this address no longer belongs to the account.",
+            ActionLabel: null,
+            ActionUrl: null,
+            SecondaryText: "If you did not make this change, contact your administrator immediately."), cancellationToken);
 
         await QueueAuthEmailAsync(new AuthEmailMessage(
             To: user.Email,
@@ -818,13 +947,12 @@ public sealed class AuthService(
     }
 
     public async Task<(bool Success, string Error)> RequestPasswordChangeAsync(
-        string email,
+        Guid userId,
         string currentPassword,
         string newPassword,
         string confirmPasswordChangeUrlBase,
         CancellationToken cancellationToken)
     {
-        email = NormalizeEmail(email);
         if (string.IsNullOrWhiteSpace(currentPassword))
         {
             return (false, "Current password is required.");
@@ -840,7 +968,7 @@ public sealed class AuthService(
             return (false, "New password must be at least 8 characters.");
         }
 
-        var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
+        var user = await db.Users.SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
         if (user is null)
         {
             return (false, "Account not found.");
@@ -857,7 +985,10 @@ public sealed class AuthService(
         }
 
         var token = IssuePendingPasswordToken(user, newPassword, DateTime.UtcNow);
-        await db.SaveChangesAsync(cancellationToken);
+        if (!await TrySaveUserChangeAsync(cancellationToken))
+        {
+            return (false, TryAgainError);
+        }
 
         await QueueAuthEmailAsync(new AuthEmailMessage(
             To: user.Email,
@@ -878,31 +1009,24 @@ public sealed class AuthService(
         email = NormalizeEmail(email);
         if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(token))
         {
-            return (false, "Invalid confirmation link.");
+            return (false, ConfirmationLinkError);
         }
 
         var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
-        if (user is null)
+        if (user is null ||
+            !IsTokenValid(user.PendingPasswordTokenHash, user.PendingPasswordTokenExpiresAtUtc, token, DateTime.UtcNow) ||
+            string.IsNullOrWhiteSpace(user.PendingPasswordHash))
         {
-            return (false, "Invalid confirmation link.");
-        }
-
-        if (!IsTokenValid(user.PendingPasswordTokenHash, user.PendingPasswordTokenExpiresAtUtc, token, DateTime.UtcNow))
-        {
-            return (false, "This confirmation link is invalid or expired.");
-        }
-
-        if (string.IsNullOrWhiteSpace(user.PendingPasswordHash))
-        {
-            return (false, "No pending password change found.");
+            return (false, ConfirmationLinkError);
         }
 
         user.PasswordHash = user.PendingPasswordHash;
-        user.PendingPasswordHash = null;
-        user.PendingPasswordTokenHash = null;
-        user.PendingPasswordTokenExpiresAtUtc = null;
+        ClearPendingCredentialTokens(user);
         user.SecurityStamp = SecurityStamps.New();
-        await db.SaveChangesAsync(cancellationToken);
+        if (!await TrySaveUserChangeAsync(cancellationToken))
+        {
+            return (false, ConfirmationLinkError);
+        }
 
         await QueueAuthEmailAsync(new AuthEmailMessage(
             To: user.Email,
@@ -920,6 +1044,8 @@ public sealed class AuthService(
 
     public async Task RequestPasswordResetAsync(string email, string resetPasswordUrlBase, CancellationToken cancellationToken)
     {
+        // Same cost for every account state, so timing reveals nothing about the address.
+        PasswordHasher.Verify(string.Empty, DummyPasswordHash);
         email = NormalizeEmail(email);
         if (string.IsNullOrWhiteSpace(email) || !IsValidEmail(email))
         {
@@ -952,7 +1078,7 @@ public sealed class AuthService(
         email = NormalizeEmail(email);
         if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(token))
         {
-            return (false, "Invalid password reset link.");
+            return (false, PasswordResetLinkError);
         }
 
         if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Length < 8)
@@ -961,24 +1087,18 @@ public sealed class AuthService(
         }
 
         var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
-        if (user is null)
+        if (user is null || !IsTokenValid(user.PasswordResetTokenHash, user.PasswordResetTokenExpiresAtUtc, token, DateTime.UtcNow))
         {
-            return (false, "Invalid password reset link.");
-        }
-
-        if (!IsTokenValid(user.PasswordResetTokenHash, user.PasswordResetTokenExpiresAtUtc, token, DateTime.UtcNow))
-        {
-            return (false, "This password reset link is invalid or expired.");
+            return (false, PasswordResetLinkError);
         }
 
         user.PasswordHash = PasswordHasher.Hash(newPassword);
-        user.PasswordResetTokenHash = null;
-        user.PasswordResetTokenExpiresAtUtc = null;
-        user.PendingPasswordHash = null;
-        user.PendingPasswordTokenHash = null;
-        user.PendingPasswordTokenExpiresAtUtc = null;
+        ClearPendingCredentialTokens(user);
         user.SecurityStamp = SecurityStamps.New();
-        await db.SaveChangesAsync(cancellationToken);
+        if (!await TrySaveUserChangeAsync(cancellationToken))
+        {
+            return (false, PasswordResetLinkError);
+        }
 
         await QueueAuthEmailAsync(new AuthEmailMessage(
             To: user.Email,
@@ -995,6 +1115,25 @@ public sealed class AuthService(
     }
 
     private static string NormalizeEmail(string value) => EmailAddress.Normalize(value);
+
+    /// <summary>
+    /// Invalidates every outstanding token of the account. Called on each credential change (password change
+    /// confirmed, password reset, email change confirmed) so that, for example, an email change started by an
+    /// attacker cannot be completed after the owner has reset the password.
+    /// </summary>
+    private static void ClearPendingCredentialTokens(UserAccount user)
+    {
+        user.EmailConfirmationTokenHash = null;
+        user.EmailConfirmationTokenExpiresAtUtc = null;
+        user.PendingEmail = null;
+        user.PendingEmailTokenHash = null;
+        user.PendingEmailTokenExpiresAtUtc = null;
+        user.PendingPasswordHash = null;
+        user.PendingPasswordTokenHash = null;
+        user.PendingPasswordTokenExpiresAtUtc = null;
+        user.PasswordResetTokenHash = null;
+        user.PasswordResetTokenExpiresAtUtc = null;
+    }
 
     private static string DefaultDisplayNameForEmail(string email)
     {
@@ -1066,15 +1205,12 @@ public sealed class AuthService(
         }
     }
 
+    /// <summary>Per-account failure counters, kept for admin visibility; blocking is per (account, address) in <see cref="LoginLockouts"/>.</summary>
     private static void RegisterFailedLoginAttempt(UserAccount user, DateTime nowUtc)
     {
         var resetWindow = user.LastFailedLoginAtUtc is null || (nowUtc - user.LastFailedLoginAtUtc.Value) > FailedAttemptWindow;
         user.FailedLoginCount = resetWindow ? 1 : user.FailedLoginCount + 1;
         user.LastFailedLoginAtUtc = nowUtc;
-        if (user.FailedLoginCount >= MaxFailedLoginAttempts)
-        {
-            user.LockoutEndUtc = nowUtc.Add(LockoutDuration);
-        }
     }
 
     private static bool IsTokenValid(string? hash, DateTime? expiresAtUtc, string token, DateTime nowUtc)

@@ -1,4 +1,5 @@
 using Agora.Infrastructure.Services;
+using Agora.Web.Auth;
 using Agora.Web.Pages.Shared;
 using Agora.Web.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -29,11 +30,15 @@ public class CreatedModel(PublicBaseUrlResolver publicBaseUrls, ShareManager man
         var baseUrl = publicBaseUrls.Resolve(Request);
         ShareUrl = $"{baseUrl}/s/{Uri.EscapeDataString(token)}";
 
+        if (!User.TryGetShareOwner(out var owner))
+        {
+            return Redirect("/");
+        }
+
         var share = await manager.FindByTokenAsync(token, HttpContext.RequestAborted);
         if (share is not null)
         {
-            var email = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value ?? string.Empty;
-            if (!string.Equals(share.UploaderEmail, email, StringComparison.OrdinalIgnoreCase))
+            if (!owner.Owns(share.OwnerUserId))
             {
                 return Redirect("/");
             }
@@ -58,9 +63,8 @@ public class CreatedModel(PublicBaseUrlResolver publicBaseUrls, ShareManager man
         }
         else
         {
-            var email = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value ?? string.Empty;
             var status = statusStore.Read(token);
-            if (status is null || !string.Equals(status.UploaderEmail, email, StringComparison.OrdinalIgnoreCase))
+            if (status is null || status.OwnerUserId != owner.UserId)
             {
                 return Redirect("/");
             }

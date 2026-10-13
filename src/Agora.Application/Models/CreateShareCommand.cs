@@ -3,6 +3,8 @@ namespace Agora.Application.Models;
 public sealed class CreateShareCommand
 {
     public required string UploaderEmail { get; init; }
+    /// <summary>Owning account id; the only key ownership checks use. <see cref="UploaderEmail"/> is display data.</summary>
+    public required Guid OwnerUserId { get; init; }
     public string? ShareToken { get; init; }
     public string? Message { get; init; }
     public string? SenderName { get; init; }
