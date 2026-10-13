@@ -36,6 +36,7 @@ public static class EncryptedArchiveDownload
                 ScratchFiles.TryDelete(plaintextPath);
                 return Task.CompletedTask;
             });
+            ObjectResults.ApplyUserContentHeaders(context.Response);
             return Results.File(plaintext, "application/zip", downloadName);
         }
         catch (CryptographicException)

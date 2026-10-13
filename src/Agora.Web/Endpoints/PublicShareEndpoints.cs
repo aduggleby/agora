@@ -13,7 +13,7 @@ public static class PublicShareEndpoints
 {
     public static WebApplication MapPublicShareEndpoints(this WebApplication app)
     {
-        app.MapGet("/s/{token}/background", async (ShareManager manager, IObjectStore objectStore, string token, ILoggerFactory loggerFactory, CancellationToken ct) =>
+        app.MapGet("/s/{token}/background", async (ShareManager manager, IObjectStore objectStore, string token, HttpResponse response, ILoggerFactory loggerFactory, CancellationToken ct) =>
         {
             var logger = loggerFactory.CreateLogger("Agora.DownloadPageBackground");
             var share = await manager.FindByTokenAsync(token, ct);
@@ -48,7 +48,7 @@ public static class PublicShareEndpoints
             }
 
             logger.LogInformation("Background request for token {Token} served object {Key}.", token, key);
-            return ObjectResults.File(background, GuessImageContentType(Path.GetExtension(key)));
+            return ObjectResults.UserContent(response, background, key);
         });
 
         app.MapGet("/s/{token}/og-image", async (
@@ -56,6 +56,7 @@ public static class PublicShareEndpoints
             IObjectStore objectStore,
             OgImageGenerator ogGenerator,
             string token,
+            HttpResponse response,
             CancellationToken ct) =>
         {
             var share = await manager.FindByTokenAsync(token, ct);
@@ -81,6 +82,7 @@ public static class PublicShareEndpoints
                 sizeDisplay: sizeDisplay,
                 isExpired: isExpired);
 
+            ObjectResults.ApplyUserContentHeaders(response);
             return Results.File(imageBytes, "image/png");
         });
 
@@ -153,10 +155,10 @@ public static class PublicShareEndpoints
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
 
-            request.HttpContext.Response.Headers["X-Content-Type-Options"] = "nosniff";
+            // Type and disposition come from the file name only (ContentTypePolicy); the stored
+            // DetectedContentType may hold a client-declared value from older uploads.
             var asAttachment = request.Query["download"].ToString() == "1";
-            var contentType = string.IsNullOrWhiteSpace(file.DetectedContentType) ? "application/octet-stream" : file.DetectedContentType;
-            return ObjectResults.File(stored, contentType, asAttachment ? file.OriginalFilename : null);
+            return ObjectResults.UserContent(request.HttpContext.Response, stored, file.OriginalFilename, forceAttachment: asAttachment);
         }).RequireRateLimiting("DownloadEndpoints");
 
         app.MapGet("/s/{token}/files/{fileId:guid}/preview", async (
@@ -191,7 +193,7 @@ public static class PublicShareEndpoints
 
             var payload = await previewJobService.LoadPreviewImageAsync(share, file, ct);
             request.HttpContext.Response.Headers["X-Agora-Preview-State"] = payload.State;
-            request.HttpContext.Response.Headers["X-Content-Type-Options"] = "nosniff";
+            ObjectResults.ApplyUserContentHeaders(request.HttpContext.Response);
             request.HttpContext.Response.Headers["Cache-Control"] = payload.IsCacheable
                 ? "public,max-age=31536000,immutable"
                 : "no-store";
@@ -230,7 +232,7 @@ public static class PublicShareEndpoints
 
             var payload = await previewJobService.LoadThumbnailAsync(share, file, ct);
             request.HttpContext.Response.Headers["X-Agora-Preview-State"] = payload.State;
-            request.HttpContext.Response.Headers["X-Content-Type-Options"] = "nosniff";
+            ObjectResults.ApplyUserContentHeaders(request.HttpContext.Response);
             request.HttpContext.Response.Headers["Cache-Control"] = payload.IsCacheable
                 ? "public,max-age=31536000,immutable"
                 : "no-store";
@@ -371,6 +373,7 @@ public static class PublicShareEndpoints
                     throw;
                 }
 
+                ObjectResults.ApplyUserContentHeaders(request.HttpContext.Response);
                 return Results.File(archive.Content, "application/zip", share.ZipDisplayName);
             }
 
@@ -404,19 +407,6 @@ public static class PublicShareEndpoints
         }).RequireRateLimiting("DownloadEndpoints");
 
         return app;
-    }
-
-    private static string GuessImageContentType(string extension)
-    {
-        return (extension ?? string.Empty).Trim().ToLowerInvariant() switch
-        {
-            ".png" => "image/png",
-            ".jpg" or ".jpeg" => "image/jpeg",
-            ".gif" => "image/gif",
-            ".webp" => "image/webp",
-            ".svg" => "image/svg+xml",
-            _ => "application/octet-stream"
-        };
     }
 
     private static string ResolveRequesterIp(HttpRequest request)

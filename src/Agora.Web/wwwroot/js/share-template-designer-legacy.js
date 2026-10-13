@@ -24,7 +24,7 @@
     if (!titleInput || !h1Input || !descriptionInput || !backgroundFileInput || !backgroundUploadIdInput || !uploadDropzone || !uploadPick || !uploadStatus || !previewTitle || !previewH1 || !previewDescription || !previewCard) {
       return;
     }
-    const allowedExtensions = /* @__PURE__ */ new Set([".jpg", ".jpeg", ".png", ".svg", ".webp"]);
+    const allowedExtensions = /* @__PURE__ */ new Set([".jpg", ".jpeg", ".png", ".webp"]);
     let uploadedPreviewUrl = "";
     const updatePreview = () => {
       previewTitle.textContent = titleInput.value || "Shared file";
@@ -67,7 +67,7 @@
       const file = list[0];
       const ext = file.name.includes(".") ? file.name.toLowerCase().slice(file.name.lastIndexOf(".")) : "";
       if (!allowedExtensions.has(ext)) {
-        setStatus("Only JPG, PNG, SVG, or WEBP files are allowed.", true);
+        setStatus("Only JPG, PNG, or WEBP files are allowed.", true);
         return;
       }
       stageBackground(file);

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from '@playwright/test';
 import type { Locator } from '@playwright/test';
-import { createE2EUser, login } from '../support/helpers';
+import { createE2EUser, login, writePngFile } from '../support/helpers';
 
 // Generates the documentation screenshots from realistic share flows so docs stay synchronized with the UI.
 const screenshotFiles = {
@@ -19,10 +19,17 @@ const screenshotFiles = {
 };
 let tokenCounter = 0;
 
-async function writeSvgImage(filePath: string, index: number): Promise<void> {
+async function writePlaceholderImage(filePath: string, index: number): Promise<void> {
+  // SVG is no longer served inline (it is downloaded as an attachment), so fallbacks are solid-colour PNGs.
   const hue = (index * 53) % 360;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="hsl(${hue} 70% 70%)"/><stop offset="100%" stop-color="hsl(${(hue + 48) % 360} 65% 55%)"/></linearGradient></defs><rect width="1200" height="900" fill="url(#g)"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="DM Sans, Arial, sans-serif" font-size="84" fill="rgba(255,255,255,0.9)">Image ${index + 1}</text></svg>`;
-  await fs.writeFile(filePath, svg, 'utf8');
+  await writePngFile(filePath, { width: 1200, height: 900, color: hslToRgb(hue, 0.7, 0.7) });
+}
+
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
 }
 
 async function loadImageSamples(tempRoot: string, required: number): Promise<string[]> {
@@ -40,8 +47,8 @@ async function loadImageSamples(tempRoot: string, required: number): Promise<str
 
   const fallback: string[] = [...pictureImages];
   for (let i = fallback.length; i < required; i += 1) {
-    const filePath = path.join(tempRoot, `image-${i + 1}.svg`);
-    await writeSvgImage(filePath, i);
+    const filePath = path.join(tempRoot, `image-${i + 1}.png`);
+    await writePlaceholderImage(filePath, i);
     fallback.push(filePath);
   }
   return fallback;
@@ -281,7 +288,6 @@ async function expectSelectedAndPreviewReady(
 
 function guessContentType(fileName: string): string {
   const ext = path.extname(fileName).toLowerCase();
-  if (ext === '.svg') return 'image/svg+xml';
   if (ext === '.png') return 'image/png';
   if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
   if (ext === '.webp') return 'image/webp';

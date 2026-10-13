@@ -1,20 +1,14 @@
 import path from 'node:path';
-import fs from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
-import { createE2EUser, createTempFiles, extractShareUrl, login, waitForShareReady } from '../support/helpers';
+import { createE2EUser, createTempFiles, extractShareUrl, login, waitForShareReady, writePngFile } from '../support/helpers';
 
 test('account default background image is shown on download page', async ({ page, request }, testInfo) => {
   const user = await createE2EUser(request, 'default-bg');
   await login(page, user.email, user.password);
 
-  const bgFilePath = path.join(testInfo.outputPath('background'), 'bg.svg');
+  const bgFilePath = path.join(testInfo.outputPath('background'), 'bg.png');
   const accountMarker = 'account-default-marker-e2e';
-  await fs.mkdir(path.dirname(bgFilePath), { recursive: true });
-  await fs.writeFile(
-    bgFilePath,
-    `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800"><rect width="100%" height="100%" fill="#c4663a"/><text x="24" y="48">${accountMarker}</text></svg>`,
-    'utf8'
-  );
+  await writePngFile(bgFilePath, { color: [196, 102, 58], comment: accountMarker });
 
   await page.goto('/account/landing-page-designer');
   await page.setInputFiles('[data-preview-background-file]', bgFilePath);
@@ -48,7 +42,10 @@ test('account default background image is shown on download page', async ({ page
   const backgroundResponse = await page.request.get(`${shareUrl}/background`);
   expect(backgroundResponse.ok()).toBeTruthy();
   const contentType = backgroundResponse.headers()['content-type'] || '';
-  expect(contentType).toContain('image/svg+xml');
+  expect(contentType).toContain('image/png');
+  expect(backgroundResponse.headers()['x-content-type-options']).toBe('nosniff');
+  expect(backgroundResponse.headers()['content-security-policy']).toBe("default-src 'none'; style-src 'unsafe-inline'; sandbox");
+  expect(backgroundResponse.headers()['content-disposition'] || '').not.toContain('attachment');
   const backgroundBody = await backgroundResponse.text();
   expect(backgroundBody).toContain(accountMarker);
 });
@@ -57,14 +54,9 @@ test('per-share custom background image is shown on download page', async ({ pag
   const user = await createE2EUser(request, 'custom-bg');
   await login(page, user.email, user.password);
 
-  const customBgPath = path.join(testInfo.outputPath('background-custom'), 'custom-bg.svg');
+  const customBgPath = path.join(testInfo.outputPath('background-custom'), 'custom-bg.png');
   const customMarker = 'per-share-marker-e2e';
-  await fs.mkdir(path.dirname(customBgPath), { recursive: true });
-  await fs.writeFile(
-    customBgPath,
-    `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800"><rect width="100%" height="100%" fill="#5b7a5e"/><text x="24" y="48">${customMarker}</text></svg>`,
-    'utf8'
-  );
+  await writePngFile(customBgPath, { color: [91, 122, 94], comment: customMarker });
 
   const uploadFiles = await createTempFiles(testInfo.outputPath('files-custom'), [
     { name: 'proof-custom.txt', content: 'proof-custom' }
@@ -105,7 +97,10 @@ test('per-share custom background image is shown on download page', async ({ pag
   const backgroundResponse = await page.request.get(`${shareUrl}/background`);
   expect(backgroundResponse.ok()).toBeTruthy();
   const contentType = backgroundResponse.headers()['content-type'] || '';
-  expect(contentType).toContain('image/svg+xml');
+  expect(contentType).toContain('image/png');
+  expect(backgroundResponse.headers()['x-content-type-options']).toBe('nosniff');
+  expect(backgroundResponse.headers()['content-security-policy']).toBe("default-src 'none'; style-src 'unsafe-inline'; sandbox");
+  expect(backgroundResponse.headers()['content-disposition'] || '').not.toContain('attachment');
   const backgroundBody = await backgroundResponse.text();
   expect(backgroundBody).toContain(customMarker);
 });

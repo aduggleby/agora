@@ -261,6 +261,13 @@ users out (and invalidates open login/confirmation forms) one last time; after t
 | `Agora__DownloadEventRetentionDays` | `90` | How long download-event records are kept |
 | `Agora__ZombieUploadRetentionHours` | `24` | Cleanup window for abandoned staged uploads |
 
+How uploaded content is served (not configurable):
+
+- The content type of every uploaded file is derived from its file extension; the type declared by the uploading browser is ignored.
+- Only raster images (`png`, `jpg`, `gif`, `webp`, `avif`, `bmp`), common video and audio formats, PDF and plain text are served inline for previews. Everything else, including HTML, SVG and XML, is always served as a download (`application/octet-stream`, `Content-Disposition: attachment`).
+- All responses carrying user content (files, archive downloads, backgrounds, previews, thumbnails, link-preview images) are sent with `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox` (inline PDFs are exempt from the CSP so the browser's PDF viewer can render them).
+- Download-page background images must be JPG, PNG or WEBP. SVG backgrounds are no longer accepted; previously uploaded SVG backgrounds are offered as a download instead of being displayed.
+
 ### Email
 
 | Setting | Default | What it controls |

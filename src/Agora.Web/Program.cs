@@ -956,9 +956,9 @@ app.MapPost("/api/account/template", async (HttpContext context, ShareManager ma
     var backgroundImageFile = form.Files["backgroundImageFile"];
     if (backgroundImageFile is not null && backgroundImageFile.Length > 0)
     {
-        if (!IsAllowedBackgroundImageFileName(backgroundImageFile.FileName))
+        if (!ContentTypePolicy.IsAllowedBackgroundImage(backgroundImageFile.FileName))
         {
-            return Results.Redirect("/account/landing-page-designer?msg=Only%20JPG%2C%20PNG%2C%20SVG%2C%20or%20WEBP%20images%20are%20allowed");
+            return Results.Redirect("/account/landing-page-designer?msg=Only%20JPG%2C%20PNG%2C%20or%20WEBP%20images%20are%20allowed");
         }
 
         var safeName = ArchiveNameResolver.Sanitize(backgroundImageFile.FileName);
@@ -979,7 +979,7 @@ app.MapPost("/api/account/template", async (HttpContext context, ShareManager ma
             }
 
             await context.RequestServices.GetRequiredService<IObjectStore>()
-                .PutFileAsync(key, scratchPath, GuessImageContentType(extension), ct);
+                .PutFileAsync(key, scratchPath, ContentTypePolicy.FromFileName(safeName), ct);
         }
         finally
         {
@@ -1086,10 +1086,7 @@ app.MapGet("/api/share-drafts/{draftShareId}/background-preview", async (HttpCon
         return Results.NotFound();
     }
 
-    var contentType = string.IsNullOrWhiteSpace(file.ContentType)
-        ? GuessImageContentType(Path.GetExtension(file.OriginalFileName))
-        : file.ContentType;
-    return Results.File(file.TempPath, contentType);
+    return ObjectResults.UserContentFile(context.Response, file.TempPath, file.OriginalFileName);
 }).RequireAuthorization();
 
 app.MapPost("/api/account/settings", async (HttpContext context, AuthService authService, HttpRequest request, CancellationToken ct) =>
@@ -1124,7 +1121,7 @@ app.MapGet("/account/template/background", async (HttpContext context, ShareMana
         return Results.NotFound();
     }
 
-    return ObjectResults.File(background, GuessImageContentType(Path.GetExtension(key)));
+    return ObjectResults.UserContent(context.Response, background, key);
 }).RequireAuthorization();
 
 app.MapPost("/api/uploads/stage", async (
@@ -1179,7 +1176,6 @@ app.MapPost("/api/uploads/stage", async (
         draftShareId,
         file.FileName,
         file.Length,
-        file.ContentType,
         stream,
         ct,
         ShareManager.UploadPurposeShareFile);
@@ -1245,7 +1241,6 @@ app.MapPost("/api/public-uploads/stage", async (
         draftShareId,
         file.FileName,
         file.Length,
-        file.ContentType,
         stream,
         ct,
         ShareManager.UploadPurposeShareFile);
@@ -1439,9 +1434,9 @@ app.MapPost("/api/uploads/stage-template-background", async (
         return Results.BadRequest(new { error = "An image file is required." });
     }
 
-    if (!IsAllowedBackgroundImageFileName(file.FileName))
+    if (!ContentTypePolicy.IsAllowedBackgroundImage(file.FileName))
     {
-        return Results.BadRequest(new { error = "Only JPG, PNG, SVG, or WEBP files are allowed." });
+        return Results.BadRequest(new { error = "Only JPG, PNG, or WEBP files are allowed." });
     }
 
     var cfg = options.Value;
@@ -1456,7 +1451,6 @@ app.MapPost("/api/uploads/stage-template-background", async (
         draftShareId,
         file.FileName,
         file.Length,
-        file.ContentType,
         stream,
         ct,
         ShareManager.UploadPurposeTemplateBackground);
@@ -1874,19 +1868,6 @@ static bool TryNormalizeOptionalSharePassword(string? raw, out string? password)
     return password.Length >= 8 && password.Length <= 256;
 }
 
-static string GuessImageContentType(string extension)
-{
-    return (extension ?? string.Empty).Trim().ToLowerInvariant() switch
-    {
-        ".png" => "image/png",
-        ".jpg" or ".jpeg" => "image/jpeg",
-        ".gif" => "image/gif",
-        ".webp" => "image/webp",
-        ".svg" => "image/svg+xml",
-        _ => "application/octet-stream"
-    };
-}
-
 
 static string ResolvePublicBaseUrl(string? configuredValue, HttpRequest request)
 {
@@ -1948,12 +1929,6 @@ static string NormalizeContainerPosition(string? value)
         "center_bottom" => "center_bottom",
         _ => "center"
     };
-}
-
-static bool IsAllowedBackgroundImageFileName(string? fileName)
-{
-    var extension = Path.GetExtension(fileName ?? string.Empty).ToLowerInvariant();
-    return extension is ".jpg" or ".jpeg" or ".png" or ".svg" or ".webp";
 }
 
 static IConfiguration WithoutSerilogSinks(IConfiguration configuration)

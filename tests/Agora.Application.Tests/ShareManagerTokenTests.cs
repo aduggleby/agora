@@ -102,7 +102,6 @@ public sealed class ShareManagerTokenTests
             draftShareId,
             "document.txt",
             fileStream.Length,
-            "text/plain",
             fileStream,
             CancellationToken.None);
 
@@ -111,7 +110,6 @@ public sealed class ShareManagerTokenTests
             draftShareId,
             "bg.png",
             backgroundStream.Length,
-            "image/png",
             backgroundStream,
             CancellationToken.None,
             ShareManager.UploadPurposeTemplateBackground);
@@ -137,7 +135,6 @@ public sealed class ShareManagerTokenTests
             draftShareId,
             "bg.webp",
             backgroundStream.Length,
-            "image/webp",
             backgroundStream,
             CancellationToken.None,
             ShareManager.UploadPurposeTemplateBackground);
@@ -157,6 +154,60 @@ public sealed class ShareManagerTokenTests
             ShareManager.UploadPurposeTemplateBackground);
 
         Assert.Single(resolvedBackground);
+    }
+
+    [Fact]
+    public async Task StageUploadAsync_DerivesContentTypeFromExtensionOnly()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        const string draftShareId = "33333333333333333333333333333333";
+        const string uploader = "uploader@example.com";
+        using var htmlAsPng = await harness.CreateUploadStreamAsync("evil.png", "<script>alert(1)</script>");
+        using var htmlFile = await harness.CreateUploadStreamAsync("page.html", "<html></html>");
+        using var noExtension = await harness.CreateUploadStreamAsync("README", "plain");
+
+        var stagedPng = await harness.Manager.StageUploadAsync(uploader, draftShareId, "evil.png", htmlAsPng.Length, htmlAsPng, CancellationToken.None);
+        var stagedHtml = await harness.Manager.StageUploadAsync(uploader, draftShareId, "page.html", htmlFile.Length, htmlFile, CancellationToken.None);
+        var stagedBinary = await harness.Manager.StageUploadAsync(uploader, draftShareId, "README", noExtension.Length, noExtension, CancellationToken.None);
+
+        Assert.Equal("image/png", stagedPng.ContentType);
+        Assert.Equal("text/html", stagedHtml.ContentType);
+        Assert.Equal("application/octet-stream", stagedBinary.ContentType);
+
+        // The persisted metadata round-trips the derived type as well.
+        var resolved = await harness.Manager.ResolveStagedUploadsAsync(uploader, [stagedPng.UploadId], draftShareId, CancellationToken.None);
+        Assert.Equal("image/png", Assert.Single(resolved).ContentType);
+    }
+
+    [Fact]
+    public async Task CreateShareAsync_StoresExtensionDerivedContentTypeAndRenderType()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        // Caller-supplied content type is text/plain (see CreateUploadFileAsync); the stored values ignore it.
+        var htmlFile = await harness.CreateUploadFileAsync("page.html", "<html></html>");
+        var pngFile = await harness.CreateUploadFileAsync("photo.png", "not-really-png");
+        var svgFile = await harness.CreateUploadFileAsync("logo.svg", "<svg/>");
+
+        var command = new CreateShareCommand
+        {
+            UploaderEmail = "uploader@example.com",
+            ShareToken = "content_type_token",
+            NotifyMode = "none",
+            ExpiryMode = ExpiryMode.Date,
+            ExpiresAtUtc = DateTime.UtcNow.AddDays(1),
+            TemplateMode = TemplateMode.AccountDefault,
+            Files = [htmlFile, pngFile, svgFile]
+        };
+        var result = await harness.Manager.CreateShareAsync(command, CancellationToken.None);
+
+        var share = await harness.Db.Shares.Include(x => x.Files).SingleAsync(x => x.Id == result.ShareId);
+        var byName = share.Files.ToDictionary(x => x.OriginalFilename, StringComparer.Ordinal);
+        Assert.Equal("text/html", byName["page.html"].DetectedContentType);
+        Assert.Equal("html", byName["page.html"].RenderType);
+        Assert.Equal("image/png", byName["photo.png"].DetectedContentType);
+        Assert.Equal("image", byName["photo.png"].RenderType);
+        Assert.Equal("image/svg+xml", byName["logo.svg"].DetectedContentType);
+        Assert.Equal("svg", byName["logo.svg"].RenderType);
     }
 
     private static CreateShareCommand CreateCommand(string token, UploadSourceFile file)

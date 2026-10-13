@@ -21,7 +21,7 @@
     const descriptionTarget = document.getElementById("template-preview-description") || document.querySelector("[data-share-preview-description]");
     const card = document.getElementById("template-preview-card") || document.querySelector("[data-preview-surface]");
     if (!titleInput || !h1Input || !descriptionInput || !backgroundFileInput || !uploadPick || !uploadDropzone || !uploadStatus || !card) return;
-    const allowedExtensions = /* @__PURE__ */ new Set([".jpg", ".jpeg", ".png", ".svg", ".webp"]);
+    const allowedExtensions = /* @__PURE__ */ new Set([".jpg", ".jpeg", ".png", ".webp"]);
     let uploadedPreviewUrl = "";
     const setStatus = (text, isError) => {
       uploadStatus.textContent = text;
@@ -51,7 +51,7 @@
       const file = list[0];
       const ext = file.name.includes(".") ? file.name.toLowerCase().slice(file.name.lastIndexOf(".")) : "";
       if (!allowedExtensions.has(ext)) {
-        setStatus("Only JPG, PNG, SVG, or WEBP files are allowed.", true);
+        setStatus("Only JPG, PNG, or WEBP files are allowed.", true);
         return;
       }
       setSelectedFile(file);

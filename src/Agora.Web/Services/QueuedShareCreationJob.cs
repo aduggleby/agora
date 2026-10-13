@@ -1,3 +1,4 @@
+using Agora.Application.Utilities;
 using Agora.Application.Models;
 using Agora.Infrastructure.Services;
 using Hangfire;
@@ -137,7 +138,7 @@ public sealed class QueuedShareCreationJob(
                     ContentType: staged.ContentType))
                 .ToList();
 
-            var allFilesAreImages = uploadFiles.All(file => LooksLikeImage(file.OriginalFileName, file.ContentType));
+            var allFilesAreImages = uploadFiles.All(file => ContentTypePolicy.IsRasterImage(file.OriginalFileName));
             // Gallery mode requires image-only content; mixed sets fall back to archive mode.
             var shareExperienceType = payload.ShowPreviews && allFilesAreImages ? "gallery" : "archive";
             var accessMode = payload.ShowPreviews ? "preview_and_download" : "download_only";
@@ -245,18 +246,6 @@ public sealed class QueuedShareCreationJob(
             var failed = statusStore.MarkFailed(token, ex.Message);
             await broadcaster.BroadcastAsync(failed, ct);
         }
-    }
-
-    private static bool LooksLikeImage(string? fileName, string? contentType)
-    {
-        var normalizedContentType = (contentType ?? string.Empty).Trim().ToLowerInvariant();
-        if (normalizedContentType.StartsWith("image/", StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        var extension = (Path.GetExtension(fileName ?? string.Empty) ?? string.Empty).Trim().ToLowerInvariant();
-        return extension is ".jpg" or ".jpeg" or ".png" or ".gif" or ".webp" or ".bmp" or ".svg";
     }
 
     private string BuildShareUrl(string token)

@@ -226,9 +226,9 @@ public sealed class ShareManager(
                         Id = Guid.NewGuid(),
                         OriginalFilename = x.EntryName,
                         StoredRelativePath = x.StoredRelativePath,
-                        RenderType = DetectRenderType(x.EntryName, x.ContentType),
+                        RenderType = DetectRenderType(x.EntryName),
                         OriginalSizeBytes = x.SizeBytes,
-                        DetectedContentType = x.ContentType
+                        DetectedContentType = ContentTypePolicy.FromFileName(x.EntryName)
                     }).ToList()
                 };
 
@@ -680,7 +680,6 @@ public sealed class ShareManager(
         string draftShareId,
         string originalFileName,
         long originalSizeBytes,
-        string contentType,
         Stream source,
         CancellationToken cancellationToken,
         string uploadPurpose = UploadPurposeShareFile)
@@ -705,7 +704,8 @@ public sealed class ShareManager(
             DraftShareId: draftShareId,
             OriginalFileName: sanitizedName,
             OriginalSizeBytes: originalSizeBytes,
-            ContentType: string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType,
+            // Derived from the extension only; the multipart Content-Type the client sent is never trusted.
+            ContentType: ContentTypePolicy.FromFileName(sanitizedName),
             CreatedAtUtc: DateTime.UtcNow,
             UploadPurpose: normalizedPurpose);
 
@@ -1236,37 +1236,35 @@ public sealed class ShareManager(
         return ShareModes.AllowsPreview(ShareModes.ParseAccessMode(share.AccessMode));
     }
 
-    private static string DetectRenderType(string fileName, string contentType)
+    private static string DetectRenderType(string fileName)
     {
-        var normalizedContentType = (contentType ?? string.Empty).Trim().ToLowerInvariant();
-        var extension = (Path.GetExtension(fileName) ?? string.Empty).Trim().ToLowerInvariant();
-        if (normalizedContentType.StartsWith("image/", StringComparison.Ordinal))
+        // Extension-derived only (same source as the serving policy), so a file's declared
+        // content type can never promote it to an inline preview kind.
+        var contentType = ContentTypePolicy.FromFileName(fileName);
+        if (ContentTypePolicy.IsRasterImage(fileName))
         {
             return "image";
         }
 
-        if (normalizedContentType.StartsWith("video/", StringComparison.Ordinal))
+        if (contentType.StartsWith("video/", StringComparison.Ordinal))
         {
             return "video";
         }
 
-        if (normalizedContentType.StartsWith("audio/", StringComparison.Ordinal))
+        if (contentType.StartsWith("audio/", StringComparison.Ordinal))
         {
             return "audio";
         }
 
-        if (normalizedContentType.Contains("pdf", StringComparison.Ordinal))
+        if (contentType == "application/pdf")
         {
             return "pdf";
         }
 
+        var extension = (Path.GetExtension(fileName) ?? string.Empty).Trim().ToLowerInvariant();
         return extension switch
         {
-            ".jpg" or ".jpeg" or ".png" or ".gif" or ".webp" or ".bmp" => "image",
             ".svg" => "svg",
-            ".pdf" => "pdf",
-            ".mp4" or ".webm" or ".mov" => "video",
-            ".mp3" or ".wav" or ".ogg" => "audio",
             ".txt" or ".md" or ".csv" or ".json" => "text",
             ".html" or ".htm" => "html",
             ".css" => "css",
