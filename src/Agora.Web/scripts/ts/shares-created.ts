@@ -223,8 +223,15 @@ Alpine.start();
   };
 
   const connectSignalR = async (): Promise<void> => {
+    // Send the CSRF header explicitly: this script runs before csrf-client.js patches fetch/XHR,
+    // so SignalR's negotiate POST would otherwise be rejected.
+    const csrfToken = document.cookie
+      .split(';')
+      .map((part) => part.trim())
+      .find((part) => part.startsWith('agora.csrf.request='))
+      ?.slice('agora.csrf.request='.length);
     const connection = new signalR.HubConnectionBuilder()
-      .withUrl(hubUrl)
+      .withUrl(hubUrl, csrfToken ? { headers: { 'X-CSRF-TOKEN': decodeURIComponent(csrfToken) } } : {})
       .withAutomaticReconnect()
       .build();
 

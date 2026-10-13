@@ -6431,7 +6431,8 @@ ${expression ? 'Expression: "' + expression + '"\n\n' : ""}`, el);
       timer = window.setTimeout(() => void poll(), intervalMs);
     };
     const connectSignalR = async () => {
-      const connection = new HubConnectionBuilder().withUrl(hubUrl).withAutomaticReconnect().build();
+      const csrfToken = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith("agora.csrf.request="))?.slice("agora.csrf.request=".length);
+      const connection = new HubConnectionBuilder().withUrl(hubUrl, csrfToken ? { headers: { "X-CSRF-TOKEN": decodeURIComponent(csrfToken) } } : {}).withAutomaticReconnect().build();
       connection.on("shareStatus", (payload) => {
         if ((payload.token || "").trim() !== token) return;
         applyStatusPayload(payload);
