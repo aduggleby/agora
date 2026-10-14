@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.25] - 2026-10-14
+
+### Fixed
+- My shares and received-file rows stay on one line: long names truncate with an ellipsis and show the full name on hover, the direct-link badge has proper padding, and dates use a compact form with the full date in the tooltip.
+- The received-files note no longer claims those uploads never expire (they follow your default share expiry); the table shows their expiry.
+- The footer version renders (0.9.24 printed the Razor expression).
+
 ## [0.9.24] - 2026-10-14
 
 ### Added
