@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.24] - 2026-10-14
+
+### Added
+- The app version is shown in the page footer.
+
 ## [0.9.23] - 2026-10-14
 
 ### Fixed
