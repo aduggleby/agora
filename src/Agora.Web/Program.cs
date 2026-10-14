@@ -108,7 +108,8 @@ var storageProvider = builder.Services.AddAgoraObjectStore(builder.Configuration
 if (storageProvider == StorageProvider.S3)
 {
     builder.Services.TryAddSingleton(TimeProvider.System);
-    builder.Services.AddSingleton<ObjectStoreHealthCheck>();
+    builder.Services.AddSingleton(sp => new ObjectStoreHealthCheck(
+        sp.GetRequiredService<S3ObjectStore>().PingAsync, sp.GetRequiredService<TimeProvider>()));
     healthChecks.AddCheck<ObjectStoreHealthCheck>("object-store", tags: [DatabaseHealthCheck.ReadyTag], timeout: TimeSpan.FromSeconds(5));
 }
 

@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.27] - 2026-10-14
+
+### Fixed
+- Short 503 outages when object storage was briefly slow: the readiness check now gives up on the storage check after 2 seconds and, if storage worked within the last 2 minutes, reports a degraded but ready state instead of failing, so the reverse proxy no longer takes the app out of rotation.
+
 ## [0.9.26] - 2026-10-14
 
 ### Fixed
