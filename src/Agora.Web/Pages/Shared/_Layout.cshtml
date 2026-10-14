@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/site.css" />
+  <link rel="stylesheet" href="/css/site.css" asp-append-version="true" />
 </head>
 <body class="bg-cream text-ink min-h-screen relative" style="background-image:url('/images/safwan-thottoli-ZOjLtBNuY2E-unsplash.jpg');background-size:cover;background-position:center;background-attachment:fixed;">
   <div style="position:fixed;inset:0;background:rgba(255,255,255,0.75);pointer-events:none;"></div>
@@ -89,7 +89,7 @@
       </div>
     </div>
   </footer>
-  <script nonce="@Html.CspNonce()" src="/js/csrf-client.js"></script>
+  <script nonce="@Html.CspNonce()" src="/js/csrf-client.js" asp-append-version="true"></script>
   <script nonce="@Html.CspNonce()">
     (() => {
       const menus = document.querySelectorAll('details[data-account-menu]');

@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.26] - 2026-10-14
+
+### Fixed
+- Stylesheet and script links carry a content hash, so browsers pick up updated CSS and JS after an upgrade instead of serving cached copies (the 0.9.23 direct-link control looked unstyled with a stale stylesheet).
+
 ## [0.9.25] - 2026-10-14
 
 ### Fixed
