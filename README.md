@@ -355,10 +355,12 @@ pasted into chats, forums or an `<img src>`.
   minutes later). Direct links show a "Direct link" badge in "My shares", can be deleted early (a deleted direct
   link answers 410 like an expired one), and cannot be re-enabled or password protected. They count toward the
   same size and scratch limits as normal shares.
-- Creating a direct link finalizes the draft; the page continues on a fresh draft with the account-default page design.
+- Creating a direct link finalizes the draft. The browser copies the link to the clipboard and opens the "Your direct
+  link" page (the same one "Show link" opens from "My shares"), which confirms the copy; the next visit to the new-share
+  page starts a fresh draft with the account-default page design.
 
 `POST /api/shares/direct-link` (JSON `{draftShareId, uploadId, duration}` with the CSRF token in the
-`X-CSRF-TOKEN` header) returns `{url, token, expiresAtUtc, nextDraftShareId}`.
+`X-CSRF-TOKEN` header) returns `{url, token, expiresAtUtc}`.
 
 ### Scratch space
 

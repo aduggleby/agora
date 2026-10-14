@@ -1,25 +1,16 @@
 import path from 'node:path';
-import fs from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { createE2EUser, createTempFiles, extractShareUrl, login, waitForShareReady, writePngFile } from '../support/helpers';
 
 // Temporary direct links: one inline-safe file, served as raw bytes at /s/{token} (no download page), every view
-// counted, expired after the chosen duration (410 with the expired page), never re-enabled.
+// counted, expired after the chosen duration (410 with the expired page), never re-enabled. Creating one copies
+// the URL and lands on the created page, which confirms the copy.
 const FULL_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+const CREATED_URL = /\/shares\/created\/[A-Za-z0-9]{8}$/;
 
-async function readCsrfToken(page: Page): Promise<string> {
-  const token = await page.evaluate(() => {
-    const cookie = document.cookie
-      .split(';')
-      .map((part) => part.trim())
-      .find((part) => part.startsWith('agora.csrf.request='));
-    return cookie ? decodeURIComponent(cookie.slice('agora.csrf.request='.length)) : '';
-  });
-  if (!token) {
-    throw new Error('Missing CSRF token cookie');
-  }
-  return token;
+function createdLinkText(page: Page): Promise<string> {
+  return page.locator('[data-created-direct-link] a[href^="http"]').first().textContent().then((text) => (text || '').trim());
 }
 
 async function createDirectLink(page: Page, filePath: string): Promise<string> {
@@ -28,8 +19,8 @@ async function createDirectLink(page: Page, filePath: string): Promise<string> {
   const directButton = page.locator('[data-direct-link]');
   await expect(directButton).toBeEnabled();
   await directButton.click();
-  await expect(page.locator('[data-direct-link-success]')).toBeVisible();
-  return ((await page.locator('[data-direct-link-url]').textContent()) || '').trim();
+  await page.waitForURL(CREATED_URL);
+  return createdLinkText(page);
 }
 
 test('creates a temporary direct link, serves the file inline and expires it', async ({ page, context, request }, testInfo) => {
@@ -41,9 +32,12 @@ test('creates a temporary direct link, serves the file inline and expires it', a
   await writePngFile(pngPath, { comment: 'direct-link-marker' });
 
   await page.goto('/shares/new');
+  const firstDraftId = (await page.getAttribute('[data-draft-share-id]', 'value')) || '';
+  expect(firstDraftId).toMatch(/^[0-9a-f]{32}$/);
   const directButton = page.locator('[data-direct-link]');
   await expect(directButton).toBeDisabled();
   await expect(directButton).toHaveAttribute('title', 'Upload one file first.');
+  await expect(page.locator('[data-direct-link-error]')).toBeHidden();
 
   await page.setInputFiles('[data-file-input]', [pngPath]);
   await expect(page.locator('[data-upload-list] li')).toHaveCount(1);
@@ -52,22 +46,34 @@ test('creates a temporary direct link, serves the file inline and expires it', a
   await page.selectOption('[data-direct-duration]', '30m');
   await directButton.click();
 
-  const result = page.locator('[data-direct-link-result]');
-  await expect(result).toBeVisible();
-  await expect(page.locator('[data-direct-link-notice]')).toHaveText('Copied to clipboard');
-  const url = ((await page.locator('[data-direct-link-url]').textContent()) || '').trim();
+  // The flow ends on the created page: the link was copied on the way, and the card says so once.
+  await page.waitForURL(CREATED_URL, { waitUntil: 'commit' });
+  const card = page.locator('[data-created-direct-link]');
+  const copyButton = card.getByRole('button');
+  await expect(copyButton).toHaveText(/Copied/);
+  await expect(page.locator('[data-created-ready]')).toHaveCount(0);
+  const url = await createdLinkText(page);
   expect(url).toMatch(/^http:\/\/127\.0\.0\.1:18090\/s\/[A-Za-z0-9]{8}$/);
+  const token = url.slice(url.lastIndexOf('/') + 1);
+  expect(page.url()).toBe(`http://127.0.0.1:18090/shares/created/${token}`);
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(url);
+  expect(await page.evaluate(() => sessionStorage.getItem('agora.directLink.copied'))).toBeNull();
   expect(await page.evaluate(() => localStorage.getItem('agora.directLink.duration'))).toBe('30m');
-  const expiryText = ((await page.locator('[data-direct-link-expiry]').textContent()) || '').trim();
-  expect(expiryText.length).toBeGreaterThan(0);
+  await expect(card.locator('[data-local-datetime]')).not.toHaveText('');
+  await expect(copyButton).toHaveText('Copy link', { timeout: 10_000 });
 
-  // The page is ready for the next upload: list cleared, button disabled again, a fresh draft id.
+  // A reload shows the plain card: the confirmation is shown only once.
+  await page.reload();
+  await expect(copyButton).toHaveText('Copy link');
+  await expect(copyButton).not.toHaveText(/Copied/);
+
+  // The next new-share visit starts on a fresh draft.
+  await page.goto('/shares/new');
+  const secondDraftId = (await page.getAttribute('[data-draft-share-id]', 'value')) || '';
+  expect(secondDraftId).toMatch(/^[0-9a-f]{32}$/);
+  expect(secondDraftId).not.toBe(firstDraftId);
   await expect(page.locator('[data-upload-list] li')).toHaveCount(0);
   await expect(directButton).toBeDisabled();
-  await expect(page.locator('[data-draft-share-id]')).toHaveValue(/^[0-9a-f]{32}$/);
-
-  const token = url.slice(url.lastIndexOf('/') + 1);
 
   // Exactly one anonymous view: the bytes come back inline under the user-content policy.
   const view = await request.get(url);
@@ -90,7 +96,7 @@ test('creates a temporary direct link, serves the file inline and expires it', a
   await expect(row.locator('td').nth(5)).toHaveText('1');
   await expect(row.locator('td').nth(4).locator('[data-local-datetime]')).not.toHaveText('');
 
-  // "Show link" opens the simplified card.
+  // "Show link" opens the same simplified card.
   await row.getByRole('button', { name: 'Show link' }).click();
   await page.waitForURL(new RegExp(`/shares/created/${token}$`));
   await expect(page.locator('[data-created-direct-link]')).toContainText(url);
@@ -125,73 +131,7 @@ test('creates a temporary direct link, serves the file inline and expires it', a
   expect(await deleted.text()).toContain('This link has expired.');
 });
 
-test('the replacement draft starts clean and an ordinary share can be created from it', async ({ page, context, request }, testInfo) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  const user = await createE2EUser(request, 'direct-link-draft');
-  await login(page, user.email, user.password);
-
-  const pngPath = path.join(testInfo.outputPath('files'), 'photo.png');
-  await writePngFile(pngPath, { comment: 'draft-reset' });
-  const backgroundPath = path.join(testInfo.outputPath('files'), 'bg.png');
-  await writePngFile(backgroundPath, { width: 32, height: 32, color: [91, 122, 94] });
-  const [textPath] = await createTempFiles(testInfo.outputPath('files'), [{ name: 'notes.txt', content: 'after the direct link' }]);
-
-  // Customise the draft's download page with a staged background, as the designer does.
-  await page.goto('/shares/new');
-  const firstDraftId = (await page.getAttribute('[data-draft-share-id]', 'value')) || '';
-  expect(firstDraftId).not.toBe('');
-  const csrfToken = await readCsrfToken(page);
-  const background = await page.request.post(`/api/uploads/stage-template-background?draftShareId=${encodeURIComponent(firstDraftId)}`, {
-    headers: { 'X-CSRF-TOKEN': csrfToken },
-    multipart: { file: { name: 'bg.png', mimeType: 'image/png', buffer: await fs.readFile(backgroundPath) } }
-  });
-  expect(background.ok()).toBeTruthy();
-  const backgroundUploadId = String((await background.json()).uploadId || '');
-  const saveTemplate = await page.request.post(`/api/share-drafts/${firstDraftId}/template`, {
-    maxRedirects: 0,
-    form: {
-      __RequestVerificationToken: csrfToken,
-      title: 'Custom title',
-      h1: 'Custom heading',
-      description: 'Custom description',
-      backgroundUploadId,
-      containerPosition: 'center'
-    }
-  });
-  expect(saveTemplate.status()).toBe(302);
-
-  await page.goto(`/shares/new?draftShareId=${encodeURIComponent(firstDraftId)}`);
-  await expect(page.locator('[data-template-mode]')).toHaveValue('per_upload');
-  await expect(page.locator('[data-template-background-upload-id]')).toHaveValue(backgroundUploadId);
-
-  const url = await createDirectLink(page, pngPath);
-  expect(url).toMatch(/\/s\/[A-Za-z0-9]{8}$/);
-
-  // The replacement draft: new id in the form and the URL, template back to the account default, background gone.
-  const secondDraftId = (await page.getAttribute('[data-draft-share-id]', 'value')) || '';
-  expect(secondDraftId).toMatch(/^[0-9a-f]{32}$/);
-  expect(secondDraftId).not.toBe(firstDraftId);
-  expect(new URL(page.url()).searchParams.get('draftShareId')).toBe(secondDraftId);
-  await expect(page.locator('[data-template-mode]')).toHaveValue('account_default');
-  await expect(page.locator('[data-template-background-upload-id]')).toHaveValue('');
-  await expect(page.locator('[data-template-title]')).toHaveValue('');
-  await expect(page.locator('[data-template-custom-actions]')).toBeHidden();
-  await expect(page.locator('[data-template-designer-link]')).toHaveAttribute('href', `/share/landing-page-designer?draftShareId=${secondDraftId}`);
-
-  // An ordinary share from the replacement draft must succeed.
-  await page.setInputFiles('[data-file-input]', [textPath]);
-  await expect(page.locator('[data-upload-list] li')).toHaveCount(1);
-  await expect(page.locator('[data-submit]')).toBeEnabled();
-  await page.locator('[data-submit]').click();
-  await page.waitForURL(/\/shares\/created\/[^/?#]+$/);
-  const shareUrl = extractShareUrl(await page.locator('main').innerText(), page.url());
-  await waitForShareReady(page, shareUrl);
-  const summary = await request.get(`/api/shares/${shareUrl.slice(shareUrl.lastIndexOf('/') + 1)}`);
-  expect(summary.status()).toBe(200);
-  expect((await summary.json()).fileCount).toBe(1);
-});
-
-test('draft mutations are blocked while a direct link is being created', async ({ page, context, request }, testInfo) => {
+test('the form stays locked from the click until the created page opens', async ({ page, context, request }, testInfo) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   const user = await createE2EUser(request, 'direct-link-lock');
   await login(page, user.email, user.password);
@@ -218,39 +158,153 @@ test('draft mutations are blocked while a direct link is being created', async (
   const directButton = page.locator('[data-direct-link]');
   await directButton.click();
   await expect(directButton).toBeDisabled();
+  await expect(directButton).toHaveAttribute('title', 'Creating your direct link...');
   await expect(page.locator('[data-pick-files]')).toBeDisabled();
   await expect(page.locator('[data-file-input]')).toBeDisabled();
   await expect(page.locator('[data-submit]')).toBeDisabled();
+  await expect(page.locator('[data-upload-list] [data-upload-remove]')).toBeDisabled();
 
-  // A drop during the window is ignored; nothing is staged into the finalized draft.
+  // A drop during the window is ignored; nothing is staged into the finalized draft and the page has not left yet.
   const dataTransfer = await page.evaluateHandle(() => {
     const transfer = new DataTransfer();
     transfer.items.add(new File(['late'], 'late.txt', { type: 'text/plain' }));
     return transfer;
   });
   await page.dispatchEvent('[data-dropzone]', 'drop', { dataTransfer });
-  await expect(page.locator('[data-direct-link-success]')).toBeHidden();
-  await expect(page.locator('[data-upload-list] li')).toHaveCount(0);
-
-  await expect(page.locator('[data-direct-link-notice]')).toHaveText('Copied to clipboard', { timeout: 15_000 });
-  const url = ((await page.locator('[data-direct-link-url]').textContent()) || '').trim();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(url);
-  await expect(page.locator('[data-upload-list] li')).toHaveCount(0);
-  await expect(page.locator('[data-pick-files]')).toBeEnabled();
-  await expect(page.locator('[data-file-input]')).toBeEnabled();
-  const secondDraftId = (await page.getAttribute('[data-draft-share-id]', 'value')) || '';
-  expect(secondDraftId).not.toBe(firstDraftId);
-
-  // The same drop outside the window does stage the file (so the empty list above proves the lock), and it
-  // attaches to the replacement draft; nothing landed in the old one.
-  await page.dispatchEvent('[data-dropzone]', 'drop', { dataTransfer });
   await expect(page.locator('[data-upload-list] li')).toHaveCount(1);
-  await expect(page.locator('[data-upload-list] li').first()).toContainText('late.txt');
+  expect(page.url()).toContain('/shares/new');
+  await expect(directButton).toBeDisabled();
+
+  // The window closes with the clipboard write: the browser leaves for the created page.
+  await page.waitForURL(CREATED_URL, { timeout: 15_000 });
+  const url = await createdLinkText(page);
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(url);
+
+  // The finalized draft is empty when reopened; the same drop on a fresh draft does stage the file (so the
+  // untouched list above proves the lock).
   await page.goto(`/shares/new?draftShareId=${encodeURIComponent(firstDraftId)}`);
   await expect(page.locator('[data-upload-list] li')).toHaveCount(0);
-  await page.goto(`/shares/new?draftShareId=${encodeURIComponent(secondDraftId)}`);
+  await page.goto('/shares/new');
+  const secondDraftId = (await page.getAttribute('[data-draft-share-id]', 'value')) || '';
+  expect(secondDraftId).toMatch(/^[0-9a-f]{32}$/);
+  expect(secondDraftId).not.toBe(firstDraftId);
+  const lateDrop = await page.evaluateHandle(() => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['late'], 'late.txt', { type: 'text/plain' }));
+    return transfer;
+  });
+  await page.dispatchEvent('[data-dropzone]', 'drop', { dataTransfer: lateDrop });
   await expect(page.locator('[data-upload-list] li')).toHaveCount(1);
   await expect(page.locator('[data-upload-list] li').first()).toContainText('late.txt');
+});
+
+test('a failed create keeps the draft usable and reports the error', async ({ page, request }, testInfo) => {
+  const user = await createE2EUser(request, 'direct-link-error');
+  await login(page, user.email, user.password);
+
+  const pngPath = path.join(testInfo.outputPath('files'), 'photo.png');
+  await writePngFile(pngPath, { comment: 'error-path' });
+
+  await page.goto('/shares/new');
+  await page.setInputFiles('[data-file-input]', [pngPath]);
+  await expect(page.locator('[data-upload-list] li')).toHaveCount(1);
+  const directButton = page.locator('[data-direct-link]');
+  const error = page.locator('[data-direct-link-error]');
+  const expectUnlocked = async () => {
+    await expect(page.locator('[data-upload-list] li')).toHaveCount(1);
+    await expect(directButton).toBeEnabled();
+    await expect(page.locator('[data-submit]')).toBeEnabled();
+    await expect(page.locator('[data-pick-files]')).toBeEnabled();
+    await expect(page.locator('[data-file-input]')).toBeEnabled();
+    await expect(page.locator('[data-upload-list] [data-upload-remove]')).toBeEnabled();
+    expect(page.url()).toContain('/shares/new');
+  };
+
+  // (a) The request never reaches the server.
+  await page.route('**/api/shares/direct-link', (route) => route.abort('connectionrefused'));
+  await directButton.click();
+  await expect(error).toBeVisible();
+  await expect(error).toHaveText('Could not create the direct link. Check your connection and try again.');
+  await expectUnlocked();
+  await page.unroute('**/api/shares/direct-link');
+
+  // (b) The server refuses with a message.
+  await page.route('**/api/shares/direct-link', (route) =>
+    route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'The direct link could not be created right now.' }) })
+  );
+  await directButton.click();
+  await expect(error).toHaveText('The direct link could not be created right now.');
+  await expectUnlocked();
+  await page.unroute('**/api/shares/direct-link');
+
+  // The staged file still becomes an ordinary share.
+  await page.locator('[data-submit]').click();
+  await page.waitForURL(/\/shares\/created\/[^/?#]+$/);
+  const shareUrl = extractShareUrl(await page.locator('main').innerText(), page.url());
+  await waitForShareReady(page, shareUrl);
+  const summary = await request.get(`/api/shares/${shareUrl.slice(shareUrl.lastIndexOf('/') + 1)}`);
+  expect(summary.status()).toBe(200);
+  expect((await summary.json()).fileCount).toBe(1);
+});
+
+test('the created page confirms the copy only when it happened', async ({ page, context, request }, testInfo) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const user = await createE2EUser(request, 'direct-link-copied');
+  await login(page, user.email, user.password);
+
+  const pngPath = path.join(testInfo.outputPath('files'), 'photo.png');
+  await writePngFile(pngPath, { comment: 'copied-flag' });
+  const card = page.locator('[data-created-direct-link]');
+  const copyButton = card.getByRole('button');
+
+  // (a) A flag for another token is ignored and discarded.
+  await page.goto('/shares/new');
+  const url = await createDirectLink(page, pngPath);
+  await page.evaluate(() => sessionStorage.setItem('agora.directLink.copied', 'other000'));
+  await page.reload();
+  await expect(copyButton).toHaveText('Copy link');
+  await expect(copyButton).not.toHaveText(/Copied/);
+  expect(await page.evaluate(() => sessionStorage.getItem('agora.directLink.copied'))).toBeNull();
+
+  // (b) A rejected clipboard write still lands on the created page, without a confirmation; the button copies.
+  await page.goto('/shares/new');
+  await page.setInputFiles('[data-file-input]', [pngPath]);
+  await expect(page.locator('[data-upload-list] li')).toHaveCount(1);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: () => Promise.reject(new Error('denied')) });
+    document.execCommand = () => false;
+  });
+  await page.locator('[data-direct-link]').click();
+  await page.waitForURL(CREATED_URL);
+  const secondUrl = await createdLinkText(page);
+  expect(secondUrl).not.toBe(url);
+  await expect(copyButton).toHaveText('Copy link');
+  await expect(copyButton).not.toHaveText(/Copied/);
+  expect(await page.evaluate(() => sessionStorage.getItem('agora.directLink.copied'))).toBeNull();
+  await copyButton.click();
+  await expect(copyButton).toHaveText(/Copied/);
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(secondUrl);
+
+  // (c) Blocked storage neither stops the navigation nor the page.
+  await page.goto('/shares/new');
+  await page.setInputFiles('[data-file-input]', [pngPath]);
+  await expect(page.locator('[data-upload-list] li')).toHaveCount(1);
+  await page.evaluate(() => {
+    const blocked = () => {
+      throw new Error('storage blocked');
+    };
+    Storage.prototype.setItem = blocked;
+    Storage.prototype.getItem = blocked;
+    Storage.prototype.removeItem = blocked;
+  });
+  await page.locator('[data-direct-link]').click();
+  await page.waitForURL(CREATED_URL);
+  const thirdUrl = await createdLinkText(page);
+  expect(thirdUrl).toMatch(/\/s\/[A-Za-z0-9]{8}$/);
+  expect(thirdUrl).not.toBe(secondUrl);
+  await expect(card).toContainText(thirdUrl);
+  await expect(copyButton).toHaveText(/Copy link|Copied/);
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(thirdUrl);
 });
 
 test('the direct link button explains why it is disabled', async ({ page, request }, testInfo) => {

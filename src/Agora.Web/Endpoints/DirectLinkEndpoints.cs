@@ -98,14 +98,11 @@ public static class DirectLinkEndpoints
             logger.LogWarning(ex, "Unable to remove draft scratch after creating a direct link; the zombie sweep will");
         }
 
-        // The page stays usable: a fresh draft for the next upload.
-        var nextDraftShareId = await manager.EnsureDraftShareAsync(owner.UserId, null, ct);
         return Results.Ok(new
         {
             url = publicOrigin.ShareUrl(created.Token),
             token = created.Token,
-            expiresAtUtc = created.ExpiresAtUtc,
-            nextDraftShareId
+            expiresAtUtc = created.ExpiresAtUtc
         });
     }
 }

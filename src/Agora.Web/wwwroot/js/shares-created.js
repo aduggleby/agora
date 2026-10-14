@@ -6300,6 +6300,18 @@ ${expression ? 'Expression: "' + expression + '"\n\n' : ""}`, el);
   }
 
   // scripts/ts/shares-created.ts
+  var directLinkCopiedStorageKey = "agora.directLink.copied";
+  function takeDirectLinkCopiedFlag() {
+    const token = (document.querySelector("[data-share-created-page]")?.dataset.token || "").trim();
+    if (!token) return false;
+    try {
+      const copied = sessionStorage.getItem(directLinkCopiedStorageKey) === token;
+      sessionStorage.removeItem(directLinkCopiedStorageKey);
+      return copied;
+    } catch {
+      return false;
+    }
+  }
   function shareReadyCopy(shareUrl) {
     return {
       shareUrl,
@@ -6311,14 +6323,17 @@ ${expression ? 'Expression: "' + expression + '"\n\n' : ""}`, el);
         if (this.state === "error") return "bg-danger hover:bg-danger/90";
         return "bg-terra hover:bg-terra/90";
       },
-      flash(state) {
+      init() {
+        if (takeDirectLinkCopiedFlag()) this.flash("success", 3e3);
+      },
+      flash(state, holdMs) {
         if (this.resetTimer) window.clearTimeout(this.resetTimer);
         this.state = state;
         this.label = state === "success" ? "Copied \u2713" : "Try again";
         this.resetTimer = window.setTimeout(() => {
           this.state = "idle";
           this.label = "Copy link";
-        }, state === "success" ? 1300 : 1200);
+        }, holdMs ?? (state === "success" ? 1300 : 1200));
       },
       async copy(event) {
         const button = event.currentTarget;

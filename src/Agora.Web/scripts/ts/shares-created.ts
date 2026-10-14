@@ -10,7 +10,8 @@ type ShareReadyCopyModel = {
   state: CopyState;
   resetTimer: number | null;
   buttonClass: string;
-  flash(state: Exclude<CopyState, 'idle'>): void;
+  init(): void;
+  flash(state: Exclude<CopyState, 'idle'>, holdMs?: number): void;
   copy(event: Event): Promise<void>;
 };
 
@@ -30,6 +31,21 @@ type ShareStatusResponse = {
   steps?: ShareProgressStep[] | null;
 };
 
+// Set by the new-share page right after it copied a freshly created direct link, before navigating here.
+const directLinkCopiedStorageKey = 'agora.directLink.copied';
+
+function takeDirectLinkCopiedFlag(): boolean {
+  const token = (document.querySelector<HTMLElement>('[data-share-created-page]')?.dataset.token || '').trim();
+  if (!token) return false;
+  try {
+    const copied = sessionStorage.getItem(directLinkCopiedStorageKey) === token;
+    sessionStorage.removeItem(directLinkCopiedStorageKey);
+    return copied;
+  } catch {
+    return false;
+  }
+}
+
 function shareReadyCopy(shareUrl: string): ShareReadyCopyModel {
   return {
     shareUrl,
@@ -41,14 +57,19 @@ function shareReadyCopy(shareUrl: string): ShareReadyCopyModel {
       if (this.state === 'error') return 'bg-danger hover:bg-danger/90';
       return 'bg-terra hover:bg-terra/90';
     },
-    flash(state: Exclude<CopyState, 'idle'>): void {
+    init(): void {
+      // The link was already copied by the page that created it: show the same confirmation, held a little
+      // longer because the reader has just arrived.
+      if (takeDirectLinkCopiedFlag()) this.flash('success', 3000);
+    },
+    flash(state: Exclude<CopyState, 'idle'>, holdMs?: number): void {
       if (this.resetTimer) window.clearTimeout(this.resetTimer);
       this.state = state;
       this.label = state === 'success' ? 'Copied ✓' : 'Try again';
       this.resetTimer = window.setTimeout(() => {
         this.state = 'idle';
         this.label = 'Copy link';
-      }, state === 'success' ? 1300 : 1200);
+      }, holdMs ?? (state === 'success' ? 1300 : 1200));
     },
     async copy(event: Event): Promise<void> {
       const button = event.currentTarget as HTMLElement | null;

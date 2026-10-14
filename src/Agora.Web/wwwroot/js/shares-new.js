@@ -145,13 +145,7 @@
     const removeConfirmButton = form.querySelector("[data-upload-remove-confirm]");
     const directLinkButton = form.querySelector("[data-direct-link]");
     const directDurationInput = form.querySelector("[data-direct-duration]");
-    const directResult = form.querySelector("[data-direct-link-result]");
-    const directResultSuccess = form.querySelector("[data-direct-link-success]");
-    const directResultUrl = form.querySelector("[data-direct-link-url]");
-    const directResultExpiry = form.querySelector("[data-direct-link-expiry]");
-    const directResultNotice = form.querySelector("[data-direct-link-notice]");
-    const directResultCopy = form.querySelector("[data-direct-link-copy]");
-    const directResultError = form.querySelector("[data-direct-link-error]");
+    const directLinkError = form.querySelector("[data-direct-link-error]");
     if (!fileInput || !pickButton || !cancelUploadsButton || !list || !hidden || !status || !submit || !draftShareIdInput) return;
     const limits = readLimitsFromElement(form);
     const uploadedIds = /* @__PURE__ */ new Set();
@@ -174,13 +168,13 @@
     let isSubmitting = false;
     let isCreatingDirectLink = false;
     let cancelRequested = false;
-    let directLinkUrl = "";
     const activeRequests = /* @__PURE__ */ new Set();
     const directDurationStorageKey = "agora.directLink.duration";
+    const directLinkCopiedStorageKey = "agora.directLink.copied";
     const allowedDirectDurations = /* @__PURE__ */ new Set(["30m", "6h", "1d", "7d"]);
     const optionsStorageKey = "agora:new-share:options-collapsed";
     const optionsStateStoragePrefix = "agora:new-share:options-state:";
-    let optionsStateStorageKey = `${optionsStateStoragePrefix}${draftShareIdInput.value.trim()}`;
+    const optionsStateStorageKey = `${optionsStateStoragePrefix}${draftShareIdInput.value.trim()}`;
     const pickPrimaryClass = "px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors";
     const pickSecondaryClass = "px-4 py-2 bg-cream text-ink text-sm font-medium rounded-lg border border-border hover:bg-cream-dark/70 transition-colors";
     const allowedNotifyModes = /* @__PURE__ */ new Set(["account_default", "none", "once", "every_time"]);
@@ -736,67 +730,14 @@
       }
     });
     const showDirectLinkError = (message) => {
-      if (!directResult) return;
-      directResult.classList.remove("hidden");
-      directResultSuccess?.classList.add("hidden");
-      if (directResultError) {
-        directResultError.textContent = message;
-        directResultError.classList.remove("hidden");
-      }
+      if (!directLinkError) return;
+      directLinkError.textContent = message;
+      directLinkError.classList.remove("hidden");
     };
-    const setDirectLinkNotice = (message, ok) => {
-      if (!directResultNotice) return;
-      directResultNotice.textContent = message;
-      directResultNotice.classList.toggle("text-sage", ok);
-      directResultNotice.classList.toggle("text-danger", !ok);
-      directResultNotice.classList.remove("hidden");
-    };
-    const showDirectLinkResult = (url, expiresAtUtc, copied) => {
-      if (!directResult) return;
-      directLinkUrl = url;
-      directResult.classList.remove("hidden");
-      directResultError?.classList.add("hidden");
-      directResultSuccess?.classList.remove("hidden");
-      if (directResultUrl) {
-        directResultUrl.href = url;
-        directResultUrl.textContent = url;
-      }
-      if (directResultExpiry) {
-        const expires = new Date(expiresAtUtc);
-        directResultExpiry.textContent = Number.isNaN(expires.getTime()) ? "" : new Intl.DateTimeFormat(void 0, { dateStyle: "medium", timeStyle: "short" }).format(expires);
-      }
-      setDirectLinkNotice(copied ? "Copied to clipboard" : "Could not copy automatically; use the Copy link button.", copied);
-    };
-    const newDraftShareId = () => typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID().replace(/-/g, "") : Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
-    const replaceDraft = (nextDraftShareId) => {
-      const draftShareId = nextDraftShareId || newDraftShareId();
-      uploadedIds.clear();
-      uploads.clear();
-      hidden.querySelectorAll('input[name="uploadedFileIds"]').forEach((input) => input.remove());
-      list.innerHTML = "";
-      draftShareIdInput.value = draftShareId;
-      optionsStateStorageKey = `${optionsStateStoragePrefix}${draftShareId}`;
-      const designer = form.querySelector("[data-template-designer-link]");
-      if (designer) designer.href = `/share/landing-page-designer?draftShareId=${encodeURIComponent(draftShareId)}`;
-      try {
-        window.history.replaceState(null, "", `/shares/new?draftShareId=${encodeURIComponent(draftShareId)}`);
-      } catch {
-      }
-      const templateDefaults = [
-        ["[data-template-title]", ""],
-        ["[data-template-h1]", ""],
-        ["[data-template-description]", ""],
-        ["[data-template-background-upload-id]", ""],
-        ["[data-template-background-color-hex]", ""],
-        ["[data-template-container-position]", "center"]
-      ];
-      templateDefaults.forEach(([selector, value]) => {
-        const input = form.querySelector(selector);
-        if (input) input.value = value;
-      });
-      const templateModeInput = form.querySelector("[data-template-mode]");
-      if (templateModeInput) templateModeInput.value = "account_default";
-      refreshTemplateMode();
+    const hideDirectLinkError = () => {
+      if (!directLinkError) return;
+      directLinkError.textContent = "";
+      directLinkError.classList.add("hidden");
     };
     const resolveDirectLinkError = async (response) => {
       try {
@@ -811,8 +752,10 @@
       const [uploadId] = Array.from(uploadedIds);
       if (!uploadId) return;
       isCreatingDirectLink = true;
+      hideDirectLinkError();
       setDraftLocked(true);
       refreshState();
+      let created = false;
       try {
         const response = await fetch("/api/shares/direct-link", {
           method: "POST",
@@ -830,25 +773,29 @@
         }
         const payload = await response.json();
         const url = (payload.url || "").trim();
-        if (!url) {
+        const token = (payload.token || "").trim() || url.slice(url.lastIndexOf("/") + 1);
+        if (!url || !token) {
           showDirectLinkError("The server did not return a link.");
           return;
         }
-        replaceDraft((payload.nextDraftShareId || "").trim());
+        created = true;
         const copied = await copyText(url);
-        showDirectLinkResult(url, payload.expiresAtUtc || "", copied);
+        try {
+          if (copied) sessionStorage.setItem(directLinkCopiedStorageKey, token);
+          else sessionStorage.removeItem(directLinkCopiedStorageKey);
+        } catch {
+        }
+        window.location.replace(`/shares/created/${encodeURIComponent(token)}`);
       } catch {
+        if (created) return;
         showDirectLinkError("Could not create the direct link. Check your connection and try again.");
       } finally {
-        isCreatingDirectLink = false;
-        setDraftLocked(false);
-        refreshState();
+        if (!created) {
+          isCreatingDirectLink = false;
+          setDraftLocked(false);
+          refreshState();
+        }
       }
-    });
-    directResultCopy?.addEventListener("click", async () => {
-      if (!directLinkUrl) return;
-      const copied = await copyText(directLinkUrl);
-      setDirectLinkNotice(copied ? "Copied to clipboard" : "Could not copy; select the link and copy it manually.", copied);
     });
     form.addEventListener("submit", (event) => {
       if (submit.disabled || isSubmitting) {
