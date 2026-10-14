@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.23] - 2026-10-14
+
+### Fixed
+- The direct-link duration control no longer clips its "Expires in" label in browsers that size nested selects differently; on phones the control and the buttons stack full width.
+
+### Changed
+- Creating a temporary direct link opens the created page (with the copied-to-clipboard confirmation) instead of an inline panel.
+
 ## [0.9.22] - 2026-10-13
 
 ### Added
