@@ -21,8 +21,9 @@ Decisions taken with the owner:
 3. The capture opens in the **editor**:
    - **Rectangle** tool: drag to draw an outlined rectangle.
    - **Callout** tool: click to place a text bubble, type the comment, drag the arrow tip onto the item it refers to.
-   - **Colors**: ten fixed colors. Every new annotation takes the next color in the rotation (1st red, 2nd orange, ...,
-     11th red again). Clicking a palette swatch sets which color comes next.
+   - **Colors**: ten fixed colors for rectangles. Every new rectangle takes the next color in the rotation (1st red,
+     2nd orange, ..., 11th red again). Clicking a palette swatch sets which color comes next. Callouts always use one
+     fixed style (near-black arrow and border, white bubble, dark text) and do not advance the rotation.
    - Select/move/resize, delete (Backspace), undo/redo (Cmd-Z / Cmd-Shift-Z).
    - Bottom bar: duration (30 min, 6 h, 1 day, 7 days; last choice remembered), **Upload** (Cmd-Enter),
      **Copy image**, **Save...**, **Cancel** (Esc).
@@ -32,7 +33,11 @@ Decisions taken with the owner:
      button (shows "Copied" on click) and a close button. It **disappears after 15 s**; hovering pauses the timer.
    - the editor closes.
    On failure the editor stays open with the error and a Retry, so no work is lost.
-5. The tray menu has **Recent links** (last 10: copy, open in browser), **Settings...**, **Quit**.
+5. The tray menu has **Recent links** (last 10: copy, open in browser, **Delete link** after a confirmation),
+   **Settings...**, **Quit**. Default hotkeys: **Ctrl-Shift-A** capture area, **Ctrl-Shift-S** capture full screen
+   (changeable in Settings).
+6. Nothing is kept on the Mac after upload except the Recent links entry (URL and expiry). Save... in the editor is the
+   only way to keep the image locally.
 
 ### 1.2 Connecting the app (one time)
 
@@ -47,7 +52,8 @@ apps immediately.
 
 ### 1.3 What an app token can do
 
-Only what the capture app needs: read its own account summary and create temporary direct links. It cannot open the web
+Only what the capture app needs: read its own account summary, create temporary direct links and delete its owner's
+direct links. It cannot open the web
 UI, list or change shares, or reach admin endpoints.
 
 ## 2. Authentication protocol
@@ -87,7 +93,7 @@ Rules:
 - Token: `agora_pat_` + 32 random bytes b64url. Returned **once**; stored as SHA-256 hash plus an 8-character display
   prefix. Unlike `ShareToken` (plaintext by design), API tokens and codes are **always hashed**.
 - Token lifetime: no fixed expiry; revoked by the user, by security stamp rotation, or after **180 days without use**
-  (open question 1).
+  (idle expiry, measured from `LastUsedAtUtc`, else `ExchangedAtUtc`).
 - Deny on the consent page redirects with `error=access_denied&state=...`.
 - Errors from `/api/v1/auth/token` follow RFC 6749 style JSON: `{error: "invalid_grant" | "invalid_request", error_description}`
   with 400.
@@ -104,6 +110,7 @@ Full contract goes to `docs/api/v1.md` (the Mac app is built from that document 
 | `DELETE /api/v1/auth/token` | bearer | revoke the calling token (Disconnect) |
 | `GET /api/v1/me` | bearer | `{email, displayName, serverVersion, maxFileSizeBytes, directLinkDurations: ["30m","6h","1d","7d"]}` |
 | `POST /api/v1/captures?duration=1d` | bearer | multipart, one part `file` (PNG or JPEG); returns `{url, token, expiresAtUtc}` |
+| `DELETE /api/v1/shares/{token}` | bearer | delete one of the caller's own **direct links** early; 204, or 404 when not found / not owned / not a direct link (no difference visible), idempotent for already deleted |
 
 - `duration` is in the query string so validation and admission run before the body is read.
 - `/api/v1/*` never needs CSRF and ignores cookies.
@@ -171,6 +178,8 @@ Full contract goes to `docs/api/v1.md` (the Mac app is built from that document 
 - Factor the shared part of `DirectLinkEndpoints.CreateAsync` into a small helper so both paths keep identical
   seal/compensation behavior.
 - `GET /api/v1/me`, `DELETE /api/v1/auth/token`, `POST /api/v1/auth/token` in the same file.
+- `DELETE /api/v1/shares/{token}`: look up by token and owner, require `IsDirectLink(AccessMode)`, then call the same
+  ShareManager delete path the web UI's `/shares/{id}/delete` uses (so object cleanup and auditing stay identical).
 - The result is an ordinary direct link: it appears in My shares with the Direct link badge, counts views, expires and
   is purged as today.
 
@@ -193,7 +202,8 @@ Full contract goes to `docs/api/v1.md` (the Mac app is built from that document 
 - E2E (`tests/e2e/specs/api-capture.spec.ts`, Playwright `request` with `maxRedirects: 0`): sign in, GET authorize,
   POST Approve, read `code` from the `Location` header, exchange, `GET /api/v1/me`, `POST /api/v1/captures` with a PNG,
   `GET /s/{token}` returns `image/png`; token on `/api/shares` and an admin endpoint gets 401/403; a cookie-only call to
-  `/api/v1/me` gets 401; second exchange of the same code fails; revoke in Settings then 401; password change then 401.
+  `/api/v1/me` gets 401; second exchange of the same code fails; `DELETE /api/v1/shares/{token}` then `/s/{token}` is
+  410, and deleting another user's link or a normal share gets 404; revoke in Settings then 401; password change then 401.
   Run on the postgres+s3 leg.
 
 ### 4.9 Docs
@@ -214,31 +224,36 @@ Full contract goes to `docs/api/v1.md` (the Mac app is built from that document 
   PNG; handles user cancel (no file) and missing permission (open System Settings > Privacy > Screen Recording with an
   explanation). ScreenCaptureKit is a later option if the CLI turns out to be limiting.
 - `Editor`: `NSWindow` sized to the image (scaled to fit the screen), a SwiftUI canvas.
-  - Model: `[Annotation]` where `Annotation = .rect(frame, colorIndex) | .callout(bubbleOrigin, text, arrowTip, colorIndex)`,
+  - Model: `[Annotation]` where `Annotation = .rect(frame, colorIndex) | .callout(bubbleOrigin, text, arrowTip)`,
     coordinates in image pixels; `UndoManager` for every change.
-  - Color rotation: `nextColorIndex` advances by one (mod 10) each time an annotation is created; clicking a swatch sets
-    it. Rectangles and callouts share the rotation (open question 2).
-  - Palette (outline/arrow color; callout bubble is white with a border in the same color and dark text):
+  - Color rotation: `nextColorIndex` advances by one (mod 10) each time a rectangle is created; clicking a swatch sets
+    it (and recolors the selected rectangle). Callouts have no color: near-black (`#1D1D1F`) arrow and 2 pt border,
+    white bubble, dark text, a subtle shadow so they read on dark screenshots too.
+  - Rectangle palette:
     `#E5322D` red, `#F7811E` orange, `#F5C400` yellow, `#3DAE2B` green, `#00A3A1` teal, `#1F7AE0` blue,
     `#5B4FE0` indigo, `#A23CC8` purple, `#E8418C` pink, `#1D1D1F` near-black.
   - Stroke 3 pt at display scale (6 px on Retina images); callout text 15 pt system font; the arrow is a line with a
     filled head from the bubble edge to the tip.
   - Export: render the image plus annotations with Core Graphics at native pixel size into PNG data (sRGB).
-- `AgoraClient`: `URLSession`; `me()`, `uploadCapture(png, duration)` with progress, `revoke()`. Maps 401 to "Reconnect",
+- `AgoraClient`: `URLSession`; `me()`, `uploadCapture(png, duration)` with progress, `deleteShare(token)`, `revoke()`. Maps 401 to "Reconnect",
   429/503/507 to a retryable message.
 - `Auth`: `NWListener` on `127.0.0.1` port 0, one-shot `/callback` handler with a 5-minute timeout, PKCE + state, opens
   the authorize URL with `NSWorkspace`, exchanges the code, stores token + server URL in the **Keychain**
-  (`kSecClassGenericPassword`, service `com.dualconsult.agoracapture`).
+  (`kSecClassGenericPassword`, service `agora.capture`).
 - `Toast`: a borderless non-activating `NSPanel` (floating level, all Spaces, top-right of the screen with the menu bar)
   with the thumbnail, URL, expiry, **Copy link** and close. It auto-dismisses after **15 s**, the timer pauses on hover,
   and a new upload replaces it. We use our own panel instead of `UNUserNotificationCenter` because system
   notifications cannot be dismissed on a timer and cannot reliably show an inline copy button.
-- `Settings`: server URL, Connect/Disconnect + connected email, hotkeys (defaults **Ctrl-Shift-4** area, **Ctrl-Shift-3**
-  full screen, to avoid Cmd-Shift-3/4 and Ctrl-Cmd-Shift-4), default duration, launch at login (`SMAppService`).
-- `RecentLinks`: last 10 `{url, expiresAt, createdAt}` in `UserDefaults` (no images); expired ones are dimmed.
+- `Settings`: server URL, Connect/Disconnect + connected email, hotkeys (defaults **Ctrl-Shift-A** area,
+  **Ctrl-Shift-S** full screen; free in macOS, but a global hotkey takes them from every app, hence changeable),
+  default duration, launch at login (`SMAppService`).
+- `RecentLinks`: last 10 `{url, token, expiresAt, createdAt}` in `UserDefaults` (no images); expired ones are dimmed.
+  Delete link asks for confirmation, calls `deleteShare`, and removes the entry (also on 404).
+- No image is written outside the temp directory; the temp PNG from `screencapture` is deleted when the editor closes.
+- Bundle identifier **`agora.capture`**, signed with your Apple Development team.
 
 ### 5.3 Testing on the Mac
-- Unit tests: color rotation, PKCE/state generation, callback parsing, annotation hit-testing, export pixel size.
+- Unit tests: color rotation (rectangles only, callouts do not advance it), PKCE/state generation, callback parsing, annotation hit-testing, export pixel size.
 - Manual checklist: area, window and full-screen capture on Retina and non-Retina displays; permission prompt; connect /
   disconnect / revoke in Agora; upload of a large 5K screenshot; toast timing and hover pause; offline error and retry.
 
@@ -252,12 +267,13 @@ Full contract goes to `docs/api/v1.md` (the Mac app is built from that document 
 5. Mac (on the Mac): scaffold, auth/connect, capture + toast with a plain upload (no editor), then the editor, settings,
    recent links.
 
-## 7. Open questions
+## 7. Decisions (resolved 2026-11-04)
 
-1. Token idle expiry: 180 days without use (proposed), never, or a fixed lifetime?
-2. Should callouts share the rectangle color rotation (proposed) or have one fixed color?
-3. Delete a link from the app's Recent links? This needs `DELETE /api/v1/shares/{token}` (owner only, direct links only).
-   Proposed: not in v1.
-4. Keep a local copy of each annotated PNG (e.g. `~/Pictures/AgoraCapture/`)? Proposed: no, but Save... is in the editor.
-5. Hotkey defaults Ctrl-Shift-4 / Ctrl-Shift-3: OK?
-6. Bundle identifier / signing team for the Mac app (`com.dualconsult.agoracapture` assumed).
+1. Token idle expiry: **180 days without use**.
+2. Callouts: **one fixed style** (near-black arrow/border, white bubble); only rectangles rotate colors.
+3. Delete from the app: **yes, in v1**, via `DELETE /api/v1/shares/{token}` (owner's direct links only).
+4. Local copies: **none**; Save... in the editor only.
+5. Hotkeys: **Ctrl-Shift-A** area, **Ctrl-Shift-S** full screen.
+6. Bundle identifier: **`agora.capture`**, Apple Development signing.
+
+No open questions remain.
