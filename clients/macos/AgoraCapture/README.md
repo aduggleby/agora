@@ -72,6 +72,8 @@ The bottom bar labels the expiry dropdown **Keep for** and places it immediately
 
 A successful share closes its source editor immediately, before the thumbnail toast appears. Failed shares keep the editor and annotations open for retry.
 
-The repository README includes the tray menu, image editor, browser approval and confirmation views using staged sample data. Image provenance and regeneration notes are in `docs/images/macos/README.md`.
+The repository README includes the tray menu, image editor, Settings, browser approval and confirmation views using staged sample data. Image provenance and regeneration notes are in `docs/images/macos/README.md`.
 
 Settings uses the approved minimal layout: a compact connection card, separate area/full-screen shortcut recorders, Keep links for, and Launch at login. The earlier combined preset is migrated on upgrade. Duplicate or unavailable shortcuts are rejected without overwriting the previous choice. Keep links for is the initial expiry selection for new captures; individual shares may override it, and the last successfully shared choice becomes the next default. It does not affect locally saved images.
+
+<img src="../../../docs/images/macos/settings.png" alt="Minimal Settings screen with sample account details and independent capture shortcuts" width="540">

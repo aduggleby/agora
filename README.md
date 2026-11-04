@@ -683,6 +683,14 @@ Use the slim tool rail to annotate. **Delete** removes the selected annotation; 
 
 ![Agora Capture editor with a rectangle, inline comment and arrow, and the Share link and Keep for controls](docs/images/macos/image-editor.png)
 
+### Settings
+
+The compact Settings screen shows your connected server and account, separate shortcut recorders for area and full-screen capture, and **Launch at login**. Click either shortcut to record a new combination; Escape cancels.
+
+**Keep links for** sets the initial expiry for new captures, measured from link creation. You can change it before sharing; the last successfully shared choice becomes the next default. It does not affect PNGs saved on your Mac.
+
+<img src="docs/images/macos/settings.png" alt="Agora Capture Settings with a sample connected account, separate capture shortcut recorders, Keep links for, and Launch at login" width="540">
+
 ### Approve the app in your browser
 
 In the app's Settings, enter your server URL and choose **Connect in browser**. Sign in to Agora and approve the device. Agora shows the permissions before issuing an app token; the capture app never receives your password.
