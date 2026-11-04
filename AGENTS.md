@@ -24,6 +24,8 @@ When working in this repository, agents should prioritize:
 - Keep all persisted mutable runtime data under `/app/data` when containerized.
 - Logs: daily rolling file plus stdout; retention configurable (`Agora__Logging__File__RetainedDays`), default 30 days.
 - Share tokens are stored and queried in plaintext via `ShareToken` (indexed). Do not reintroduce hashing without an explicit request.
+- API tokens and authorization codes are stored only as SHA-256 hashes (the plaintext rule applies only to `ShareToken`).
+- `/api/v1/*` accepts only bearer API tokens; all other endpoints accept only the cookie session. Keep authorization policies pinned to their scheme (`Startup/AuthSetup.cs`) and the contract in `docs/api/v1.md` current.
 - Never hand-author EF migration files. Create/remove migrations only via `dotnet ef` tooling.
 - Two migration sets must stay in sync: SQL Server (`AgoraDbContext`, `Migrations/`) and PostgreSQL (`PostgresAgoraDbContext`, `Migrations/Postgres/`). Add migrations with `scripts/add-migration.sh <Name>`, which runs `dotnet ef migrations add` for both contexts.
 - SQLite must not be used for app runtime or e2e. Use SQL Server or PostgreSQL (`Database__Provider`). SQLite in-memory is allowed only in fast unit tests.
@@ -79,6 +81,8 @@ E2E defaults:
 - `src/Agora.Domain` - entities
 - `tests/Agora.Application.Tests` - fast unit tests
 - `tests/e2e` - end-to-end browser tests
+- `clients/macos` - macOS capture app (Swift; built on a Mac with Xcode/XcodeGen, not part of `Agora.slnx` or the Docker build)
+- `docs/api` - API contract for connected apps (`v1.md`)
 - `docs/plans` - planning artifacts
 - `todos` - file-based work tracking
 

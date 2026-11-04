@@ -16,6 +16,8 @@ with one data volume, a SQL Server or PostgreSQL database, and optionally an S3-
 - Public upload links (`/u/{code}`): anyone can send files to your account without signing in, with server-side quotas
 - Temporary direct links: one image, video, audio file, PDF or text file served raw at `/s/{token}` for 30 minutes
   to 7 days, for chats, forums or `<img src>`
+- Connected apps: a macOS capture app signs in through the browser and uploads annotated screenshots as direct links
+  ([API](docs/api/v1.md))
 - Share history with a separate "Received" section for files that arrived through your upload link
 - Accounts with email confirmation, password reset, display name and per-account share defaults
 - Admin page (`/admin`): manage users and roles, enable or disable accounts, switch registration off
@@ -589,7 +591,7 @@ received public uploads. The provider is chosen by `Email__Provider`:
   subject, HTML body and the action link) to `Email__FileSystem__OutputDirectory`. Meant for development and for a
   first local test; the e2e suite and `run-dev.sh` use it.
 
-## Public upload links and temporary direct links
+## Public upload links, temporary direct links and apps
 
 ### Public upload links
 
@@ -628,6 +630,24 @@ forums or an `<img src>`.
 For API clients: `POST /api/shares/direct-link` (signed in, JSON `{draftShareId, uploadId, duration}` with `duration`
 one of `30m`, `6h`, `1d`, `7d`, the CSRF token in the `X-CSRF-TOKEN` header, body at most 16 KB) returns
 `{url, token, expiresAtUtc}`.
+
+### Capture app and API tokens
+
+Apps can connect to an account without ever seeing its password. The first one is the macOS capture app
+(`clients/macos`): it takes a screenshot, lets you annotate it and uploads it as a temporary direct link.
+
+- **Connecting**: the app opens `/connect/authorize` in your browser (sign in first if needed), you approve the device,
+  and the browser hands a one-time code back to the app on `127.0.0.1` (OAuth authorization code with PKCE and a
+  loopback redirect). The app exchanges it for an API token (`agora_pat_...`).
+- **What a token can do**: read the account's email and name, create temporary direct links from PNG/JPEG images, and
+  delete the account's direct links. It works only on `/api/v1/*`; every other page and endpoint ignores it, and
+  `/api/v1/*` ignores the browser session.
+- **Managing**: Account > Settings > Connected apps lists each device (connected, last used) with **Revoke**. A password
+  change or reset, an email change, a role change or disabling the user disconnects all apps; a token unused for 180
+  days stops working.
+- Tokens and authorization codes are stored only as SHA-256 hashes; the token is shown to the app once.
+
+The full contract (flow, endpoints, errors, curl examples) is in [`docs/api/v1.md`](docs/api/v1.md).
 
 ### Share links in general
 

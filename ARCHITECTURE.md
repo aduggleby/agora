@@ -117,6 +117,19 @@ Immutable-ish audit/event stream for downloads.
 
 Authentication, confirmation, lockout, account defaults, display name (`DisplayName`), and public upload token (`UploadToken`, customizable 2-64 character alphanumeric code).
 
+### `ApiToken`
+
+A connected app's access to one account (the capture app's bearer token), one row per consent:
+
+- `UserId` (cascade delete), `ClientId` (`agora-capture`), `DeviceName` (sanitized, at most 100 characters).
+- Pending state: `AuthCodeHash` (SHA-256 of the authorization code, unique, cleared by the first exchange attempt so the
+  code is single use), `AuthCodeExpiresAtUtc` (10 minutes), `CodeChallenge` (PKCE S256), `RedirectUri` (loopback).
+- Active state: `TokenHash` (SHA-256 of `agora_pat_...`, unique), `TokenPrefix` (8 display characters),
+  `ExchangedAtUtc`, `LastUsedAtUtc` (written at most every 15 minutes).
+- `IssuedSecurityStamp`: the user's stamp at consent; any rotation invalidates the token. `RevokedAtUtc` ends it.
+- Codes and tokens are only ever stored hashed (unlike `ShareToken`). The recurring `cleanup-api-tokens` job revokes
+  tokens of rotated/disabled users and deletes expired pending rows and long-dead rows.
+
 ### `AccountTemplate`
 
 Per-account default download page template used when creating new shares.
@@ -217,6 +230,39 @@ Gate checks consistently enforce:
 
 Auth email delivery is queued through `AuthEmailJob` and `IEmailSender` implementation.
 
+## 5.6 Connected App Flow (API tokens)
+
+Contract: [`docs/api/v1.md`](docs/api/v1.md). OAuth 2.0 authorization code with PKCE (S256) and a loopback redirect,
+implemented without an OAuth library for the single public client `agora-capture`.
+
+1. The app listens on `http://127.0.0.1:<port>/callback` and opens `GET /connect/authorize` (`Pages/Connect/Authorize`,
+   cookie `[Authorize]`). Unauthenticated browsers go to `/login?returnUrl=<authorize URL>`; `POST /login` honors only
+   local return paths (`LocalUrls`).
+2. The page validates `redirect_uri` first (`ApiTokens.IsValidRedirectUri`; invalid: error page, never a redirect),
+   then `client_id`, `state`, `code_challenge(_method)` and `device_name` (invalid: redirect with
+   `error=invalid_request`). Responses carry `Cache-Control: no-store`, `Referrer-Policy: no-referrer`,
+   `X-Frame-Options: DENY`, and the page's report-only CSP adds the loopback origin to `form-action`.
+3. Approve/Deny posts the parameters back as hidden fields (antiforgery form) and they are validated again. Approve
+   calls `ApiTokenService.CreatePendingAsync` (pending `ApiToken` row with the code hash) and redirects `302` to
+   `redirect_uri?code=..&state=..`; Deny redirects with `error=access_denied`.
+4. `POST /api/v1/auth/token` (anonymous, `AuthEndpoints` rate limit) calls `ExchangeAsync`: the code hash is cleared
+   atomically by the first attempt, then client, redirect URI, PKCE, expiry and the user's stamp are checked; success
+   stores the token hash and returns the plaintext token once.
+5. API calls send `Authorization: Bearer agora_pat_...`. The default authenticate scheme is the policy scheme `Smart`
+   (`Startup/AuthSetup.cs`): it forwards to the `ApiToken` scheme only for that header on an endpoint marked
+   `ApiEndpointMetadata` (the `/api/v1` group), otherwise to cookies, so `HttpContext.User` is set before CSRF and
+   rate limiting. `ApiTokenAuthenticationHandler` calls `ValidateAsync` (hash lookup; revoked, disabled user, stamp
+   mismatch and 180-day idle are refused) and builds a principal with the user id, email, name and `agora:token_id`
+   claims but no role.
+6. Authorization pins schemes: the default, fallback and `AdminOnly` policies authenticate with cookies only, the
+   `ApiClient` policy (all of `/api/v1` except the token exchange) with `ApiToken` only. A token elsewhere gets JSON
+   401/403 (never a login redirect), a cookie on `/api/v1` gets 401. CSRF is skipped on `/api/v1` endpoints.
+7. `POST /api/v1/captures` stages the single `file` part into a fresh draft and reuses
+   `DirectLinkEndpoints.CreateFromDraftAsync` (same seal/compensation as the browser flow); `DELETE /api/v1/shares/{token}`
+   deletes only the caller's own direct links through `ShareManager.DeleteShareAsync`.
+8. Settings > Connected apps lists `ListForUserAsync` and revokes with `RevokeAsync`; `DELETE /api/v1/auth/token`
+   revokes the calling token.
+
 ## 6. Storage and Filesystem Layout
 
 Relative to `StorageRoot` (`Agora__StorageRoot`):
@@ -237,7 +283,9 @@ Important invariant: template background uploads are purpose-separated so they d
 
 ## 7.1 Identity and Access
 
-- Cookie authentication with role-based authorization (`AdminOnly`).
+- Cookie authentication with role-based authorization (`AdminOnly`) for every page and endpoint outside `/api/v1`.
+- Bearer API tokens (`ApiToken` scheme, `ApiClient` policy) for `/api/v1/*` only; see section 5.6. The two
+  credentials never overlap.
 - Public shares are bearer-by-URL-token (`ShareToken`).
 - Share ownership checks on authenticated APIs compare uploader email/claims.
 
@@ -252,6 +300,8 @@ Important invariant: template background uploads are purpose-separated so they d
 - Account passwords: hashed (never plaintext).
 - Download passwords: hashed in `Share.DownloadPasswordHash`.
 - Share URL token: stored plaintext for direct lookup and URL use.
+- API tokens and authorization codes: stored only as SHA-256 hashes (`ApiToken.TokenHash`, `AuthCodeHash`); PKCE is
+  checked in fixed time.
 - Confirmation/reset tokens are generated and stored as hashes where applicable in account flows.
 
 ## 7.4 Path and File Safety
@@ -346,6 +396,8 @@ Primary seams for additive change:
 - Namespaces and projects remain under `Agora.*`.
 - Token-at-rest hashing behavior for account/security tokens remains intact.
 - Download password remains hashed at rest.
+- API tokens and authorization codes are stored only as SHA-256 hashes.
+- `/api/v1/*` accepts only bearer API tokens; every other endpoint accepts only the cookie session.
 - Mutable runtime data stays under storage root (`/app/data` in container).
 - Log retention remains daily rolling with 30-day retention.
 
