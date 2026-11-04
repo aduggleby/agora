@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Agora Capture 0.1.3] - 2026-11-04
+
+### Fixed
+- Successful sharing immediately closes the source editor before showing the link toast. Failed uploads retain the editor and annotations for retry.
+
 ## [Agora Capture 0.1.2] - 2026-11-04
 
 ### Changed

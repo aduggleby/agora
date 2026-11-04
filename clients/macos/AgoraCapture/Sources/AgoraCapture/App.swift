@@ -103,12 +103,19 @@ import ServiceManagement
     func openEditor(_ image: NSImage) {
         let model = EditorModel(image: image)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 760), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
+        window.identifier = NSUserInterfaceItemIdentifier(model.windowID)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.title = "Agora Capture"; window.isReleasedWhenClosed = false; window.delegate = self
-        window.contentView = NSHostingView(rootView: EditorView(model: model, app: self, close: { [weak window] in window?.close() }))
+        window.contentView = NSHostingView(rootView: EditorView(model: model, app: self, close: { self.closeEditor(model.windowID) }))
         window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         editorWindows.removeAll { !$0.isVisible }; editorWindows.append(window)
+    }
+    func closeEditor(_ id: String) {
+        guard let window = editorWindows.first(where: { $0.identifier?.rawValue == id }) else { return }
+        window.orderOut(nil)
+        window.close()
+        editorWindows.removeAll { $0 === window }
     }
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }

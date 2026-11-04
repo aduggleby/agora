@@ -53,7 +53,7 @@ AGORA_TEST_LOOPBACK=1 CLANG_MODULE_CACHE_PATH="$PWD/.build/module-cache" swift t
 .build/debug/AgoraCapture --render-previews /absolute/output/directory
 ```
 
-22 tests cover API request/response contracts, disconnect cleanup on network failure, 401 invalidation, upload multipart formatting, deletion/idempotency, retry timing, origin normalization, PKCE/callback validation, a real loopback callback round trip, image export orientation/size, resize geometry and inline editing/undo. API contract tests use an injected URLProtocol fixture, not the live server. The socket test is opt-in and was run successfully during integration.
+25 tests cover API request/response contracts, disconnect cleanup on network failure, 401 invalidation, upload multipart formatting, deletion/idempotency, retry timing, origin normalization, PKCE/callback validation, a real loopback callback round trip, image export orientation/size, resize geometry and inline editing/undo. API contract tests use an injected URLProtocol fixture, not the live server. The socket test is opt-in and was run successfully during integration.
 
 Live verification against the selected server confirmed its documented unauthenticated 401, then successful browser consent, code exchange, Keychain persistence and authenticated `/me` account/expiry loading. Upload/deletion/revocation are covered by contract tests, but were not exercised on the live account. The server itself is unchanged by this client work and its .NET tests were not run (no local .NET SDK).
 
@@ -68,3 +68,5 @@ Every push to `main` triggers `.github/workflows/capture-release.yml`: run Swift
 The browser callback page matches Agora's authorization page: cream/ink/terra styling, locally bundled Instrument Serif and DM Sans fonts, outcome-specific copy and a Return to Agora Capture button. The `agora-capture://auth/complete` URL opens Settings only; it carries no credentials and cannot authorize a connection. Callback responses disable caching, referrers, external resources and framing; all displayed error text is escaped. The code/state query is never echoed into the HTML. Font licenses are included in `Resources/Fonts`.
 
 The bottom bar labels the expiry dropdown **Keep for** and places it immediately to the right of Share link. Delete removes the selected rectangle or comment (and is disabled without a selection); Cancel closes the entire capture without uploading.
+
+A successful share closes its source editor immediately, before the thumbnail toast appears. Failed shares keep the editor and annotations open for retry.

@@ -3,6 +3,7 @@ import SwiftUI
 
 @MainActor final class EditorModel: ObservableObject {
     enum Tool: String, CaseIterable { case select = "Select", rectangle = "Rectangle", callout = "Callout" }
+    let windowID = UUID().uuidString
     let image: NSImage
     let pixelSize: CGSize
     @Published var annotations: [Annotation] = []
@@ -28,6 +29,19 @@ import SwiftUI
     func chooseColor(_ color: Int) {
         nextColor = color
         if let i = annotations.firstIndex(where: { $0.id == selected && $0.kind == .rectangle }) { checkpoint(); annotations[i].colorIndex = color }
+    }
+    func share<T>(using operation: () async throws -> T, onSuccess: (T) -> Void) async {
+        guard !uploading else { return }
+        error = nil; uploading = true; uploadProgress = 0; retryAfter = nil
+        do {
+            let result = try await operation()
+            uploading = false
+            onSuccess(result)
+        } catch {
+            uploading = false
+            self.error = error.localizedDescription
+            if let api = error as? APIError, let delay = api.retryAfter { retryAfter = Date().addingTimeInterval(delay) }
+        }
     }
     func export() -> Data? {
         let width = Int(pixelSize.width), height = Int(pixelSize.height)
@@ -333,19 +347,17 @@ struct EditorView: View {
         if panel.runModal() == .OK, let url = panel.url { do { guard let data = model.export() else { return }; try data.write(to: url, options: .atomic) } catch { model.error = error.localizedDescription } }
     }
     func upload() async {
-        model.error = nil; model.uploading = true; model.uploadProgress = 0; model.retryAfter = nil
-        defer { model.uploading = false }
-        do {
+        await model.share(using: {
             guard let png = model.export() else { throw ClientError(message: "Could not render this capture.") }
             let link = try await app.upload(png, duration: model.duration) { progress in
                 Task { @MainActor in model.uploadProgress = progress }
             }
+            return (link, png)
+        }, onSuccess: { link, png in
             UserDefaults.standard.set(model.duration, forKey: "duration")
-            app.showToast(link, image: NSImage(data: png)!)
+            // Dismiss the source editor before presenting the success toast.
             close()
-        } catch {
-            model.error = error.localizedDescription
-            if let api = error as? APIError, let delay = api.retryAfter { model.retryAfter = Date().addingTimeInterval(delay) }
-        }
+            if let image = NSImage(data: png) { app.showToast(link, image: image) }
+        })
     }
 }

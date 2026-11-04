@@ -84,4 +84,54 @@ final class CaptureTests: XCTestCase {
         XCTAssertEqual(model.annotations[0].text, "Add a comment")
     }
 
+    @MainActor func testSuccessfulShareClosesOnlyAfterUploadCompletes() async {
+        let model = EditorModel(image: fixtureImage())
+        var closed = false
+        await model.share(using: {
+            XCTAssertTrue(model.uploading)
+            XCTAssertFalse(closed)
+            return "shared-link"
+        }, onSuccess: { result in
+            XCTAssertEqual(result, "shared-link")
+            XCTAssertFalse(model.uploading)
+            closed = true
+        })
+        XCTAssertTrue(closed)
+    }
+    @MainActor func testFailedShareKeepsEditorAndAnnotationsForRetry() async {
+        let model = EditorModel(image: fixtureImage())
+        let annotation = Annotation(kind: .rectangle, frame: CGRect(x: 5, y: 5, width: 40, height: 40))
+        model.annotations = [annotation]
+        var closed = false
+        await model.share(using: { () async throws -> String in
+            throw APIError(status: 503, retryAfter: 5)
+        }, onSuccess: { _ in closed = true })
+        XCTAssertFalse(closed)
+        XCTAssertFalse(model.uploading)
+        XCTAssertEqual(model.annotations, [annotation])
+        XCTAssertNotNil(model.error)
+        XCTAssertNotNil(model.retryAfter)
+    }
+    @MainActor func testCloseEditorReleasesOnlyTheMatchingWindow() {
+        _ = NSApplication.shared
+        let app = CaptureApp()
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.identifier = NSUserInterfaceItemIdentifier("shared-editor")
+        window.delegate = app
+        window.contentView = NSView()
+        app.editorWindows = [window]
+        app.closeEditor("unrelated-editor")
+        XCTAssertEqual(app.editorWindows.count, 1)
+        app.closeEditor("shared-editor")
+        XCTAssertFalse(window.isVisible)
+        XCTAssertTrue(app.editorWindows.isEmpty)
+        XCTAssertNil(window.contentView)
+    }
+    @MainActor private func fixtureImage() -> NSImage {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 100, pixelsHigh: 100, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let image = NSImage(size: CGSize(width: 100, height: 100)); image.addRepresentation(rep)
+        return image
+    }
+
 }
