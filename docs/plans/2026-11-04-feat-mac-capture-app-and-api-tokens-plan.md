@@ -1,6 +1,6 @@
 # Mac capture app, API tokens and capture API (plan)
 
-Status: proposed, 2026-11-04. Scope: server side (API tokens, browser sign-in for apps, capture endpoint) in this
+Status: server API released in 0.10.0; macOS client integrated, 2026-11-04. Scope: server side (API tokens, browser sign-in for apps, capture endpoint) in this
 repo, plus the macOS tray app under `clients/macos/AgoraCapture` (built on the Mac). One migration.
 
 Decisions taken with the owner:
@@ -277,3 +277,14 @@ Full contract goes to `docs/api/v1.md` (the Mac app is built from that document 
 6. Bundle identifier: **`agora.capture`**, Apple Development signing.
 
 No open questions remain.
+
+## Client implementation progress (2026-11-04)
+
+An initial client now exists under `clients/macos/AgoraCapture`, independently of the server work. SwiftPM and XcodeGen build definitions are included. Native capture, annotation editing/export, settings, recent links, clipboard and timed toast are implemented with demo mode enabled by default. Browser PKCE sign-in, Keychain and a client for the proposed API are implemented but not verified against a running server. See the client README for validation, known gaps, and the integration checklist. This does not mark the server implementation complete.
+
+Initial deviations: native system fonts, two selectable hotkey presets using system Carbon APIs rather than a third-party shortcut dependency, and indeterminate upload status. Arbitrary hotkey recording and byte progress remain follow-up work. Builds default to ad-hoc signing; pass an Apple Development identity for stable capture permission.
+
+
+## Client API v1 integration (2026-11-04)
+
+Integrated with the released 0.10.0 server contract at `docs/api/v1.md` (upstream `83b5fba`). Demo mode, fake uploads and the sample capture menu are removed. Browser PKCE consent, token exchange, `/me`, multipart upload with progress, direct-link deletion and disconnect now follow the published contract. HTTP 401 deletes credentials, disconnect forgets credentials even offline, deletion accepts 204/404, and 429/503/507 offer delayed retry with annotations retained. Durations/limits are server-provided. The app was tested with 21 Swift tests, including a real loopback callback round trip; live browser consent, code exchange, Keychain persistence and account/expiry loading were verified successfully. Live upload/deletion/revocation remain manual checks. The server API was pulled without changes to its implementation.

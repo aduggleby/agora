@@ -1,0 +1,20 @@
+name: AgoraCapture
+options:
+  bundleIdPrefix: agora
+  deploymentTarget:
+    macOS: '14.0'
+targets:
+  AgoraCapture:
+    type: application
+    platform: macOS
+    sources: [Sources/AgoraCapture]
+    resources: [Resources]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: agora.capture
+        SWIFT_VERSION: '5.0'
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleIconFile: AgoraCapture.icns
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Agora Capture
+        CODE_SIGN_STYLE: Automatic

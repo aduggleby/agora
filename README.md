@@ -811,3 +811,7 @@ ando run --dind
 ```
 
 Learn more about ANDO: [andobuild.com](https://andobuild.com)
+
+### macOS capture client
+
+A native menu bar app is under `clients/macos/AgoraCapture`. It supports native capture, rectangle/callout annotation, PNG export, browser sign-in, and real API v1 uploads with progress, clipboard links, and recent-link deletion. See `clients/macos/AgoraCapture/README.md` for building, signing, and integration status.

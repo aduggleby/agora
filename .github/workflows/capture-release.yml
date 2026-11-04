@@ -1,0 +1,60 @@
+name: Release Agora Capture
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Test client and loopback sign-in
+        working-directory: clients/macos/AgoraCapture
+        env:
+          AGORA_TEST_LOOPBACK: '1'
+        run: |
+          export CLANG_MODULE_CACHE_PATH="$PWD/.build/module-cache"
+          swift test --disable-sandbox
+      - name: Build app
+        working-directory: clients/macos/AgoraCapture
+        env:
+          AGORA_SKIP_INSTALL: '1'
+          AGORA_BUILD_NUMBER: ${{ github.run_number }}
+        run: ./scripts/build-app.sh "$RUNNER_TEMP/Agora Capture.app"
+      - name: Package release
+        id: package
+        run: |
+          version="$(cat clients/macos/AgoraCapture/VERSION)"
+          revision="${GITHUB_SHA:0:7}"
+          architecture="$(uname -m)"
+          asset="Agora-Capture-${version}-macOS-${architecture}.zip"
+          mkdir -p release
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/Agora Capture.app" "release/$asset"
+          (cd release && shasum -a 256 "$asset" > "$asset.sha256")
+          echo "tag=capture-v${version}-${revision}" >> "$GITHUB_OUTPUT"
+          echo "title=Agora Capture ${version} (${revision})" >> "$GITHUB_OUTPUT"
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.package.outputs.tag }}
+          RELEASE_TITLE: ${{ steps.package.outputs.title }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release/* \
+              --target "$GITHUB_SHA" --title "$RELEASE_TITLE" \
+              --notes-file clients/macos/AgoraCapture/RELEASE_NOTES.md \
+              --generate-notes --prerelease
+          fi

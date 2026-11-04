@@ -39,3 +39,4 @@ clients/macos/**/build/
 clients/macos/**/xcuserdata/
 clients/macos/**/*.xcuserstate
 clients/macos/**/*.xcodeproj/
+clients/macos/**/.build/

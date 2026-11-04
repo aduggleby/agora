@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Agora Capture 0.1.0] - 2026-11-04
+
+### Added
+- Native macOS menu bar app with area/window/full-screen capture, minimal annotation editor, PNG export, sky-blue Focus icon and white menu bar mark.
+- API v1 integration with browser PKCE sign-in, Keychain storage, upload progress, server expiry choices, clipboard/toast feedback, recent-link deletion and disconnect.
+- Mac app build/install/restart tooling and automatic GitHub prereleases on pushes to `main`, including an app ZIP and SHA-256 checksum.
+- 21 Swift tests covering API contracts, real loopback sign-in, annotation editing/resize and export orientation/dimensions.
+
 ## [0.10.0] - 2026-11-04
 
 ### Added

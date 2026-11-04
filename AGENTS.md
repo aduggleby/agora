@@ -204,3 +204,9 @@ Use these defaults in docs/examples unless user asks otherwise:
 
 - A global `~/.claude/CLAUDE.MD` file was not found in this environment during this update.
 - If that file is later added, mirror relevant persistent guidance here or reference it from this section.
+
+## GitHub publishing
+
+- The owner requests a GitHub release whenever commits are pushed. Push completed work to `main`; `.github/workflows/capture-release.yml` tests and builds the Mac client and publishes a prerelease with an app ZIP and SHA-256 checksum for that exact commit.
+- After pushing, verify the workflow and release succeed; do not report publication complete until the release and assets exist. Do not silently leave a failed release behind.
+- Mac releases use `capture-v<client-version>-<short-commit>` tags, separate from the server version. Update the client `VERSION` and `RELEASE_NOTES.md` as appropriate. Keep ad-hoc builds identified as development previews until distribution signing/notarization is configured.
