@@ -12,13 +12,15 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 namespace Agora.Web.Pages.Account;
 
 [Authorize]
-public class SettingsModel(AuthService authService, AgoraDbContext db, PublicBaseUrlResolver publicBaseUrls) : PageModel
+public class SettingsModel(AuthService authService, AgoraDbContext db, PublicBaseUrlResolver publicBaseUrls, ApiTokenService apiTokens) : PageModel
 {
     public string CurrentEmail { get; private set; } = string.Empty;
     public string DisplayName { get; private set; } = string.Empty;
     public string UploadIntakeUrl { get; private set; } = string.Empty;
     public string UploadIntakeUrlPrefix { get; private set; } = string.Empty;
     public string UploadToken { get; private set; } = string.Empty;
+    /// <summary>Active API tokens of connected apps (Connected apps card).</summary>
+    public IReadOnlyList<ApiTokenSummary> ConnectedApps { get; private set; } = [];
 
     public async Task<IActionResult> OnGet(CancellationToken ct)
     {
@@ -35,6 +37,7 @@ public class SettingsModel(AuthService authService, AgoraDbContext db, PublicBas
         var publicBaseUrl = publicBaseUrls.Resolve(Request);
         UploadIntakeUrlPrefix = $"{publicBaseUrl}/u/";
         UploadIntakeUrl = string.IsNullOrWhiteSpace(token) ? string.Empty : $"{publicBaseUrl}/u/{Uri.EscapeDataString(token)}";
+        ConnectedApps = await apiTokens.ListForUserAsync(userId, ct);
         ViewData["Title"] = "Account Settings";
         ViewData["Message"] = Request.Query["msg"].ToString();
         return Page();
@@ -136,5 +139,17 @@ public class SettingsModel(AuthService authService, AgoraDbContext db, PublicBas
         }
 
         return RedirectToPage("/Account/Settings", new { msg = "Upload link updated" });
+    }
+
+    public async Task<IActionResult> OnPostRevokeAppAsync(CancellationToken ct)
+    {
+        if (User.UserId() is not { } userId)
+        {
+            return RedirectToPage("/Login");
+        }
+
+        var revoked = Guid.TryParse(Request.Form["tokenId"].ToString(), out var tokenId) &&
+                      await apiTokens.RevokeAsync(tokenId, userId, ct);
+        return RedirectToPage("/Account/Settings", null, new { msg = revoked ? "App disconnected" : "Unable to disconnect the app" }, "connected-apps");
     }
 }

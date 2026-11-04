@@ -14,6 +14,7 @@ const entryPoints = [
   'scripts/ts/shares-created.ts',
   'scripts/ts/local-datetime.ts',
   'scripts/ts/share-delete.ts',
+  'scripts/ts/connected-apps.ts',
   'scripts/ts/quick-share-dropzone.ts',
   'scripts/ts/lightbox.ts',
   'scripts/ts/public-upload.ts'

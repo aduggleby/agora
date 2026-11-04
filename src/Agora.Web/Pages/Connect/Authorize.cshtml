@@ -1,0 +1,53 @@
+@page "/connect/authorize"
+@model Agora.Web.Pages.Connect.AuthorizeModel
+
+<div class="max-w-md mx-auto mt-16" data-connect-authorize>
+  <div class="text-center mb-8">
+    <div class="inline-flex items-center justify-center w-12 h-12 bg-terra rounded-xl mb-4">
+      <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"/></svg>
+    </div>
+    <h1 class="font-display text-3xl tracking-tight">Connect an app</h1>
+  </div>
+
+  @if (Model.Error is not null)
+  {
+    <div class="rounded-xl border border-danger/20 bg-danger-wash p-4 text-sm text-danger" role="alert" data-connect-error>
+      @Model.Error
+    </div>
+    <p class="text-sm text-ink-muted mt-6 text-center"><a href="/" class="text-terra font-medium hover:underline">Back to Agora</a></p>
+  }
+  else
+  {
+    <div class="bg-white rounded-2xl border border-border p-6">
+      <p class="text-sm text-ink-light">
+        Allow <span class="font-medium text-ink break-words" data-connect-device>@Model.DeviceName</span> to create temporary links in your account?
+      </p>
+
+      <div class="rounded-xl border border-border bg-cream-dark/40 p-4 mt-4">
+        <p class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1">Signed in as</p>
+        <p class="text-sm text-ink-light break-all" data-connect-email>@Model.Email</p>
+      </div>
+
+      <p class="text-xs font-medium text-ink-muted uppercase tracking-wider mt-5 mb-2">The app will be able to</p>
+      <ul class="space-y-1.5 text-sm text-ink-light list-disc pl-5">
+        <li>create temporary direct links from images it uploads</li>
+        <li>delete the direct links in your account</li>
+        <li>read your account email and name</li>
+      </ul>
+      <p class="text-xs text-ink-muted mt-3">It cannot open the web interface, see or change your other shares, or change your account. You can disconnect it at any time in Account settings.</p>
+
+      <form method="post" action="/connect/authorize" class="mt-6 flex gap-2" data-connect-form>
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="client_id" value="@Model.ClientId" />
+        <input type="hidden" name="redirect_uri" value="@Model.RedirectUri" />
+        <input type="hidden" name="state" value="@Model.State" />
+        <input type="hidden" name="code_challenge" value="@Model.CodeChallenge" />
+        <input type="hidden" name="code_challenge_method" value="@Model.CodeChallengeMethod" />
+        <input type="hidden" name="device_name" value="@Model.DeviceNameRaw" />
+        <button type="submit" name="decision" value="@Agora.Web.Pages.Connect.AuthorizeModel.DenyDecision" class="flex-1 px-4 py-2.5 text-sm font-medium border border-border rounded-lg bg-cream hover:bg-cream-dark/70 transition-colors">Deny</button>
+        <button type="submit" name="decision" value="@Agora.Web.Pages.Connect.AuthorizeModel.ApproveDecision" class="flex-1 px-4 py-2.5 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors">Approve</button>
+      </form>
+    </div>
+    <p class="text-xs text-ink-muted mt-4 text-center">Not you? <a href="/" class="text-terra font-medium hover:underline">Go to Agora</a> and sign out first.</p>
+  }
+</div>

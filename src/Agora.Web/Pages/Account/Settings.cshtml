@@ -64,6 +64,60 @@
   </div>
 </section>
 
+<section id="connected-apps" class="mb-10 scroll-mt-24" data-connected-apps>
+  <div class="bg-white rounded-2xl border border-border p-6">
+    <h3 class="font-display text-xl mb-2">Connected apps</h3>
+    <p class="text-sm text-ink-muted mb-4">Apps you approved, such as the capture app, can create temporary direct links in your account. Changing your password disconnects all of them.</p>
+    @if (Model.ConnectedApps.Count == 0)
+    {
+      <p class="rounded-lg border border-border bg-cream p-3 text-sm text-ink-muted" data-connected-apps-empty>No apps connected.</p>
+    }
+    else
+    {
+      <ul class="divide-y divide-border rounded-lg border border-border bg-cream">
+        @foreach (var app in Model.ConnectedApps)
+        {
+          <li class="flex items-center justify-between gap-4 px-3 py-3" data-connected-app="@app.Id">
+            <div class="min-w-0">
+              <p class="text-sm font-medium text-ink break-words" data-connected-app-name>@app.DeviceName</p>
+              <p class="text-xs text-ink-muted mt-0.5">
+                <span class="font-mono">@(Agora.Application.Utilities.ApiTokens.TokenPrefix)@(app.TokenPrefix)&hellip;</span>
+                &middot; Connected <span data-local-datetime="@app.ConnectedAtUtc.ToString("O")" data-local-datetime-style="compact"></span>
+                &middot; Last used
+                @if (app.LastUsedAtUtc is { } lastUsed)
+                {
+                  <span data-local-datetime="@lastUsed.ToString("O")" data-local-datetime-style="compact"></span>
+                }
+                else
+                {
+                  <span>never</span>
+                }
+              </p>
+            </div>
+            <form method="post" asp-page-handler="RevokeApp" class="m-0 shrink-0" data-revoke-app-form data-app-name="@app.DeviceName">
+              @Html.AntiForgeryToken()
+              <input type="hidden" name="tokenId" value="@app.Id" />
+              <button type="button" class="px-3 py-1.5 text-xs font-medium text-danger border border-border rounded-md bg-white hover:bg-danger-wash transition-colors" data-revoke-app-trigger>Revoke</button>
+            </form>
+          </li>
+        }
+      </ul>
+    }
+  </div>
+</section>
+
+<dialog class="rounded-xl border border-border bg-white p-0 w-full max-w-sm backdrop:bg-black/30 m-auto" style="margin: auto;" data-revoke-app-dialog>
+  <form method="dialog" class="p-5">
+    <h3 class="font-display text-2xl tracking-tight">Revoke app?</h3>
+    <p class="text-sm text-ink-muted mt-2">The app is disconnected immediately and has to be connected again before it can upload.</p>
+    <p class="text-sm text-ink-light mt-2 break-words" data-revoke-app-name></p>
+    <div class="mt-5 flex justify-end gap-2">
+      <button type="button" class="px-4 py-2 text-sm border border-border rounded-lg bg-cream hover:bg-cream-dark/70" data-revoke-app-cancel>Cancel</button>
+      <button type="button" class="px-4 py-2 text-sm bg-danger text-white rounded-lg hover:bg-danger/90" data-revoke-app-confirm>Revoke</button>
+    </div>
+  </form>
+</dialog>
+
 <section id="upload-link-settings" class="mb-10 scroll-mt-24">
   <div class="bg-white rounded-2xl border border-border p-6">
     <h3 class="font-display text-xl mb-2">Upload link</h3>
@@ -93,6 +147,8 @@
   </div>
 </section>
 
+<script nonce="@Html.CspNonce()" src="/js/local-datetime.js" asp-append-version="true"></script>
+<script nonce="@Html.CspNonce()" src="/js/connected-apps.js" asp-append-version="true"></script>
 <script nonce="@Html.CspNonce()">
   (() => {
     const button = document.querySelector('[data-copy-upload-url]');

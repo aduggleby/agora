@@ -31,6 +31,31 @@ public sealed class TokenRedactionTests
     }
 
     [Theory]
+    [InlineData("Authorization: Bearer agora_pat_dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk", "agora_pat_")]
+    [InlineData("http://127.0.0.1:5000/callback?code=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk&state=s", "code=")]
+    [InlineData("?code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk", "code_verifier=")]
+    [InlineData("{\"code\": \"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk\"}", "\"code\": \"")]
+    [InlineData("{\"code_verifier\":\"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk\"}", "\"code_verifier\":\"")]
+    [InlineData("{\"access_token\":\"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk\"}", "\"access_token\":\"")]
+    public void Redact_ReplacesApiTokensCodesAndVerifiers(string input, string keptPrefix)
+    {
+        var redacted = TokenRedaction.Redact(input);
+
+        Assert.DoesNotContain("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk", redacted);
+        Assert.Contains(keptPrefix + "tok:", redacted);
+        Assert.Equal(redacted, TokenRedaction.Redact(redacted));
+    }
+
+    [Theory]
+    [InlineData("?code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256")]
+    [InlineData("error_code=42")]
+    [InlineData("/connect/authorize?client_id=agora-capture&state=abc")]
+    public void Redact_LeavesNonSecretOAuthParametersAlone(string input)
+    {
+        Assert.Equal(input, TokenRedaction.Redact(input));
+    }
+
+    [Theory]
     [InlineData("/js/app.js")]
     [InlineData("/account/settings?msg=Template%20saved")]
     [InlineData("limit=5&count=2")]

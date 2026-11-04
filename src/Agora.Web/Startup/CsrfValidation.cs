@@ -9,6 +9,9 @@ namespace Agora.Web.Startup;
 /// client, unsafe methods are validated (except the E2E test routes and the Hangfire dashboard). Endpoints marked
 /// with <see cref="UploadEndpointMetadata"/> that require the header token are refused before anything reads the form,
 /// because the antiforgery form fallback would otherwise buffer the multipart body ahead of every admission check.
+/// The <c>/api/v1</c> endpoints (<see cref="ApiEndpointMetadata"/>) never run antiforgery and get no CSRF cookies:
+/// their authorization policy accepts only API tokens, which carry no ambient browser authority, and the anonymous
+/// token exchange is protected by PKCE.
 /// </summary>
 public static class CsrfValidation
 {
@@ -23,6 +26,24 @@ public static class CsrfValidation
             if (IsHealthPath(context.Request.Path))
             {
                 await next();
+                return;
+            }
+
+            var endpoint = context.GetEndpoint();
+            // /api/v1: no antiforgery and no CSRF cookies. Authorization (after the rate limiter) admits only API token
+            // callers there, so a cookie-only or anonymous request is refused with 401 before its body is read; the
+            // anonymous token exchange carries no cookie authority and is protected by PKCE.
+            if (endpoint?.Metadata.GetMetadata<ApiEndpointMetadata>() is not null)
+            {
+                await next();
+                return;
+            }
+
+            // Browsers never send a bearer credential; an app presenting one anywhere else gets the same JSON 401 the
+            // cookie challenge gives it, instead of a CSRF error (and its body is never read).
+            if (!IsSafeHttpMethod(context.Request.Method) && ApiTokenDefaults.HasBearerHeader(context.Request))
+            {
+                await ApiTokenDefaults.WriteUnauthorizedAsync(context.Response, "This endpoint does not accept API tokens.");
                 return;
             }
 
@@ -58,7 +79,7 @@ public static class CsrfValidation
                 return;
             }
 
-            var uploadEndpoint = context.GetEndpoint()?.Metadata.GetMetadata<UploadEndpointMetadata>();
+            var uploadEndpoint = endpoint?.Metadata.GetMetadata<UploadEndpointMetadata>();
             if (uploadEndpoint is { RequiresHeaderCsrfToken: true } && string.IsNullOrWhiteSpace(context.Request.Headers[HeaderName]))
             {
                 context.Response.StatusCode = StatusCodes.Status400BadRequest;

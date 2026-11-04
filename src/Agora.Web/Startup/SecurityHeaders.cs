@@ -24,7 +24,13 @@ public static class SecurityHeaders
     /// self plus the nonce. Google Fonts is the only third-party asset. style-src keeps 'unsafe-inline' for the
     /// inline styles of the self-contained public pages; inline event handlers and Alpine expressions are reported.
     /// </summary>
-    public static string ReportOnlyPolicy(string nonce) =>
+    public static string ReportOnlyPolicy(string nonce) => ReportOnlyPolicy(nonce, extraFormActionSource: null);
+
+    /// <summary>
+    /// The report-only policy with one more <c>form-action</c> source, for a page whose form POST is answered with a
+    /// redirect to another origin (the app consent page redirects to the app's loopback callback).
+    /// </summary>
+    public static string ReportOnlyPolicy(string nonce, string? extraFormActionSource) =>
         "default-src 'self'; " +
         $"script-src 'self' 'nonce-{nonce}'; " +
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
@@ -33,7 +39,7 @@ public static class SecurityHeaders
         "connect-src 'self'; " +
         "font-src 'self' https://fonts.gstatic.com; " +
         "frame-ancestors 'self'; " +
-        "form-action 'self'; " +
+        (extraFormActionSource is null ? "form-action 'self'; " : $"form-action 'self' {extraFormActionSource}; ") +
         "base-uri 'self'; " +
         "object-src 'none'";
 
@@ -63,6 +69,18 @@ public static class SecurityHeaders
             }, context);
             await next();
         });
+    }
+
+    /// <summary>
+    /// Sets this response's report-only policy with an extra <c>form-action</c> source instead of the default one. No-op
+    /// when the middleware is off (no nonce).
+    /// </summary>
+    public static void UseReportOnlyPolicyWithFormAction(HttpContext context, string formActionSource)
+    {
+        if (context.Items[NonceItemKey] is string nonce)
+        {
+            context.Response.Headers[ReportOnlyHeaderName] = ReportOnlyPolicy(nonce, formActionSource);
+        }
     }
 
     /// <summary>Nonce of the current request for <c>&lt;script nonce&gt;</c>; empty when the middleware is off.</summary>

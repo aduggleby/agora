@@ -356,6 +356,46 @@ public sealed class PostgresIntegrationTests(PostgresFixture fixture) : IClassFi
         Assert.Equal(3L, await command.ExecuteScalarAsync());
     }
 
+    [SkippableFact]
+    public async Task Api_token_lifecycle_translates_on_postgres()
+    {
+        await using var app = await CreateAppAsync();
+        await using var scope = app.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AgoraDbContext>();
+        var user = TestUsers.Seed(Guid.NewGuid(), "api.user@example.com");
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+        var service = new ApiTokenService(db);
+
+        // Two pending rows (TokenHash NULL) and then two active rows (AuthCodeHash NULL) coexist under the unique indexes.
+        var tokens = new List<string>();
+        foreach (var device in new[] { "Mac A", "Mac B" })
+        {
+            var code = await service.CreatePendingAsync(user.Id, user.SecurityStamp, ApiTokens.CaptureClientId, device, ApiTokenServiceTests.Challenge, ApiTokenServiceTests.Redirect, CancellationToken.None);
+            Assert.NotNull(code);
+            tokens.Add(code);
+        }
+
+        for (var i = 0; i < tokens.Count; i++)
+        {
+            var exchanged = await service.ExchangeAsync(tokens[i], ApiTokenServiceTests.Verifier, ApiTokenServiceTests.Redirect, ApiTokens.CaptureClientId, CancellationToken.None);
+            Assert.True(exchanged.Success, exchanged.Error);
+            Assert.False((await service.ExchangeAsync(tokens[i], ApiTokenServiceTests.Verifier, ApiTokenServiceTests.Redirect, ApiTokens.CaptureClientId, CancellationToken.None)).Success);
+            tokens[i] = exchanged.AccessToken!;
+        }
+
+        Assert.NotNull(await service.ValidateAsync(tokens[0], CancellationToken.None));
+        Assert.Equal(2, (await service.ListForUserAsync(user.Id, CancellationToken.None)).Count);
+        var row = await db.ApiTokens.AsNoTracking().FirstAsync(x => x.DeviceName == "Mac A");
+        Assert.Equal(DateTimeKind.Utc, row.LastUsedAtUtc!.Value.Kind);
+
+        // Stamp rotation: the token stops working and cleanup's correlated ExecuteUpdate revokes both rows.
+        await db.Users.Where(x => x.Id == user.Id).ExecuteUpdateAsync(s => s.SetProperty(x => x.SecurityStamp, SecurityStamps.New()));
+        Assert.Null(await service.ValidateAsync(tokens[1], CancellationToken.None));
+        Assert.Equal(0, await service.CleanupAsync(CancellationToken.None));
+        Assert.Equal(2, await db.ApiTokens.CountAsync(x => x.RevokedAtUtc != null));
+    }
+
     // ---- helpers ----
 
     private sealed class TestApp(ServiceProvider services, string connectionString) : IAsyncDisposable

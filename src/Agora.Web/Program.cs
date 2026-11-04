@@ -129,23 +129,9 @@ builder.Services.AddDataProtection()
 var authOptions = builder.Configuration.GetSection(AgoraOptions.Section).GetSection("Auth").Get<AgoraAuthOptions>() ?? new AgoraAuthOptions();
 var cookieSecurePolicy = CookieSessions.SecurePolicy(authOptions, builder.Environment.IsProduction());
 builder.Services.TryAddSingleton(TimeProvider.System);
-builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
-    .AddCookie(options =>
-    {
-        options.LoginPath = "/login";
-        options.AccessDeniedPath = "/login";
-        options.ExpireTimeSpan = CookieSessions.SessionLifetime(authOptions);
-        options.SlidingExpiration = true;
-        options.Cookie.HttpOnly = true;
-        options.Cookie.SameSite = SameSiteMode.Lax;
-        options.Cookie.SecurePolicy = cookieSecurePolicy;
-        options.Events.OnValidatePrincipal = CookieSessions.ValidatePrincipalAsync;
-    });
-
-builder.Services.AddAuthorization(options =>
-{
-    options.AddPolicy("AdminOnly", policy => policy.RequireRole("admin"));
-});
+// Cookies for the web UI, API bearer tokens for /api/v1 only; see AuthSetup for the invariants.
+builder.Services.AddAgoraAuthentication(authOptions, cookieSecurePolicy);
+builder.Services.AddAuthorization(AuthSetup.ConfigureAuthorization);
 builder.Services.AddAntiforgery(options =>
 {
     options.Cookie.Name = "agora.csrf";
@@ -189,6 +175,7 @@ builder.Services.AddHangfireServer(options =>
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<LoginLockouts>();
 builder.Services.AddScoped<AuthService>();
+builder.Services.AddScoped<ApiTokenService>();
 builder.Services.AddScoped<ShareManager>();
 builder.Services.AddSingleton<KeyedAsyncLock>();
 builder.Services.AddSingleton(sp => new ScratchSpaceMonitor(
@@ -331,6 +318,10 @@ using (var scope = app.Services.CreateScope())
         "cleanup-zombie-uploads",
         service => service.CleanupZombieUploadsAsync(CancellationToken.None),
         "*/15 * * * *");
+    recurringJobs.AddOrUpdate<ApiTokenService>(
+        "cleanup-api-tokens",
+        service => service.CleanupAsync(CancellationToken.None),
+        "*/30 * * * *");
 }
 
 app.UseForwardedHeaders();
@@ -356,7 +347,7 @@ app.MapHealthChecks("/ready", new HealthCheckOptions { Predicate = c => c.Tags.C
 app.MapHangfireDashboard("/hangfire", new DashboardOptions
 {
     Authorization = new IDashboardAuthorizationFilter[] { new AdminDashboardAuthorizationFilter() }
-}).RequireAuthorization("AdminOnly");
+}).RequireAuthorization(AuthSetup.AdminOnlyPolicy);
 
 
 app.MapPost("/login", async (HttpContext httpContext, AuthService authService, IDataProtectionProvider dataProtectionProvider, CancellationToken ct) =>
@@ -364,6 +355,9 @@ app.MapPost("/login", async (HttpContext httpContext, AuthService authService, I
     var form = await httpContext.Request.ReadFormAsync(ct);
     var email = form["email"].ToString();
     var password = form["password"].ToString();
+    // Only a local path survives (validated again on the way out); the email confirmation detour drops it.
+    var returnUrl = form[AuthSetup.ReturnUrlParameter].ToString();
+    var returnUrlQuery = LocalUrls.IsLocal(returnUrl) ? $"&{AuthSetup.ReturnUrlParameter}={Uri.EscapeDataString(returnUrl)}" : string.Empty;
 
     var result = await authService.LoginAsync(email, password, httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown", ct);
     if (!result.Success || result.User is null)
@@ -374,11 +368,11 @@ app.MapPost("/login", async (HttpContext httpContext, AuthService authService, I
             return Results.Redirect($"/confirm-email-required?email={Uri.EscapeDataString(email)}&gate={Uri.EscapeDataString(gateToken)}");
         }
 
-        return Results.Redirect($"/login?msg={Uri.EscapeDataString(result.Error)}");
+        return Results.Redirect($"/login?msg={Uri.EscapeDataString(result.Error)}{returnUrlQuery}");
     }
 
     await httpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, CookieSessions.CreatePrincipal(result.User));
-    return Results.Redirect("/");
+    return Results.Redirect(LocalUrls.OrDefault(returnUrl));
 }).RequireRateLimiting(RateLimitSetup.AuthEndpoints);
 
 app.MapPost("/logout", async (HttpContext httpContext) =>
@@ -638,7 +632,7 @@ app.MapPost("/admin/users/{id:guid}/role", async (Guid id, HttpContext httpConte
     var role = form["role"].ToString();
     var ok = await authService.UpdateRoleAsync(id, role, ct);
     return Results.Redirect(ok ? "/admin?msg=Role%20updated" : "/admin?msg=Unable%20to%20update%20role");
-}).RequireAuthorization("AdminOnly");
+}).RequireAuthorization(AuthSetup.AdminOnlyPolicy);
 
 app.MapPost("/api/admin/users/{id:guid}/role", async (Guid id, HttpContext httpContext, HttpRequest request, AuthService authService, CancellationToken ct) =>
 {
@@ -654,7 +648,7 @@ app.MapPost("/api/admin/users/{id:guid}/role", async (Guid id, HttpContext httpC
     return ok
         ? Results.Ok(new { ok = true })
         : Results.BadRequest(new { ok = false, message = "Unable to update role." });
-}).RequireAuthorization("AdminOnly");
+}).RequireAuthorization(AuthSetup.AdminOnlyPolicy);
 
 app.MapPost("/api/admin/users/{id:guid}/enabled", async (Guid id, HttpContext httpContext, HttpRequest request, AuthService authService, CancellationToken ct) =>
 {
@@ -671,7 +665,7 @@ app.MapPost("/api/admin/users/{id:guid}/enabled", async (Guid id, HttpContext ht
     return ok
         ? Results.Ok(new { ok = true })
         : Results.BadRequest(new { ok = false, message = "Unable to update user status." });
-}).RequireAuthorization("AdminOnly");
+}).RequireAuthorization(AuthSetup.AdminOnlyPolicy);
 
 app.MapPost("/admin/users/{id:guid}/enabled", async (Guid id, HttpContext httpContext, HttpRequest request, AuthService authService, CancellationToken ct) =>
 {
@@ -686,7 +680,7 @@ app.MapPost("/admin/users/{id:guid}/enabled", async (Guid id, HttpContext httpCo
 
     var ok = await authService.SetEnabledAsync(id, enabled, ct);
     return Results.Redirect(ok ? "/admin?msg=User%20status%20updated" : "/admin?msg=Unable%20to%20update%20user");
-}).RequireAuthorization("AdminOnly");
+}).RequireAuthorization(AuthSetup.AdminOnlyPolicy);
 
 app.MapPost("/admin/users/{id:guid}/delete", async (Guid id, HttpContext httpContext, AuthService authService, CancellationToken ct) =>
 {
@@ -698,7 +692,7 @@ app.MapPost("/admin/users/{id:guid}/delete", async (Guid id, HttpContext httpCon
 
     var ok = await authService.DeleteUserAsync(id, ct);
     return Results.Redirect(ok ? "/admin?msg=User%20deleted" : "/admin?msg=Unable%20to%20delete%20user");
-}).RequireAuthorization("AdminOnly");
+}).RequireAuthorization(AuthSetup.AdminOnlyPolicy);
 
 app.MapPost("/admin/settings/registration", async (HttpRequest request, AuthService authService, CancellationToken ct) =>
 {
@@ -706,7 +700,7 @@ app.MapPost("/admin/settings/registration", async (HttpRequest request, AuthServ
     var enabled = FormValues.LastBool(form["enabled"]);
     await authService.SetAllowRegistrationAsync(enabled, ct);
     return Results.Redirect($"/admin?msg={(enabled ? "Registration%20enabled" : "Registration%20disabled")}");
-}).RequireAuthorization("AdminOnly");
+}).RequireAuthorization(AuthSetup.AdminOnlyPolicy);
 
 app.MapPost("/shares/{id:guid}/delete", async (Guid id, HttpContext context, ShareManager manager, CancellationToken ct) =>
 {
@@ -1615,6 +1609,7 @@ app.MapGet("/api/shares/{token}", async (ShareManager manager, string token, Can
 
 app.MapPublicShareEndpoints();
 app.MapDirectLinkEndpoints();
+app.MapApiV1Endpoints(captureRequestBodyLimit: stageRequestBodyLimit);
 app.MapHub<ShareProgressHub>("/hubs/share-progress").RequireAuthorization();
 
 app.Run();

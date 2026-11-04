@@ -20,3 +20,4 @@ src/Agora.Web/keys/
 src/Agora.Web/Temp/
 *.db
 **/*.sync-conflict-*
+clients/

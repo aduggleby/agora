@@ -2,11 +2,12 @@ using System.Security.Claims;
 using Agora.Domain.Entities;
 using Agora.Infrastructure.Auth;
 using Microsoft.AspNetCore.Authorization;
+using Agora.Web.Startup;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
 namespace Agora.Web.Pages.Admin;
 
-[Authorize(Roles = "admin")]
+[Authorize(Policy = AuthSetup.AdminOnlyPolicy)]
 public class IndexModel(AuthService authService) : PageModel
 {
     public IReadOnlyList<UserAccount> Users { get; private set; } = [];

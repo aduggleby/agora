@@ -70,7 +70,83 @@ namespace Agora.Infrastructure.Migrations
                     b.HasIndex("UploaderEmail")
                         .IsUnique();
 
-                    b.ToTable("AccountTemplates", (string)null);
+                    b.ToTable("AccountTemplates");
+                });
+
+            modelBuilder.Entity("Agora.Domain.Entities.ApiToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("AuthCodeExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("AuthCodeHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("ClientId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("CodeChallenge")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DeviceName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime?>("ExchangedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("IssuedSecurityStamp")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTime?>("LastUsedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("RedirectUri")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("TokenHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("TokenPrefix")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AuthCodeHash")
+                        .IsUnique()
+                        .HasFilter("[AuthCodeHash] IS NOT NULL");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique()
+                        .HasFilter("[TokenHash] IS NOT NULL");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("ApiTokens");
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.DownloadEvent", b =>
@@ -108,7 +184,7 @@ namespace Agora.Infrastructure.Migrations
 
                     b.HasIndex("ShareId");
 
-                    b.ToTable("DownloadEvents", (string)null);
+                    b.ToTable("DownloadEvents");
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.Share", b =>
@@ -222,7 +298,7 @@ namespace Agora.Infrastructure.Migrations
                     b.HasIndex("ShareToken")
                         .IsUnique();
 
-                    b.ToTable("Shares", (string)null);
+                    b.ToTable("Shares");
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.ShareFile", b =>
@@ -260,7 +336,7 @@ namespace Agora.Infrastructure.Migrations
 
                     b.HasIndex("ShareId");
 
-                    b.ToTable("ShareFiles", (string)null);
+                    b.ToTable("ShareFiles");
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.SystemSetting", b =>
@@ -279,7 +355,7 @@ namespace Agora.Infrastructure.Migrations
 
                     b.HasKey("Key");
 
-                    b.ToTable("SystemSettings", (string)null);
+                    b.ToTable("SystemSettings");
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.UserAccount", b =>
@@ -377,6 +453,7 @@ namespace Agora.Infrastructure.Migrations
                         .HasColumnType("nvarchar(20)");
 
                     b.Property<string>("SecurityStamp")
+                        .IsConcurrencyToken()
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
@@ -397,7 +474,16 @@ namespace Agora.Infrastructure.Migrations
                     b.HasIndex("UploadToken")
                         .IsUnique();
 
-                    b.ToTable("Users", (string)null);
+                    b.ToTable("Users");
+                });
+
+            modelBuilder.Entity("Agora.Domain.Entities.ApiToken", b =>
+                {
+                    b.HasOne("Agora.Domain.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Agora.Domain.Entities.DownloadEvent", b =>

@@ -154,7 +154,7 @@ public static class UploadStagingEndpoints
             return Results.BadRequest(new { error = "Only JPG, PNG, or WEBP files are allowed." });
         }
 
-        return await StageFileAsync(file, manager, cfg, owner.UserId, draftShareId, ShareManager.UploadPurposeTemplateBackground, ct);
+        return (await StageFileAsync(file, manager, cfg, owner.UserId, draftShareId, ShareManager.UploadPurposeTemplateBackground, ct)).ToResponse();
     }
 
     private static async Task<IResult> StagePublicUploadAsync(
@@ -224,17 +224,41 @@ public static class UploadStagingEndpoints
         string missingFileError,
         CancellationToken ct)
     {
-        var form = await request.ReadFormAsync(ct);
-        var file = form.Files["file"];
-        if (file is null || file.Length <= 0)
+        var file = await ReadFormFileAsync(request, ct);
+        if (file is null)
         {
             return Results.BadRequest(new { error = missingFileError });
         }
 
-        return await StageFileAsync(file, manager, cfg, ownerUserId, draftShareId, purpose, ct);
+        return (await StageFileAsync(file, manager, cfg, ownerUserId, draftShareId, purpose, ct)).ToResponse();
     }
 
-    private static async Task<IResult> StageFileAsync(
+    /// <summary>The non-empty <c>file</c> part of the multipart body (buffering it), or null when there is none.</summary>
+    public static async Task<IFormFile?> ReadFormFileAsync(HttpRequest request, CancellationToken ct)
+    {
+        var form = await request.ReadFormAsync(ct);
+        var file = form.Files["file"];
+        return file is null || file.Length <= 0 ? null : file;
+    }
+
+    /// <summary>A staged file, or the refusal to answer with (400, or the <see cref="UploadLimitException"/> status).</summary>
+    public sealed record StageResult(ShareManager.StagedUploadFile? Staged, IResult? Refusal)
+    {
+        public IResult ToResponse() => Refusal ?? Results.Ok(new
+        {
+            uploadId = Staged!.UploadId,
+            fileName = Staged.OriginalFileName,
+            sizeBytes = Staged.OriginalSizeBytes,
+            // Whether a temporary direct link may serve this file inline; the browser never duplicates the allowlist.
+            directLinkEligible = ContentTypePolicy.Resolve(Staged.OriginalFileName).Inline
+        });
+    }
+
+    /// <summary>
+    /// Stages one buffered file into the draft: the shared core of every staging endpoint and of the capture API, so
+    /// size checks and refusal mapping are identical everywhere.
+    /// </summary>
+    public static async Task<StageResult> StageFileAsync(
         IFormFile file,
         ShareManager manager,
         AgoraOptions cfg,
@@ -245,31 +269,22 @@ public static class UploadStagingEndpoints
     {
         if (file.Length > cfg.MaxFileSizeBytes)
         {
-            return Results.BadRequest(new { error = $"File '{file.FileName}' exceeds max size." });
+            return new StageResult(null, Results.BadRequest(new { error = $"File '{file.FileName}' exceeds max size." }));
         }
 
         await using var stream = file.OpenReadStream();
-        ShareManager.StagedUploadFile staged;
         try
         {
-            staged = await manager.StageUploadAsync(ownerUserId, draftShareId, file.FileName, file.Length, stream, ct, purpose);
+            var staged = await manager.StageUploadAsync(ownerUserId, draftShareId, file.FileName, file.Length, stream, ct, purpose);
+            return new StageResult(staged, null);
         }
         catch (InvalidOperationException ex)
         {
-            return Results.BadRequest(new { error = ex.Message });
+            return new StageResult(null, Results.BadRequest(new { error = ex.Message }));
         }
         catch (UploadLimitException ex)
         {
-            return UploadLimitJson(ex);
+            return new StageResult(null, UploadLimitJson(ex));
         }
-
-        return Results.Ok(new
-        {
-            uploadId = staged.UploadId,
-            fileName = staged.OriginalFileName,
-            sizeBytes = staged.OriginalSizeBytes,
-            // Whether a temporary direct link may serve this file inline; the browser never duplicates the allowlist.
-            directLinkEligible = ContentTypePolicy.Resolve(staged.OriginalFileName).Inline
-        });
     }
 }

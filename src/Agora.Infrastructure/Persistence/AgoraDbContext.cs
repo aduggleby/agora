@@ -37,6 +37,7 @@ public class AgoraDbContext : DbContext
     public DbSet<AccountTemplate> AccountTemplates => Set<AccountTemplate>();
     public DbSet<UserAccount> Users => Set<UserAccount>();
     public DbSet<SystemSetting> SystemSettings => Set<SystemSetting>();
+    public DbSet<ApiToken> ApiTokens => Set<ApiToken>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -107,6 +108,25 @@ public class AgoraDbContext : DbContext
             builder.Property(x => x.PendingPasswordTokenHash).HasMaxLength(64);
             builder.Property(x => x.PasswordResetTokenHash).HasMaxLength(64);
             builder.Property(x => x.FailedLoginCount).HasDefaultValue(0);
+        });
+
+        modelBuilder.Entity<ApiToken>(builder =>
+        {
+            builder.HasKey(x => x.Id);
+            builder.HasOne<UserAccount>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+            builder.HasIndex(x => x.UserId);
+            // Both hashes are null for part of a row's life; unique indexes on nullable columns ignore NULLs (SQL
+            // Server via the filter EF adds, PostgreSQL natively).
+            builder.HasIndex(x => x.TokenHash).IsUnique();
+            builder.HasIndex(x => x.AuthCodeHash).IsUnique();
+            builder.Property(x => x.ClientId).HasMaxLength(64);
+            builder.Property(x => x.DeviceName).HasMaxLength(100);
+            builder.Property(x => x.TokenHash).HasMaxLength(64);
+            builder.Property(x => x.TokenPrefix).HasMaxLength(16);
+            builder.Property(x => x.AuthCodeHash).HasMaxLength(64);
+            builder.Property(x => x.CodeChallenge).HasMaxLength(128);
+            builder.Property(x => x.RedirectUri).HasMaxLength(200);
+            builder.Property(x => x.IssuedSecurityStamp).HasMaxLength(64);
         });
 
         modelBuilder.Entity<SystemSetting>(builder =>

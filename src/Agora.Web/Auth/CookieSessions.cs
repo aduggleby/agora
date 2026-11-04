@@ -140,10 +140,16 @@ public static class CookieSessions
     /// Re-issues the cookie of an already signed-in user from the database record (role, name, stamp). The current
     /// cookie must still carry the user's live security stamp, regardless of whether its revalidation is due: a stale
     /// cookie (for example one stolen before a password reset) must never be laundered into a fresh one. On failure
-    /// the session is signed out and false is returned.
+    /// the session is signed out and false is returned. Only a cookie principal is ever re-issued: an API token
+    /// principal (or any other) is refused without touching the cookie.
     /// </summary>
     public static async Task<bool> TryReissueAsync(HttpContext httpContext, AgoraDbContext db, CancellationToken cancellationToken)
     {
+        if (!IsCookiePrincipal(httpContext.User))
+        {
+            return false;
+        }
+
         var user = await CheckAsync(db, httpContext.User, cancellationToken);
         if (user is null)
         {
@@ -155,6 +161,10 @@ public static class CookieSessions
         await httpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, CreatePrincipal(user, nowUtc));
         return true;
     }
+
+    /// <summary>True for a principal issued by <see cref="CreatePrincipal(UserAccount, DateTime)"/> (the sign-in cookie).</summary>
+    public static bool IsCookiePrincipal(ClaimsPrincipal principal) =>
+        principal.Identity is { IsAuthenticated: true, AuthenticationType: CookieAuthenticationDefaults.AuthenticationScheme };
 
     public static async Task ValidatePrincipalAsync(CookieValidatePrincipalContext context)
     {

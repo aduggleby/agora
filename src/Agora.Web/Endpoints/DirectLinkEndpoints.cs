@@ -13,6 +13,8 @@ namespace Agora.Web.Endpoints;
 /// </summary>
 public static class DirectLinkEndpoints
 {
+    public const string LoggerCategory = "Agora.DirectLinks";
+
     public sealed record CreateDirectLinkRequest(string? DraftShareId, string? UploadId, string? Duration);
 
     public static IEndpointRouteBuilder MapDirectLinkEndpoints(this IEndpointRouteBuilder app)
@@ -50,12 +52,9 @@ public static class DirectLinkEndpoints
             return Results.BadRequest(new { error = "duration must be 30m, 6h, 1d or 7d." });
         }
 
-        ShareManager.StagedUploadFile staged;
         try
         {
             draftShareId = await manager.EnsureDraftShareAsync(owner.UserId, draftShareId, ct);
-            staged = await manager.ResolveDirectLinkUploadAsync(owner.UserId, draftShareId, body.UploadId ?? string.Empty, ct);
-            scratchSpace.EnsureCanAdmit(scratchSpace.DurableDemand(staged.OriginalSizeBytes));
         }
         catch (InvalidOperationException ex)
         {
@@ -66,6 +65,44 @@ public static class DirectLinkEndpoints
             return UploadStagingEndpoints.UploadLimitJson(ex);
         }
 
+        var logger = loggerFactory.CreateLogger(LoggerCategory);
+        return (await CreateFromDraftAsync(manager, scratchSpace, publicOrigin, logger, owner, draftShareId, body.UploadId ?? string.Empty, duration, ct)).Response;
+    }
+
+    /// <summary>The outcome of <see cref="CreateFromDraftAsync"/>; <see cref="Created"/> is false for every refusal.</summary>
+    public sealed record CreateOutcome(IResult Response, bool Created);
+
+    /// <summary>
+    /// Turns the single staged file of an open draft into a direct link: resolve and admit (refusals leave the draft
+    /// unsealed), seal and create inline (a failure unseals it again: 503), then remove the draft scratch. Shared by
+    /// the browser flow and the capture API so both keep identical seal and compensation behavior.
+    /// </summary>
+    public static async Task<CreateOutcome> CreateFromDraftAsync(
+        ShareManager manager,
+        ScratchSpaceMonitor scratchSpace,
+        IPublicOriginProvider publicOrigin,
+        ILogger logger,
+        ShareOwner owner,
+        string draftShareId,
+        string uploadId,
+        DirectLinkDuration duration,
+        CancellationToken ct)
+    {
+        ShareManager.StagedUploadFile staged;
+        try
+        {
+            staged = await manager.ResolveDirectLinkUploadAsync(owner.UserId, draftShareId, uploadId, ct);
+            scratchSpace.EnsureCanAdmit(scratchSpace.DurableDemand(staged.OriginalSizeBytes));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return new CreateOutcome(Results.BadRequest(new { error = ex.Message }), false);
+        }
+        catch (UploadLimitException ex)
+        {
+            return new CreateOutcome(UploadStagingEndpoints.UploadLimitJson(ex), false);
+        }
+
         var command = new CreateDirectLinkCommand(owner.UserId, owner.Email, staged.UploadId, draftShareId, duration);
         CreateShareResult? created = null;
         try
@@ -74,20 +111,19 @@ public static class DirectLinkEndpoints
             // failure unseals the draft again and reports a retryable 503.
             if (!await manager.SealDraftForSubmissionAsync(owner.UserId, draftShareId, async () => { created = await manager.CreateDirectLinkShareAsync(command, ct); }, ct))
             {
-                return Results.Json(new { error = "This upload was already submitted." }, statusCode: StatusCodes.Status409Conflict);
+                return new CreateOutcome(Results.Json(new { error = "This upload was already submitted." }, statusCode: StatusCodes.Status409Conflict), false);
             }
         }
         catch (UploadLimitException ex)
         {
-            return UploadStagingEndpoints.UploadLimitJson(ex);
+            return new CreateOutcome(UploadStagingEndpoints.UploadLimitJson(ex), false);
         }
 
         if (created is null)
         {
-            return Results.Json(new { error = "The direct link could not be created right now." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+            return new CreateOutcome(Results.Json(new { error = "The direct link could not be created right now." }, statusCode: StatusCodes.Status503ServiceUnavailable), false);
         }
 
-        var logger = loggerFactory.CreateLogger("Agora.DirectLinks");
         try
         {
             await manager.FinalizeDraftAsync(owner.UserId, draftShareId, ct);
@@ -98,11 +134,11 @@ public static class DirectLinkEndpoints
             logger.LogWarning(ex, "Unable to remove draft scratch after creating a direct link; the zombie sweep will");
         }
 
-        return Results.Ok(new
+        return new CreateOutcome(Results.Ok(new
         {
             url = publicOrigin.ShareUrl(created.Token),
             token = created.Token,
             expiresAtUtc = created.ExpiresAtUtc
-        });
+        }), true);
     }
 }

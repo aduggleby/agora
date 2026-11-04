@@ -91,30 +91,7 @@ export async function login(page: Page, email: string, password: string) {
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     await page.goto('/login');
-    const loginForm = page.locator('form[action="/login"]').first();
-    await loginForm.locator('input[name="email"]').fill(email);
-    await loginForm.locator('input[name="password"]').fill(password);
-
-    await page.evaluate(() => {
-      const form = document.querySelector('form[action="/login"]');
-      if (!form) return;
-      const parts = document.cookie ? document.cookie.split(';') : [];
-      const tokenCookie = parts
-        .map((x) => x.trim())
-        .find((x) => x.startsWith('agora.csrf.request='));
-      if (!tokenCookie) return;
-      const token = decodeURIComponent(tokenCookie.slice('agora.csrf.request='.length));
-      let input = form.querySelector('input[name="__RequestVerificationToken"]') as HTMLInputElement | null;
-      if (!input) {
-        input = document.createElement('input');
-        input.type = 'hidden';
-        input.name = '__RequestVerificationToken';
-        form.appendChild(input);
-      }
-      input.value = token;
-    });
-
-    await loginForm.locator('button[type="submit"]').click();
+    await submitLoginForm(page, email, password);
 
     try {
       await page.waitForURL(targetUrl, { timeout: 12_000 });
@@ -125,6 +102,34 @@ export async function login(page: Page, email: string, password: string) {
       }
     }
   }
+}
+
+/** Fills and submits the sign-in form on the current page (for example /login?returnUrl=...) without navigating first. */
+export async function submitLoginForm(page: Page, email: string, password: string) {
+  const loginForm = page.locator('form[action="/login"]').first();
+  await loginForm.locator('input[name="email"]').fill(email);
+  await loginForm.locator('input[name="password"]').fill(password);
+
+  await page.evaluate(() => {
+    const form = document.querySelector('form[action="/login"]');
+    if (!form) return;
+    const parts = document.cookie ? document.cookie.split(';') : [];
+    const tokenCookie = parts
+      .map((x) => x.trim())
+      .find((x) => x.startsWith('agora.csrf.request='));
+    if (!tokenCookie) return;
+    const token = decodeURIComponent(tokenCookie.slice('agora.csrf.request='.length));
+    let input = form.querySelector('input[name="__RequestVerificationToken"]') as HTMLInputElement | null;
+    if (!input) {
+      input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = '__RequestVerificationToken';
+      form.appendChild(input);
+    }
+    input.value = token;
+  });
+
+  await loginForm.locator('button[type="submit"]').click();
 }
 
 export async function createTempFiles(baseDir: string, files: Array<{ name: string; content: string | Buffer }>) {
