@@ -27,7 +27,10 @@ import ServiceManagement
     @Published var connecting = false
     @Published var recent: [RecentLink] = []
     @Published var capturing = false
-    @Published var shortcutPreset = UserDefaults.standard.integer(forKey: "shortcutPreset")
+    @Published var areaShortcut = CaptureShortcut.load(.area)
+    @Published var screenShortcut = CaptureShortcut.load(.fullScreen)
+    @Published var recordingAction: CaptureAction?
+    @Published var shortcutError: String?
     var durations: [String] { account?.directLinkDurations ?? [] }
     var statusItem: NSStatusItem!
     var settingsWindow: NSWindow?
@@ -37,7 +40,7 @@ import ServiceManagement
     var toastRemaining = 15
     var toastHovered = false
     let auth = BrowserAuth()
-    var hotKeys: [EventHotKeyRef] = []
+    var hotKeys: [CaptureAction: EventHotKeyRef] = [:]
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let icon = Bundle.main.url(forResource: "AgoraCapture", withExtension: "icns").flatMap(NSImage.init(contentsOf:)) {
             NSApp.applicationIconImage = icon
@@ -119,13 +122,17 @@ import ServiceManagement
     }
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
+        if window === settingsWindow { endShortcutRecording() }
         window.contentView = nil
         editorWindows.removeAll { $0 === window }
     }
+    func windowDidResignKey(_ notification: Notification) {
+        if (notification.object as? NSWindow) === settingsWindow { endShortcutRecording() }
+    }
     @objc func showSettings() {
         if settingsWindow == nil || settingsWindow?.contentView == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 590), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            w.title = "Agora Capture Settings"; w.isReleasedWhenClosed = false
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 720), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            w.title = "Agora Capture Settings"; w.titleVisibility = .hidden; w.titlebarAppearsTransparent = true; w.isReleasedWhenClosed = false; w.delegate = self
             w.contentView = NSHostingView(rootView: SettingsView(app: self)); w.center(); settingsWindow = w
         }
         settingsWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
@@ -170,7 +177,7 @@ import ServiceManagement
             try Keychain.save(token, server: server)
             connectedServer = server
             account = try await AgoraClient(server: server, token: token).me()
-            message = "Connected. You're ready to capture."
+            message = nil
         } catch {
             if let server = try? AgoraClient.serverURL(serverText) { handleAPIError(error, server: server) }
             message = error is CancellationError ? "Sign-in cancelled." : error.localizedDescription
@@ -226,8 +233,34 @@ import ServiceManagement
         toastTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in Task { @MainActor in guard let self, !self.toastHovered else { return }; self.toastRemaining -= 1; if self.toastRemaining <= 0 { self.dismissToast() } } }
     }
     func dismissToast() { toastTimer?.invalidate(); toastTimer = nil; toast?.close(); toast = nil }
+    func shortcut(for action: CaptureAction) -> CaptureShortcut { action == .area ? areaShortcut : screenShortcut }
+    func beginShortcutRecording(_ action: CaptureAction) {
+        if recordingAction != nil { endShortcutRecording() }
+        shortcutError = nil
+        hotKeys.values.forEach { UnregisterEventHotKey($0) }; hotKeys.removeAll()
+        recordingAction = action
+    }
+    func endShortcutRecording() {
+        guard recordingAction != nil else { return }
+        recordingAction = nil
+        shortcutError = nil
+        registerHotkeys()
+    }
+    func setShortcut(_ shortcut: CaptureShortcut, for action: CaptureAction) {
+        guard shortcut.isValid else { shortcutError = "Include Control, Option or Command with a key."; return }
+        let other: CaptureAction = action == .area ? .fullScreen : .area
+        guard !shortcut.matches(self.shortcut(for: other)) else { shortcutError = "Area and full screen need different shortcuts."; return }
+        var reference: EventHotKeyRef?
+        let result = RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, EventHotKeyID(signature: 0x41474F52, id: action.rawValue), GetApplicationEventTarget(), 0, &reference)
+        guard result == noErr, let reference else { shortcutError = "That shortcut is already in use. Try another combination."; return }
+        if let old = hotKeys[action] { UnregisterEventHotKey(old) }
+        hotKeys[action] = reference
+        if action == .area { areaShortcut = shortcut } else { screenShortcut = shortcut }
+        if let data = try? JSONEncoder().encode(shortcut) { UserDefaults.standard.set(data, forKey: action.preferenceKey) }
+        shortcutError = nil
+        endShortcutRecording()
+    }
     func registerHotkeys() {
-        hotKeys.forEach { UnregisterEventHotKey($0) }; hotKeys.removeAll()
         struct Handler { static var installed = false }
         if !Handler.installed {
             var event = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
@@ -235,56 +268,18 @@ import ServiceManagement
                 guard let event, let context else { return noErr }
                 var id = EventHotKeyID(); GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
                 let app = Unmanaged<CaptureApp>.fromOpaque(context).takeUnretainedValue()
-                Task { @MainActor in app.capture(area: id.id == 1) }; return noErr
+                Task { @MainActor in if app.recordingAction == nil { app.capture(area: id.id == CaptureAction.area.rawValue) } }; return noErr
             }, 1, &event, Unmanaged.passUnretained(self).toOpaque(), nil)
             Handler.installed = true
         }
-        let modifiers = UInt32(controlKey | shiftKey | (shortcutPreset == 1 ? optionKey : 0))
-        for (index, code) in [UInt32(kVK_ANSI_A), UInt32(kVK_ANSI_S)].enumerated() {
+        guard recordingAction == nil else { return }
+        for action in CaptureAction.allCases where hotKeys[action] == nil {
+            let shortcut = self.shortcut(for: action)
             var ref: EventHotKeyRef?
-            let result = RegisterEventHotKey(code, modifiers, EventHotKeyID(signature: 0x41474F52, id: UInt32(index + 1)), GetApplicationEventTarget(), 0, &ref)
-            if result == noErr, let ref { hotKeys.append(ref) } else { message = "A capture shortcut is already in use. Choose the alternate shortcuts in Settings." }
+            let result = RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, EventHotKeyID(signature: 0x41474F52, id: action.rawValue), GetApplicationEventTarget(), 0, &ref)
+            if result == noErr, let ref { hotKeys[action] = ref }
+            else { shortcutError = "The \(action.title.lowercased()) shortcut is already in use. Choose a new combination." }
         }
-        UserDefaults.standard.set(shortcutPreset, forKey: "shortcutPreset")
-    }
-}
-struct SettingsView: View {
-    @ObservedObject var app: CaptureApp
-    @AppStorage("duration") var defaultDuration = "1d"
-    @State var loginEnabled = SMAppService.mainApp.status == .enabled
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack { Image(nsImage: CaptureBrand.menuIcon).renderingMode(.template).resizable().frame(width: 32, height: 32).foregroundStyle(skyBlue); VStack(alignment: .leading) { Text("A detail worth sharing.").font(.system(size: 25, design: .serif)); Text("Agora Capture").foregroundStyle(.secondary) } }
-            Text("Connect to your Agora server to create temporary image links.").font(.callout).foregroundStyle(.secondary)
-            GroupBox("Your Agora server") {
-                VStack(alignment: .leading, spacing: 12) {
-                    TextField("https://files.example.com", text: $app.serverText).textFieldStyle(.roundedBorder).disabled(app.connecting || app.connectedServer != nil || app.refreshing || app.disconnecting).help("Disconnect before changing servers")
-                    if let account = app.account { Label("Connected as \(account.email)", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
-                    HStack {
-                        if app.connecting { ProgressView().controlSize(.small); Button("Cancel sign-in") { app.auth.cancel() } }
-                        else if app.connectedServer != nil {
-                            Button(app.disconnecting ? "Disconnecting…" : "Disconnect") { Task { await app.disconnect() } }.disabled(app.disconnecting).help("Revoke this device and remove its saved token")
-                            Button(app.refreshing ? "Checking…" : "Check connection") { Task { await app.refreshAccount() } }.disabled(app.refreshing || app.disconnecting).help("Reload account and capture limits")
-                        } else { Button("Connect in browser") { Task { await app.connect() } }.help("Sign in securely in your browser") }
-                    }
-                }.padding(10)
-            }
-            GroupBox("Capture shortcuts") {
-                Picker("Keys", selection: $app.shortcutPreset) { Text("⌃⇧A / ⌃⇧S").tag(0); Text("⌃⌥⇧A / ⌃⌥⇧S").tag(1) }.padding(10).onChange(of: app.shortcutPreset) { _, _ in app.registerHotkeys() }
-            }
-            Picker("Default duration", selection: $defaultDuration) {
-                if app.durations.isEmpty { Text("Connect to load durations").tag(defaultDuration) }
-                else { ForEach(app.durations, id: \.self) { Text(durationLabel($0)).tag($0) } }
-            }.onChange(of: app.durations) { _, durations in
-                if !durations.contains(defaultDuration), let first = durations.first { defaultDuration = first }
-            }.disabled(app.durations.isEmpty).help(app.durations.isEmpty ? "Connect to load supported durations." : "Remembered for new captures")
-            Toggle("Launch at login", isOn: $loginEnabled).onChange(of: loginEnabled) { _, enabled in
-                do { if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } } catch { app.message = "Launch at login requires an installed, signed app. \(error.localizedDescription)"; loginEnabled = SMAppService.mainApp.status == .enabled }
-            }
-            if let message = app.message { Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
-            Spacer(minLength: 0)
-            Text("Images stay local until you upload.").font(.caption).foregroundStyle(.secondary)
-        }.padding(26).frame(width: 540, height: 590).tint(skyBlue)
     }
 }
 struct ToastView: View {

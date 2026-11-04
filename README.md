@@ -671,7 +671,7 @@ answers 410 (the download page still renders its "expired" view with that status
 
 ### Tray menu
 
-Capture from the white Focus icon, revisit recent links, or open Settings. Default shortcuts are **Control-Shift-A** for an area/window and **Control-Shift-S** for full screen.
+Capture from the white Focus icon, revisit recent links, or open Settings. Default shortcuts are **Control-Shift-A** for an area/window and **Control-Shift-S** for full screen. Change each independently using its shortcut recorder in Settings.
 
 <img src="docs/images/macos/tray-menu.png" alt="Agora Capture tray-menu preview showing area and full-screen capture, recent links, Settings, and Quit" width="350">
 

@@ -38,14 +38,15 @@ import SwiftUI
     NSGraphicsContext.restoreGraphicsState()
     let image = NSImage(size: CGSize(width: 1440, height: 900)); image.addRepresentation(rep)
     // Presentation-only fixtures; preview generation never makes API requests.
-    app.connectedServer = URL(string: "https://example.com")!
+    app.serverText = "https://files.example.com"
+    app.connectedServer = URL(string: "https://files.example.com")!
     app.account = Account(email: "alex@example.com", displayName: "Alex", serverVersion: "0.10.0", maxFileSizeBytes: 5368709120, directLinkDurations: ["30m", "6h", "1d", "7d"])
     let model = EditorModel(image: image)
     model.annotations = [Annotation(kind: .rectangle, frame: CGRect(x: 65, y: 340, width: 415, height: 420), colorIndex: 0), Annotation(kind: .callout, frame: CGRect(x: 530, y: 150, width: 550, height: 100), text: "Can we give this card more space?", tip: CGPoint(x: 460, y: 370))]
     if let exported = model.export() { try exported.write(to: folder.appendingPathComponent("agora-export.png")) }
     model.tool = .select; model.selected = model.annotations.last?.id
     try render(EditorView(model: model, app: app, close: {}), size: CGSize(width: 1100, height: 760), name: "agora-editor.png", windowChrome: true)
-    try render(SettingsView(app: app), size: CGSize(width: 540, height: 590), name: "agora-settings.png")
+    try render(SettingsView(app: app), size: CGSize(width: 540, height: 720), name: "agora-settings.png", windowChrome: true)
     let link = RecentLink(url: URL(string: "https://example.com/s/a8c3f21d")!, token: "a8c3f21d", expiresAt: Date().addingTimeInterval(86400), createdAt: Date(), server: URL(string: "https://example.com")!)
     try render(ToastView(link: link, image: image, copy: {}, close: {}, hover: { _ in }), size: CGSize(width: 420, height: 160), name: "agora-toast.png")
 }

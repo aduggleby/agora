@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Agora Capture 0.1.5] - 2026-11-04
+
+### Changed
+- Implements the approved minimal Settings design, with a compact connection card, Keep links for explanation and Launch at login.
+- Area and full-screen capture now have independent shortcut recorders, with preset migration, duplicate/conflict validation and safe cancellation.
+
 ## [Agora Capture 0.1.4] - 2026-11-04
 
 ### Added
