@@ -168,9 +168,35 @@ extension APIContractTests {
         defer { session.invalidateAndCancel() }
         let (_, invalid) = try await session.data(from: URL(string: "\(redirect)?code=\(code)&state=wrong")!)
         XCTAssertEqual((invalid as? HTTPURLResponse)?.statusCode, 400)
-        let (_, valid) = try await session.data(from: URL(string: "\(redirect)?code=\(code)&state=\(state)")!)
+        let (page, valid) = try await session.data(from: URL(string: "\(redirect)?code=\(code)&state=\(state)")!)
         XCTAssertEqual((valid as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual((valid as? HTTPURLResponse)?.value(forHTTPHeaderField: "Referrer-Policy"), "no-referrer")
+        XCTAssertEqual((valid as? HTTPURLResponse)?.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+        XCTAssertTrue(String(decoding: page, as: UTF8.self).contains("Back to capturing."))
+        XCTAssertFalse(String(decoding: page, as: UTF8.self).contains(code))
         let received = try await task.value
         XCTAssertEqual(received, token)
+    }
+}
+
+
+extension APIContractTests {
+    func testCallbackPageMatchesAuthorizeAndEscapesErrors() throws {
+        let resources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/Fonts")
+        let approved = CallbackPage.html(outcome: .approved, fontDirectory: resources)
+        XCTAssertTrue(approved.contains("Instrument Serif"))
+        XCTAssertTrue(approved.contains("DM Sans"))
+        XCTAssertTrue(approved.contains("data:font/ttf;base64,"))
+        XCTAssertTrue(approved.contains("agora-capture://auth/complete"))
+        XCTAssertFalse(approved.contains("https://"))
+        XCTAssertFalse(approved.contains("<script"))
+        let declined = CallbackPage.html(outcome: .declined)
+        XCTAssertTrue(declined.contains("Connection declined."))
+        XCTAssertFalse(declined.contains("Approval received"))
+        let invalid = CallbackPage.html(outcome: .invalid, message: "<script>alert('secret')</script>")
+        XCTAssertTrue(invalid.contains("&lt;script&gt;"))
+        XCTAssertFalse(invalid.contains("<script>"))
+        XCTAssertTrue(CallbackPage.securityHeaders.contains("default-src 'none'"))
+        XCTAssertTrue(CallbackPage.securityHeaders.contains("font-src data:"))
     }
 }

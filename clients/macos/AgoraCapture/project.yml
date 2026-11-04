@@ -9,6 +9,12 @@ targets:
     platform: macOS
     sources: [Sources/AgoraCapture]
     resources: [Resources]
+    info:
+      path: build/Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: agora.capture.return
+            CFBundleURLSchemes: [agora-capture]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: agora.capture

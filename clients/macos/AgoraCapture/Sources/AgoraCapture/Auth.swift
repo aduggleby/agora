@@ -100,7 +100,13 @@ enum AuthCallback: Equatable {
         do { callback = try AuthCallback.parse(request, state: state) }
         catch { reply(connection, status: "400 Bad Request", message: "Invalid sign-in callback. Please return to Agora Capture."); return }
         // Remove the connection before finishing so its response can drain normally.
-        reply(connection, status: "200 OK", message: "Return to Agora Capture. You can close this tab.")
+        let outcome: CallbackPage.Outcome
+        switch callback {
+        case .code: outcome = .approved
+        case .denied: outcome = .declined
+        case .invalidRequest: outcome = .invalid
+        }
+        reply(connection, status: "200 OK", outcome: outcome)
         listener?.cancel(); listener = nil
         switch callback {
         case .denied: finish(.failure(ClientError(message: "You declined the connection. No app token was issued.")))
@@ -142,10 +148,10 @@ enum AuthCallback: Equatable {
         }
     }
     private func drop(_ connection: NWConnection) { connections.removeValue(forKey: ObjectIdentifier(connection)); connection.cancel() }
-    private func reply(_ connection: NWConnection, status: String, message: String) {
+    private func reply(_ connection: NWConnection, status: String, message: String? = nil, outcome: CallbackPage.Outcome = .invalid) {
         connections.removeValue(forKey: ObjectIdentifier(connection))
-        let body = "<!doctype html><meta charset=utf-8><title>Agora Capture</title><h1>Agora Capture</h1><p>\(message)</p>"
-        let response = "HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n\(body)"
+        let body = CallbackPage.html(outcome: outcome, message: message)
+        let response = "HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\n\(CallbackPage.securityHeaders)Connection: close\r\n\r\n\(body)"
         connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
     }
 }

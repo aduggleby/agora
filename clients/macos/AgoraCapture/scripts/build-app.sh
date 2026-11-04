@@ -10,6 +10,7 @@ export CLANG_MODULE_CACHE_PATH="$PWD/.build/module-cache"
 swift build --disable-sandbox -c release
 output="${1:-$PWD/build/Agora Capture.app}"
 mkdir -p "$output/Contents/MacOS" "$output/Contents/Resources"
+ditto Resources/Fonts "$output/Contents/Resources/Fonts"
 cp Resources/AgoraCapture.icns "$output/Contents/Resources/AgoraCapture.icns"
 cp .build/release/AgoraCapture "$output/Contents/MacOS/AgoraCapture"
 build_version="${AGORA_BUILD_NUMBER:-$(date -u +%Y%m%d%H%M%S)}"
@@ -26,6 +27,7 @@ cat > "$output/Contents/Info.plist" <<'PLIST'
 <key>CFBundleVersion</key><string>1</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><true/>
+<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>agora.capture.return</string><key>CFBundleURLSchemes</key><array><string>agora-capture</string></array></dict></array>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST

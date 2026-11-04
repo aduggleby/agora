@@ -72,6 +72,9 @@ import ServiceManagement
         }
         menu.addItem(.separator()); item("Settings…", #selector(showSettings)); item("Quit Agora Capture", #selector(quit))
     }
+    func application(_ application: NSApplication, open urls: [URL]) {
+        if urls.contains(where: { $0.scheme == "agora-capture" && $0.host == "auth" && $0.path == "/complete" }) { showSettings() }
+    }
     @objc func quit() { NSApp.terminate(nil) }
     @objc func area() { capture(area: true) }
     @objc func fullScreen() { capture(area: false) }

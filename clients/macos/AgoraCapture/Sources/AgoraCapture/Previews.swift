@@ -4,6 +4,9 @@ import SwiftUI
 @MainActor func renderPreviews(app: CaptureApp, directory: String) throws {
     let folder = URL(fileURLWithPath: directory)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    for (name, outcome) in [("approved", CallbackPage.Outcome.approved), ("declined", .declined), ("invalid", .invalid)] {
+        try CallbackPage.html(outcome: outcome).write(to: folder.appendingPathComponent("agora-callback-\(name).html"), atomically: true, encoding: .utf8)
+    }
     func render<V: View>(_ view: V, size: CGSize, name: String, windowChrome: Bool = false) throws {
         let host = NSHostingView(rootView: view.background(Color(nsColor: .windowBackgroundColor)).environment(\.colorScheme, .light))
         host.frame = CGRect(origin: .zero, size: size)

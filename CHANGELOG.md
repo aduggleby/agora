@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Agora Capture 0.1.1] - 2026-11-04
+
+### Changed
+- Browser callback page now matches Agora's authorization screen, including bundled fonts, distinct approval/declined/error states and a return-to-app link.
+- Callback pages are self-contained with no-store/no-referrer headers and a restrictive Content Security Policy; query codes are never reflected.
+
 ## [Agora Capture 0.1.0] - 2026-11-04
 
 ### Added
