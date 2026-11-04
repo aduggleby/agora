@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0] - 2026-11-04
+
+### Added
+- Connected apps: a desktop app (the upcoming macOS capture app) signs in through the browser. You approve the device on a new consent page (OAuth authorization code with PKCE and a loopback redirect), and the app receives a revocable API token. The app never sees your password.
+- Settings lists connected apps (device, connected, last used) with Revoke. Tokens also stop working after a password change or reset, when the account is disabled, or after 180 days without use.
+- API v1 for connected apps (`docs/api/v1.md`): `GET /api/v1/me`, `POST /api/v1/captures` (upload one PNG or JPEG as a temporary direct link in a single call), `DELETE /api/v1/shares/{token}` (delete one of your own direct links), token exchange and revocation.
+
+### Changed
+- API tokens are accepted only by `/api/v1` endpoints, and every other page and endpoint accepts only the browser session.
+- Signing in returns you to the page that asked for it (local paths only) instead of always going to the home page.
+
+### Security
+- API tokens and authorization codes are stored only as SHA-256 hashes and are redacted from logs.
+
 ## [0.9.27] - 2026-10-14
 
 ### Fixed
