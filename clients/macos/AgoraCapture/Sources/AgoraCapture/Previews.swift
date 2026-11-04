@@ -34,6 +34,9 @@ import SwiftUI
     }
     NSGraphicsContext.restoreGraphicsState()
     let image = NSImage(size: CGSize(width: 1440, height: 900)); image.addRepresentation(rep)
+    // Presentation-only fixtures; preview generation never makes API requests.
+    app.connectedServer = URL(string: "https://example.com")!
+    app.account = Account(email: "alex@example.com", displayName: "Alex", serverVersion: "0.10.0", maxFileSizeBytes: 5368709120, directLinkDurations: ["30m", "6h", "1d", "7d"])
     let model = EditorModel(image: image)
     model.annotations = [Annotation(kind: .rectangle, frame: CGRect(x: 65, y: 340, width: 415, height: 420), colorIndex: 0), Annotation(kind: .callout, frame: CGRect(x: 530, y: 150, width: 550, height: 100), text: "Can we give this card more space?", tip: CGPoint(x: 460, y: 370))]
     if let exported = model.export() { try exported.write(to: folder.appendingPathComponent("agora-export.png")) }

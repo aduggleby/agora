@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Agora Capture 0.1.2] - 2026-11-04
+
+### Changed
+- Labels the editor expiry dropdown "Keep for" and moves it to the right of Share link.
+
 ## [Agora Capture 0.1.1] - 2026-11-04
 
 ### Changed

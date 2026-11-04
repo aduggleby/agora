@@ -1,9 +1,7 @@
-Restyles the browser callback page to match Agora's authorization screen.
+Refines the capture editor's bottom action bar.
 
-- Cream background, Instrument Serif heading, DM Sans text and a bordered white card.
-- Sky-blue Focus icon and a Return to Agora Capture button that opens the app's Settings.
-- Clear approval, declined and invalid callback states; approval copy does not claim the token exchange has already succeeded.
-- Fonts are bundled locally. No external assets, callback query reflection or browser referrers; responses are non-cacheable and use a restrictive Content Security Policy.
-- 22 tests, including callback HTML escaping/privacy checks and a real loopback round trip.
+- Labels the expiry dropdown **Keep for** and positions it immediately to the right of Share link.
+- Delete removes the selected rectangle/comment and is disabled without a selection. Cancel closes the capture without uploading.
+- Retains the minimal rail layout, native window buttons and sky-blue action buttons.
 
-Requires macOS 14+. The ZIP filename identifies its CPU architecture. This is an ad-hoc signed development preview, not a notarized distribution build. See the client README for building with an Apple Development identity. The server is released separately.
+Requires macOS 14+. The ZIP filename identifies its CPU architecture. This is an ad-hoc signed development preview, not a notarized distribution build. See the client README for signing/build instructions. The server is released separately.

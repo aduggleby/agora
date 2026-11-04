@@ -290,13 +290,6 @@ struct EditorView: View {
                 Button("Cancel", action: close).buttonStyle(CaptureActionStyle()).help("Close this capture without uploading")
                 Button("Delete", action: model.delete).buttonStyle(CaptureActionStyle())
                     .disabled(model.selected == nil).help(model.selected == nil ? "Select a rectangle or comment to delete it" : "Delete the selected annotation (Backspace)")
-                if app.durations.isEmpty {
-                    Text("Not connected").font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Picker("Expiry", selection: $model.duration) {
-                        ForEach(app.durations, id: \.self) { Text(durationLabel($0)).tag($0) }
-                    }.labelsHidden().frame(width: 94).help("Link expiry")
-                }
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     let wait = max(0, Int(ceil(model.retryAfter?.timeIntervalSince(context.date) ?? 0)))
                     Button(model.uploading ? (model.uploadProgress < 1 ? "Uploading \(Int(model.uploadProgress * 100))%" : "Creating link…") : (wait > 0 ? "Retry in \(wait)s" : (app.account == nil ? "Connect…" : "Share link"))) {
@@ -305,6 +298,17 @@ struct EditorView: View {
                     }.keyboardShortcut(.return, modifiers: .command).buttonStyle(CaptureActionStyle(primary: true))
                         .disabled(wait > 0 && app.account != nil).help(wait > 0 ? "Wait for the server's retry interval before uploading again" : "Create a temporary image link")
                 }
+                if app.durations.isEmpty {
+                    Text("Not connected").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    HStack(spacing: 8) {
+                        Text("Keep for").foregroundStyle(.secondary).fixedSize()
+                        Picker("Keep for", selection: $model.duration) {
+                            ForEach(app.durations, id: \.self) { Text(durationLabel($0)).tag($0) }
+                        }.labelsHidden().frame(width: 108).help("How long the uploaded image link remains available")
+                    }
+                }
+
 
             }.font(.system(size: 12)).padding(.horizontal, 22).padding(.vertical, 18)
         }.tint(skyBlue).background(Color(nsColor: .windowBackgroundColor)).disabled(model.uploading).frame(minWidth: 1000, minHeight: 580)
