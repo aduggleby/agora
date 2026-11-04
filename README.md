@@ -659,6 +659,44 @@ answers 410 (the download page still renders its "expired" view with that status
 `/api/shares/{token}` returns only what the download page itself shows, and for a password-protected share nothing but
 `requiresPassword` and `expiresAtUtc`.
 
+## macOS capture app
+
+**Agora Capture** is a native menu bar app for macOS 14+. Capture an area, window or full screen, annotate the image, and share it as an expiring Agora link. The link is copied automatically and the editor closes after a successful upload.
+
+- Draw color-coded rectangles, add and edit comments inline, drag arrow tips, resize annotations, and undo/redo.
+- Save a PNG or copy the image locally, or choose **Keep for** and **Share link** to upload it to your server.
+- Connect securely through your browser, store credentials in Keychain, and manage the last ten links from the menu bar.
+
+[Download the macOS development preview](https://github.com/aduggleby/agora/releases) (Apple Silicon), or [build from source](clients/macos/AgoraCapture/README.md). Downloads are ad-hoc signed previews; the build guide covers Apple Development signing and permissions. Requires Agora server 0.10.0 or later.
+
+### Tray menu
+
+Capture from the white Focus icon, revisit recent links, or open Settings. Default shortcuts are **Control-Shift-A** for an area/window and **Control-Shift-S** for full screen.
+
+<img src="docs/images/macos/tray-menu.png" alt="Agora Capture tray-menu preview showing area and full-screen capture, recent links, Settings, and Quit" width="350">
+
+*Staged preview populated from the app's current menu entries.*
+
+### Image editor
+
+Use the slim tool rail to annotate. **Delete** removes the selected annotation; **Cancel** closes the capture without uploading. After sharing, a thumbnail toast confirms the copied link.
+
+![Agora Capture editor with a rectangle, inline comment and arrow, and the Share link and Keep for controls](docs/images/macos/image-editor.png)
+
+### Approve the app in your browser
+
+In the app's Settings, enter your server URL and choose **Connect in browser**. Sign in to Agora and approve the device. Agora shows the permissions before issuing an app token; the capture app never receives your password.
+
+<img src="docs/images/macos/approval.png" alt="Agora browser authorization screen showing the sample device, account, permissions, and Approve and Deny buttons" width="760">
+
+### Approval confirmation
+
+The confirmation page returns you to Agora Capture, where Settings shows the connected account. You can close the browser tab. Disconnect from the app or revoke the device under **Account settings > Connected apps** in Agora.
+
+<img src="docs/images/macos/approval-confirmation.png" alt="Approval received confirmation page with the Return to Agora Capture button" width="760">
+
+*Images use sample account and capture data. See [image sources](docs/images/macos/README.md) for how they are generated.*
+
 ## Operations
 
 ### Health endpoints
@@ -811,7 +849,3 @@ ando run --dind
 ```
 
 Learn more about ANDO: [andobuild.com](https://andobuild.com)
-
-### macOS capture client
-
-A native menu bar app is under `clients/macos/AgoraCapture`. It supports native capture, rectangle/callout annotation, PNG export, browser sign-in, and real API v1 uploads with progress, clipboard links, and recent-link deletion. See `clients/macos/AgoraCapture/README.md` for building, signing, and integration status.

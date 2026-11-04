@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Agora Capture 0.1.4] - 2026-11-04
+
+### Added
+- README walkthrough with tray-menu preview, editor, approval and confirmation images, plus reproducible sample-data renderers.
+
 ## [Agora Capture 0.1.3] - 2026-11-04
 
 ### Fixed

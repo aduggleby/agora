@@ -50,7 +50,8 @@ CLANG_MODULE_CACHE_PATH="$PWD/.build/module-cache" swift test --disable-sandbox
 # Also test a real local socket (requires loopback networking):
 AGORA_TEST_LOOPBACK=1 CLANG_MODULE_CACHE_PATH="$PWD/.build/module-cache" swift test --disable-sandbox
 # Render UI previews using synthetic content, without transmitting anything:
-.build/debug/AgoraCapture --render-previews /absolute/output/directory
+'build/Agora Capture.app/Contents/MacOS/AgoraCapture' --render-previews /absolute/output/directory
+python3 Tools/render-approval-preview.py /absolute/output/directory
 ```
 
 25 tests cover API request/response contracts, disconnect cleanup on network failure, 401 invalidation, upload multipart formatting, deletion/idempotency, retry timing, origin normalization, PKCE/callback validation, a real loopback callback round trip, image export orientation/size, resize geometry and inline editing/undo. API contract tests use an injected URLProtocol fixture, not the live server. The socket test is opt-in and was run successfully during integration.
@@ -70,3 +71,5 @@ The browser callback page matches Agora's authorization page: cream/ink/terra st
 The bottom bar labels the expiry dropdown **Keep for** and places it immediately to the right of Share link. Delete removes the selected rectangle or comment (and is disabled without a selection); Cancel closes the entire capture without uploading.
 
 A successful share closes its source editor immediately, before the thumbnail toast appears. Failed shares keep the editor and annotations open for retry.
+
+The repository README includes the tray menu, image editor, browser approval and confirmation views using staged sample data. Image provenance and regeneration notes are in `docs/images/macos/README.md`.

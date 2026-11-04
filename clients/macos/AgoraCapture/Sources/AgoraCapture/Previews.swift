@@ -22,6 +22,9 @@ import SwiftUI
         guard let data = bitmap.representation(using: .png, properties: [:]) else { return }
         try data.write(to: folder.appendingPathComponent(name))
     }
+    let menu = NSMenu()
+    app.menuWillOpen(menu)
+    try render(DocumentationMenuPreview(items: menu.items), size: CGSize(width: 350, height: 302), name: "agora-tray-menu.png")
     let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1440, pixelsHigh: 900, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
     NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
     NSColor(srgbRed: 0.97, green: 0.95, blue: 0.91, alpha: 1).setFill(); NSRect(x: 0, y: 0, width: 1440, height: 900).fill()
@@ -45,4 +48,38 @@ import SwiftUI
     try render(SettingsView(app: app), size: CGSize(width: 540, height: 590), name: "agora-settings.png")
     let link = RecentLink(url: URL(string: "https://example.com/s/a8c3f21d")!, token: "a8c3f21d", expiresAt: Date().addingTimeInterval(86400), createdAt: Date(), server: URL(string: "https://example.com")!)
     try render(ToastView(link: link, image: image, copy: {}, close: {}, hover: { _ in }), size: CGSize(width: 420, height: 160), name: "agora-toast.png")
+}
+
+// Documentation-only menu preview, populated from the actual NSMenu entries.
+private struct DocumentationMenuPreview: View {
+    let items: [NSMenuItem]
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                Image(nsImage: CaptureBrand.menuIcon).frame(width: 34, height: 28)
+                    .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
+            }.padding(.horizontal, 18).frame(height: 32).background(Color(white: 0.17))
+            HStack {
+                Spacer(minLength: 14)
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                        if item.isSeparatorItem { Divider().padding(.vertical, 5).padding(.horizontal, 8) }
+                        else {
+                            HStack {
+                                Text(item.title)
+                                Spacer()
+                                if item.hasSubmenu { Image(systemName: "chevron.right").font(.system(size: 10)) }
+                            }.font(.system(size: 13)).foregroundStyle(item.action != nil || item.hasSubmenu ? Color.primary : Color.secondary)
+                                .padding(.horizontal, 15).frame(height: 27)
+                        }
+                    }
+                }.padding(.vertical, 6).frame(width: 280)
+                    .background(Color(white: 0.97), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.black.opacity(0.13), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.16), radius: 10, y: 5)
+            }.padding(.trailing, 12).padding(.top, 2)
+            Spacer(minLength: 8)
+        }.background(Color(red: 0.91, green: 0.93, blue: 0.95))
+    }
 }
