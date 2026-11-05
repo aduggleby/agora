@@ -1,4 +1,5 @@
 import { readLimitsFromElement, validateFileSelection, showLimitDialog } from './upload-limits';
+import { enablePageDrop } from './page-drop';
 
 (() => {
   const nodes = document.querySelectorAll<HTMLElement>('[data-local-datetime]');
@@ -452,15 +453,11 @@ type ShareFileLike = Record<string, unknown>;
     fileInput.value = '';
   });
 
-  dropzone.addEventListener('dragover', (event) => {
-    event.preventDefault();
-    dropzone.classList.add('ring-2', 'ring-terra/40');
-  });
-  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('ring-2', 'ring-terra/40'));
-  dropzone.addEventListener('drop', (event) => {
-    event.preventDefault();
-    dropzone.classList.remove('ring-2', 'ring-terra/40');
-    queueAndUpload(event.dataTransfer?.files ?? []);
+  enablePageDrop({
+    dropzone,
+    label: 'Drop files to share',
+    isEnabled: () => !isUploading,
+    onFiles: (files) => void queueAndUpload(files),
   });
 
   setControls(false);

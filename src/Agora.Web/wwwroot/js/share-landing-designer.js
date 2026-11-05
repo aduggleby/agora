@@ -1,5 +1,63 @@
 "use strict";
 (() => {
+  // scripts/ts/page-drop.ts
+  var highlightClasses = ["ring-2", "ring-terra/40"];
+  var carriesFiles = (event) => Array.from(event.dataTransfer?.types ?? []).includes("Files");
+  var createOverlay = (label) => {
+    const overlay = document.createElement("div");
+    overlay.setAttribute("aria-hidden", "true");
+    overlay.dataset.pageDropOverlay = "";
+    overlay.className = "hidden fixed inset-0 z-50 pointer-events-none items-center justify-center bg-cream/80 p-4";
+    const frame = document.createElement("div");
+    frame.className = "flex h-full w-full items-center justify-center rounded-2xl border-2 border-dashed border-terra bg-terra-wash/60";
+    const text = document.createElement("p");
+    text.className = "font-display text-3xl text-terra";
+    text.textContent = label;
+    frame.appendChild(text);
+    overlay.appendChild(frame);
+    document.body.appendChild(overlay);
+    return overlay;
+  };
+  function enablePageDrop(options) {
+    const { dropzone, onFiles, label } = options;
+    const isEnabled = options.isEnabled ?? (() => true);
+    const overlay = createOverlay(label);
+    let depth = 0;
+    const show = (visible) => {
+      overlay.classList.toggle("hidden", !visible);
+      overlay.classList.toggle("flex", visible);
+      highlightClasses.forEach((name) => dropzone.classList.toggle(name, visible));
+    };
+    const reset = () => {
+      depth = 0;
+      show(false);
+    };
+    window.addEventListener("dragenter", (event) => {
+      if (!carriesFiles(event)) return;
+      event.preventDefault();
+      depth += 1;
+      show(isEnabled());
+    });
+    window.addEventListener("dragover", (event) => {
+      if (!carriesFiles(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = isEnabled() ? "copy" : "none";
+    });
+    window.addEventListener("dragleave", (event) => {
+      if (!carriesFiles(event)) return;
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) show(false);
+    });
+    window.addEventListener("drop", (event) => {
+      if (!carriesFiles(event)) return;
+      event.preventDefault();
+      reset();
+      const files = Array.from(event.dataTransfer?.files ?? []);
+      if (files.length > 0 && isEnabled()) onFiles(files);
+    });
+    window.addEventListener("dragend", reset);
+  }
+
   // scripts/ts/share-landing-designer.ts
   (() => {
     const form = document.getElementById("share-template-form");
@@ -108,16 +166,10 @@
       const file = backgroundFileInput.files?.[0];
       if (file) stageBackground(file);
     });
-    uploadDropzone.addEventListener("dragover", (event) => {
-      event.preventDefault();
-      uploadDropzone.classList.add("ring-2", "ring-terra/40");
-    });
-    uploadDropzone.addEventListener("dragleave", () => uploadDropzone.classList.remove("ring-2", "ring-terra/40"));
-    uploadDropzone.addEventListener("drop", (event) => {
-      event.preventDefault();
-      uploadDropzone.classList.remove("ring-2", "ring-terra/40");
-      const file = event.dataTransfer?.files?.[0];
-      if (file) stageBackground(file);
+    enablePageDrop({
+      dropzone: uploadDropzone,
+      label: "Drop an image to use as the background",
+      onFiles: (files) => stageBackground(files[0])
     });
     refreshColorMode();
     if (initialBackgroundUrl || backgroundUploadIdInput.value) {

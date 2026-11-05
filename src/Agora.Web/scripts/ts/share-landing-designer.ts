@@ -1,3 +1,5 @@
+import { enablePageDrop } from './page-drop';
+
 (() => {
   const form = document.getElementById('share-template-form') as HTMLFormElement | null;
   if (!form) return;
@@ -144,16 +146,10 @@
     if (file) stageBackground(file);
   });
 
-  uploadDropzone.addEventListener('dragover', (event) => {
-    event.preventDefault();
-    uploadDropzone.classList.add('ring-2', 'ring-terra/40');
-  });
-  uploadDropzone.addEventListener('dragleave', () => uploadDropzone.classList.remove('ring-2', 'ring-terra/40'));
-  uploadDropzone.addEventListener('drop', (event) => {
-    event.preventDefault();
-    uploadDropzone.classList.remove('ring-2', 'ring-terra/40');
-    const file = event.dataTransfer?.files?.[0];
-    if (file) stageBackground(file);
+  enablePageDrop({
+    dropzone: uploadDropzone,
+    label: 'Drop an image to use as the background',
+    onFiles: (files) => stageBackground(files[0]),
   });
 
   refreshColorMode();

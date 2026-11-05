@@ -1,5 +1,6 @@
 import { readLimitsFromElement, validateFileSelection, formatLimitBytes, showLimitDialog } from './upload-limits';
 import { copyText } from './clipboard';
+import { enablePageDrop } from './page-drop';
 
 type UploadStageResponse = {
   uploadId?: string;
@@ -660,17 +661,14 @@ type SavedShareOptionsState = {
     fileInput.value = '';
   });
 
-  dropzone?.addEventListener('dragover', (event) => {
-    event.preventDefault();
-    if (isCreatingDirectLink) return;
-    dropzone.classList.add('ring-2', 'ring-terra/40');
-  });
-  dropzone?.addEventListener('dragleave', () => dropzone.classList.remove('ring-2', 'ring-terra/40'));
-  dropzone?.addEventListener('drop', (event) => {
-    event.preventDefault();
-    dropzone.classList.remove('ring-2', 'ring-terra/40');
-    queueSelectedFiles(event.dataTransfer?.files || []);
-  });
+  if (dropzone) {
+    enablePageDrop({
+      dropzone,
+      label: 'Drop files to add them',
+      isEnabled: () => !isCreatingDirectLink,
+      onFiles: (files) => queueSelectedFiles(files),
+    });
+  }
 
   expiryModeInput?.addEventListener('change', refreshState);
   expiryModeInput?.addEventListener('change', saveOptionsState);

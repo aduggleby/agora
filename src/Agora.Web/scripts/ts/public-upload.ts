@@ -1,4 +1,5 @@
 import { readLimitsFromElement, validateFileSelection, showLimitDialog } from './upload-limits';
+import { enablePageDrop } from './page-drop';
 
 (() => {
   const successScreen = document.querySelector<HTMLElement>('[data-public-upload-success]');
@@ -230,19 +231,10 @@ import { readLimitsFromElement, validateFileSelection, showLimitDialog } from '.
     fileInput.value = '';
   });
 
-  dropzone.addEventListener('dragover', (event) => {
-    event.preventDefault();
-    dropzone.classList.add('ring-2', 'ring-terra/40');
-  });
-
-  dropzone.addEventListener('dragleave', () => {
-    dropzone.classList.remove('ring-2', 'ring-terra/40');
-  });
-
-  dropzone.addEventListener('drop', (event) => {
-    event.preventDefault();
-    dropzone.classList.remove('ring-2', 'ring-terra/40');
-    void queueUploads(event.dataTransfer?.files || []);
+  enablePageDrop({
+    dropzone,
+    label: 'Drop files to send them',
+    onFiles: (files) => void queueUploads(files),
   });
 
   restoreSenderFields();

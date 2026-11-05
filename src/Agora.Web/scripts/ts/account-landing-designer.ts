@@ -1,3 +1,5 @@
+import { enablePageDrop } from './page-drop';
+
 (() => {
   const form = document.getElementById('account-template-form') as HTMLFormElement | null;
   if (!form) return;
@@ -115,16 +117,16 @@
     if (file) applyFile(file);
   });
 
-  uploadDropzone.addEventListener('dragover', (event) => {
-    event.preventDefault();
-    uploadDropzone.classList.add('ring-2', 'ring-terra/40');
-  });
-  uploadDropzone.addEventListener('dragleave', () => uploadDropzone.classList.remove('ring-2', 'ring-terra/40'));
-  uploadDropzone.addEventListener('drop', (event) => {
-    event.preventDefault();
-    uploadDropzone.classList.remove('ring-2', 'ring-terra/40');
-    const file = event.dataTransfer?.files?.[0];
-    if (file) applyFile(file);
+  enablePageDrop({
+    dropzone: uploadDropzone,
+    label: 'Drop an image to use as the background',
+    onFiles: (files) => {
+      // The form is saved from its inputs, so a dropped file must land in the file input, not only in the preview.
+      const transfer = new DataTransfer();
+      transfer.items.add(files[0]);
+      backgroundFileInput.files = transfer.files;
+      applyFile(files[0]);
+    },
   });
 
   // The endpoint requires the CSRF header (sent by the fetch wrapper in csrf-client), so the form is submitted
