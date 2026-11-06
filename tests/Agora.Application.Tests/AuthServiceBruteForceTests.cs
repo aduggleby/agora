@@ -84,8 +84,88 @@ public sealed class AuthServiceBruteForceTests
         Assert.Null(user.LockoutEndUtc);
     }
 
+    [Fact]
+    public async Task Unconfirmed_accounts_lock_out_like_confirmed_ones()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        await harness.MakeUnconfirmedAsync();
+
+        for (var i = 1; i <= LoginLockouts.MaxFailures; i++)
+        {
+            Assert.Equal(AuthService.LoginFailedError, (await harness.Service.LoginAsync(Email, "wrong-pass", AttackerIp, CancellationToken.None)).Error);
+        }
+
+        // Locked: the correct password no longer reveals "confirm your email" to this address.
+        var locked = await harness.Service.LoginAsync(Email, Password, AttackerIp, CancellationToken.None);
+        Assert.False(locked.Success);
+        Assert.Equal(AuthService.LoginFailedError, locked.Error);
+
+        var user = await harness.Db.Users.SingleAsync(x => x.Email == Email);
+        Assert.Equal(LoginLockouts.MaxFailures, user.FailedLoginCount);
+
+        // Another address with the correct password still learns that the account needs confirming.
+        var owner = await harness.Service.LoginAsync(Email, Password, OwnerIp, CancellationToken.None);
+        Assert.Equal(AuthService.EmailConfirmationRequiredError, owner.Error);
+    }
+
+    [Fact]
+    public async Task Wrong_passwords_on_the_confirmation_page_count_toward_the_same_lockout()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        var token = await harness.MakeUnconfirmedAsync();
+
+        for (var i = 1; i <= LoginLockouts.MaxFailures - 1; i++)
+        {
+            var wrong = await harness.Service.ConfirmEmailAsync(Email, token, "wrong-pass", AttackerIp, CancellationToken.None);
+            Assert.Equal((false, AuthService.ConfirmationPasswordError), wrong);
+        }
+
+        // The fifth failure comes from sign-in: both paths share one (account, address) bucket.
+        await harness.Service.LoginAsync(Email, "wrong-pass", AttackerIp, CancellationToken.None);
+
+        var locked = await harness.Service.ConfirmEmailAsync(Email, token, Password, AttackerIp, CancellationToken.None);
+        Assert.Equal((false, AuthService.ConfirmationPasswordError), locked);
+        var user = await harness.Db.Users.SingleAsync(x => x.Email == Email);
+        Assert.False(user.EmailConfirmed);
+        Assert.NotNull(user.EmailConfirmationTokenHash);
+
+        // The token survived every failure; from another address the right password confirms.
+        var confirmed = await harness.Service.ConfirmEmailAsync(Email, token, Password, OwnerIp, CancellationToken.None);
+        Assert.True(confirmed.Success, confirmed.Error);
+        Assert.True((await harness.Db.Users.SingleAsync(x => x.Email == Email)).EmailConfirmed);
+    }
+
+    [Fact]
+    public async Task IPv6_addresses_in_one_64_share_a_lockout()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+
+        for (var i = 1; i <= LoginLockouts.MaxFailures; i++)
+        {
+            await harness.Service.LoginAsync(Email, "wrong-pass", $"2001:db8:1:2::{i:x}", CancellationToken.None);
+        }
+
+        var samePrefix = await harness.Service.LoginAsync(Email, Password, "2001:db8:1:2:ffff:ffff:ffff:ffff", CancellationToken.None);
+        Assert.Equal(AuthService.LoginFailedError, samePrefix.Error);
+
+        var otherPrefix = await harness.Service.LoginAsync(Email, Password, "2001:db8:1:3::1", CancellationToken.None);
+        Assert.True(otherPrefix.Success, otherPrefix.Error);
+    }
+
     private sealed class TestHarness : IAsyncDisposable
     {
+        /// <summary>Turns the seeded account into an unconfirmed one with a live confirmation token, and returns it.</summary>
+        public async Task<string> MakeUnconfirmedAsync()
+        {
+            const string token = "confirmation-token-for-tests";
+            var user = await Db.Users.SingleAsync(x => x.Email == Email);
+            user.EmailConfirmed = false;
+            user.EmailConfirmationTokenHash = TokenCodec.HashToken(token);
+            user.EmailConfirmationTokenExpiresAtUtc = DateTime.UtcNow.AddHours(1);
+            await Db.SaveChangesAsync();
+            return token;
+        }
+
         private readonly SqliteConnection _connection;
         public AgoraDbContext Db { get; }
         public AuthService Service { get; }

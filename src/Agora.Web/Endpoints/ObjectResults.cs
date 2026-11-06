@@ -63,6 +63,14 @@ public static class ObjectResults
         }
     }
 
+    /// <summary>
+    /// Original files, archives, direct-link bytes and backgrounds are never stored by shared or browser caches:
+    /// their access can end (expiry, deletion, password) while a cached copy would live on. Previews and thumbnails
+    /// keep their own caching (they are refused for password-protected shares).
+    /// </summary>
+    public static void ApplyNoStore(HttpResponse response) =>
+        response.Headers.CacheControl = "private, no-store";
+
     private static bool SandboxFor(ContentTypePolicy.ServePlan plan, bool attachment) =>
         attachment || plan.ContentType != "application/pdf";
 

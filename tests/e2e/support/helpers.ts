@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { fileURLToPath } from 'node:url';
 import type { APIRequestContext, Page } from '@playwright/test';
 
 export interface PngOptions {
@@ -193,4 +194,51 @@ export async function waitForShareReady(page: Page, shareUrl: string, timeoutMs 
   }
 
   throw new Error(`Timed out waiting for share ${token} to become ready.`);
+}
+
+type FileSystemEmailRecord = {
+  to?: string;
+  metadata?: { ActionUrl?: string };
+};
+
+/** The newest E2E run's email output directory (the filesystem email sender writes one JSON file per message). */
+async function latestEmailDirectory(): Promise<string> {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+  const runsRoot = path.join(repoRoot, '.e2e-data', 'runs');
+  const entries = await fs.readdir(runsRoot, { withFileTypes: true }).catch(() => []);
+  const candidates: Array<{ dir: string; mtimeMs: number }> = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(runsRoot, entry.name, 'emails');
+    const stats = await fs.stat(dir).catch(() => null);
+    if (stats?.isDirectory()) candidates.push({ dir, mtimeMs: stats.mtimeMs });
+  }
+  if (candidates.length === 0) throw new Error(`No email output directories under ${runsRoot}`);
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return candidates[0].dir;
+}
+
+/** Waits for an email to <to> whose action link contains <pathPart> and returns that link. */
+export async function waitForEmailActionUrl(to: string, pathPart: string, timeoutMs = 60_000): Promise<string> {
+  const startedAt = Date.now();
+  const dir = await latestEmailDirectory();
+  while (Date.now() - startedAt < timeoutMs) {
+    for (const name of (await fs.readdir(dir).catch(() => [])).filter((x) => x.endsWith('.json'))) {
+      const record = JSON.parse(await fs.readFile(path.join(dir, name), 'utf8')) as FileSystemEmailRecord;
+      const actionUrl = record.metadata?.ActionUrl ?? '';
+      if (record.to === to && actionUrl.includes(pathPart)) {
+        return actionUrl;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`Timed out waiting for an email to ${to} with ${pathPart}.`);
+}
+
+/** Opens an emailed account confirmation link and confirms it with the account password. */
+export async function confirmEmailWithPassword(page: Page, confirmUrl: string, password: string) {
+  await page.goto(confirmUrl);
+  const form = page.locator('form').filter({ has: page.locator('input[name="token"]') }).first();
+  await form.locator('input[name="password"]').fill(password);
+  await form.locator('button[type="submit"]').click();
 }

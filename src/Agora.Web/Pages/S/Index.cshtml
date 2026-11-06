@@ -16,6 +16,13 @@
         DownloadDisabledReason: "ZIP download is disabled for this share mode.",
         RequiresPassword: Model.RequiresPassword,
         DownloadError: Model.DownloadError);
+    // Generic pages (locked password share, expired direct link) carry nothing of the share, not even its colors.
+    var metaDescription = Model.IsLocked
+        ? "Enter the password to open the shared files."
+        : Model.IsGeneric
+            ? "This link has expired."
+            : Model.Share?.PageDescription ?? "Download shared files";
+    var customBackgroundColor = Model.IsGeneric ? null : Model.Share?.PageBackgroundColorHex;
 }
 <!doctype html>
 <html lang="en">
@@ -23,27 +30,33 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>@Model.DisplayH1 - Agora</title>
-  <meta name="description" content="@(Model.Share?.PageDescription ?? "Download shared files")" />
+  <meta name="description" content="@metaDescription" />
 
   <meta property="og:type" content="website" />
   <meta property="og:title" content="@Model.DisplayH1" />
-  <meta property="og:description" content="@(Model.Share?.PageDescription ?? "Download shared files")" />
+  <meta property="og:description" content="@metaDescription" />
+  @if (!string.IsNullOrEmpty(Model.OgImageUrl))
+  {
   <meta property="og:image" content="@Model.OgImageUrl" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
+  }
   <meta property="og:url" content="@Model.PageUrl" />
 
-  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:card" content="@(string.IsNullOrEmpty(Model.OgImageUrl) ? "summary" : "summary_large_image")" />
   <meta name="twitter:title" content="@Model.DisplayH1" />
-  <meta name="twitter:description" content="@(Model.Share?.PageDescription ?? "Download shared files")" />
+  <meta name="twitter:description" content="@metaDescription" />
+  @if (!string.IsNullOrEmpty(Model.OgImageUrl))
+  {
   <meta name="twitter:image" content="@Model.OgImageUrl" />
+  }
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
   <style>
     :root { --cream:#FAF7F2; --ink:#1A1614; --ink-light:#5C534A; --ink-muted:#9B9189; --terra:#C4663A; --border:#E5DFD7; --cream-dark:#F0EBE3; }
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family:'DM Sans',sans-serif; background: var(--cream); color: var(--ink); min-height:100vh; display:flex; flex-direction:column; align-items:@Model.ContainerAlignItems; justify-content:@Model.ContainerJustifyContent; padding:2rem; @(!string.IsNullOrWhiteSpace(Model.Share?.PageBackgroundColorHex) ? $"background-color:{Model.Share.PageBackgroundColorHex};" : "") @(!string.IsNullOrWhiteSpace(Model.BackgroundImageUrl) ? $"background-image:url({Model.BackgroundImageUrl});background-size:cover;background-position:center;" : "") }
+    body { font-family:'DM Sans',sans-serif; background: var(--cream); color: var(--ink); min-height:100vh; display:flex; flex-direction:column; align-items:@Model.ContainerAlignItems; justify-content:@Model.ContainerJustifyContent; padding:2rem; @(!string.IsNullOrWhiteSpace(customBackgroundColor) ? $"background-color:{customBackgroundColor};" : "") @(!string.IsNullOrWhiteSpace(Model.BackgroundImageUrl) ? $"background-image:url({Model.BackgroundImageUrl});background-size:cover;background-position:center;" : "") }
 
     .preview-shell { width:min(80vw,1080px); max-height:80vh; background:white; border:1px solid var(--border); border-radius:1rem; box-shadow:0 12px 38px rgba(26,22,20,0.11); display:flex; flex-direction:column; overflow:hidden; }
     .preview-shell.mosaic-mode { width:90vw; max-width:90vw; max-height:90vh; }
@@ -111,7 +124,36 @@
   </style>
 </head>
 <body>
-  @if (Model.Share is not null)
+  @if (Model.IsGeneric)
+  {
+    <div data-share-generic-card style="background:white;border-radius:1rem;padding:2.5rem;max-width:480px;width:100%;box-shadow:0 8px 30px rgba(26,22,20,0.08);">
+      <h1 style="font-family:'Instrument Serif',serif;font-weight:400;font-size:1.75rem;letter-spacing:-0.01em;">@Model.DisplayH1</h1>
+      @if (Model.IsLocked)
+      {
+        <p style="color:#5C534A;font-size:0.875rem;margin-top:0.75rem;">Enter the password you received with this link to see the shared files.</p>
+        <form method="post" action="/s/@Uri.EscapeDataString(Model.Token)/unlock" style="margin:1.5rem 0 0;">
+          @Html.AntiForgeryToken()
+          <label for="download-password" class="download-password-label">Password</label>
+          <input id="download-password" name="downloadPassword" type="password" required autocomplete="current-password" class="download-password-input" />
+          @if (!string.IsNullOrWhiteSpace(Model.DownloadError))
+          {
+            <p class="download-error">@Model.DownloadError</p>
+          }
+          <button type="submit" class="download-button">Unlock</button>
+        </form>
+      }
+      else
+      {
+        <p style="color:#7a3f20;font-size:0.875rem;margin-top:1rem;padding:0.75rem;border-radius:0.5rem;background:#f6e5dc;border:1px solid #e8c8b5;">This link has expired.</p>
+      }
+    </div>
+    <p style="color:var(--ink-muted);font-size:0.6875rem;margin-top:1.25rem;padding-bottom:0.5rem;text-align:center;">
+      <a href="https://github.com/aduggleby/agora" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:none;">
+        Powered by Agora - Self hosted secure file transfer
+      </a>
+    </p>
+  }
+  else if (Model.Share is not null)
   {
     @if (Model.HasPreviewExperience)
     {

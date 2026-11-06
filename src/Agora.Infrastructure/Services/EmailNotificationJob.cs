@@ -2,6 +2,7 @@ using Agora.Application.Abstractions;
 using Agora.Application.Models;
 using Agora.Domain.Entities;
 using Agora.Infrastructure.Persistence;
+using Hangfire;
 using Hangfire.Console;
 using Hangfire.Server;
 using Microsoft.EntityFrameworkCore;
@@ -15,8 +16,84 @@ public sealed class EmailNotificationJob(
     IEmailSender emailSender,
     IDownloaderGeoLookup downloaderGeoLookup,
     IPublicOriginProvider publicOrigin,
+    IBackgroundJobClient backgroundJobs,
     ILogger<EmailNotificationJob> logger)
 {
+    /// <summary><c>every_time</c> shares get at most one download email per share in this window.</summary>
+    public static readonly TimeSpan CoalesceWindow = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// The coalesced <c>every_time</c> notification: one email for all downloads of the share not yet notified
+    /// (the latest one in detail, plus how many since the first). Downloads recorded while it ran get the next email,
+    /// one window later.
+    /// </summary>
+    // One run per share at a time (a rescheduled job and a fresh one can meet); the job is idempotent, so a lock
+    // timeout or database error may simply retry. Send failures are caught and recorded on the events instead.
+    [DisableConcurrentExecution("agora:share-download-notification:{0}", 60)]
+    [AutomaticRetry(Attempts = 3)]
+    public async Task ProcessShareDownloadsAsync(Guid shareId, string token, CancellationToken cancellationToken, PerformContext? performContext = null)
+    {
+        performContext?.WriteLine($"Processing coalesced download notification for share '{shareId}'.");
+        var pending = await db.DownloadEvents
+            .Where(x => x.ShareId == shareId && !x.NotificationSent && x.NotificationError == null)
+            .OrderBy(x => x.DownloadedAtUtc)
+            .ToListAsync(cancellationToken);
+        if (pending.Count == 0)
+        {
+            performContext?.WriteLine("Notification skipped: no downloads waiting.");
+            return;
+        }
+
+        var share = await db.Shares.AsNoTracking().SingleOrDefaultAsync(x => x.Id == shareId, cancellationToken);
+        var ownerUserId = share?.OwnerUserId;
+        var recipient = share is null || ownerUserId is null || share.DeletedAtUtc is not null
+            ? null
+            : await db.Users.Where(x => x.Id == ownerUserId).Select(x => x.Email).SingleOrDefaultAsync(cancellationToken);
+        if (share is null || string.IsNullOrWhiteSpace(recipient))
+        {
+            performContext?.WriteLine("Notification skipped: share deleted or owner not found.");
+            pending.ForEach(x => x.NotificationError = "Share deleted or owner not found.");
+            await db.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        try
+        {
+            var latest = pending[^1];
+            var notification = await BuildNotificationAsync(share, latest, recipient, token, cancellationToken) with
+            {
+                BatchCount = pending.Count,
+                BatchFirstDownloadedAtUtc = pending[0].DownloadedAtUtc
+            };
+            await emailSender.SendDownloadNotificationAsync(notification, cancellationToken);
+            pending.ForEach(x =>
+            {
+                x.NotificationSent = true;
+                x.NotificationError = null;
+            });
+            await db.SaveChangesAsync(cancellationToken);
+            performContext?.WriteLine($"Download notification for {pending.Count} download(s) sent to '{recipient}'.");
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Coalesced download notification failed for share {ShareId}", shareId);
+            performContext?.WriteLine($"Download notification failed: {ex.Message}");
+            pending.ForEach(x => x.NotificationError = ex.Message);
+            await db.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        // A download recorded between the query above and the save saw a pending event and queued nothing.
+        var pendingIds = pending.Select(x => x.Id).ToList();
+        var arrivedMeanwhile = await db.DownloadEvents.AnyAsync(
+            x => x.ShareId == shareId && !x.NotificationSent && x.NotificationError == null && !pendingIds.Contains(x.Id),
+            cancellationToken);
+        if (arrivedMeanwhile)
+        {
+            backgroundJobs.Schedule<EmailNotificationJob>(x => x.ProcessShareDownloadsAsync(shareId, token, CancellationToken.None, null), CoalesceWindow);
+        }
+    }
+
     public async Task ProcessDownloadEventAsync(Guid downloadEventId, string token, CancellationToken cancellationToken, PerformContext? performContext = null)
     {
         performContext?.WriteLine($"Processing download notification for event '{downloadEventId}'.");
@@ -59,27 +136,7 @@ public sealed class EmailNotificationJob(
 
         try
         {
-            var downloadCount = await db.DownloadEvents.CountAsync(x => x.ShareId == share.Id, cancellationToken);
-            var browser = ParseBrowserMetadata(downloadEvent.BrowserMetadataJson);
-            var shareUrl = publicOrigin.ShareUrl(token);
-            var downloaderIpDisplay = await downloaderGeoLookup.FormatForNotificationAsync(downloadEvent.IpAddress, cancellationToken);
-
-            var notification = new DownloadNotification(
-                To: recipient,
-                ShareId: share.Id.ToString(),
-                ShareUrl: shareUrl,
-                ZipDisplayName: share.ZipDisplayName,
-                DownloadedAtUtc: downloadEvent.DownloadedAtUtc,
-                DownloaderIp: downloadEvent.IpAddress,
-                DownloaderUserAgent: downloadEvent.UserAgent,
-                BrowserMetadataJson: downloadEvent.BrowserMetadataJson,
-                ExpiresAtUtc: share.ExpiresAtUtc,
-                DownloadCount: downloadCount,
-                BrowserFamily: browser.BrowserFamily,
-                OsFamily: browser.OsFamily,
-                DeviceType: browser.DeviceType,
-                DownloaderIpDisplay: downloaderIpDisplay);
-
+            var notification = await BuildNotificationAsync(share, downloadEvent, recipient, token, cancellationToken);
             await emailSender.SendDownloadNotificationAsync(notification, cancellationToken);
             downloadEvent.NotificationSent = true;
             downloadEvent.NotificationError = null;
@@ -93,6 +150,29 @@ public sealed class EmailNotificationJob(
             downloadEvent.NotificationError = ex.Message;
             await db.SaveChangesAsync(cancellationToken);
         }
+    }
+
+    private async Task<DownloadNotification> BuildNotificationAsync(Share share, DownloadEvent downloadEvent, string recipient, string token, CancellationToken cancellationToken)
+    {
+        var downloadCount = await db.DownloadEvents.CountAsync(x => x.ShareId == share.Id, cancellationToken);
+        var browser = ParseBrowserMetadata(downloadEvent.BrowserMetadataJson);
+        var downloaderIpDisplay = await downloaderGeoLookup.FormatForNotificationAsync(downloadEvent.IpAddress, cancellationToken);
+
+        return new DownloadNotification(
+            To: recipient,
+            ShareId: share.Id.ToString(),
+            ShareUrl: publicOrigin.ShareUrl(token),
+            ZipDisplayName: share.ZipDisplayName,
+            DownloadedAtUtc: downloadEvent.DownloadedAtUtc,
+            DownloaderIp: downloadEvent.IpAddress,
+            DownloaderUserAgent: downloadEvent.UserAgent,
+            BrowserMetadataJson: downloadEvent.BrowserMetadataJson,
+            ExpiresAtUtc: share.ExpiresAtUtc,
+            DownloadCount: downloadCount,
+            BrowserFamily: browser.BrowserFamily,
+            OsFamily: browser.OsFamily,
+            DeviceType: browser.DeviceType,
+            DownloaderIpDisplay: downloaderIpDisplay);
     }
 
     private static (string BrowserFamily, string OsFamily, string DeviceType) ParseBrowserMetadata(string json)

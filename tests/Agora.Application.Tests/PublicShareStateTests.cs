@@ -179,6 +179,54 @@ public sealed class PublicShareStateTests
         Assert.Equal(1, harness.Jobs.Enqueued);
     }
 
+    [Fact]
+    public async Task A_failed_source_cools_down_for_thirty_minutes()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var (share, file) = harness.NewShareFile();
+        Assert.Equal(TimeSpan.Zero, harness.Service.FailedCooldownRemaining(share.Id, file.Id));
+
+        var failedPath = SharePreviewPaths.FailedPath(harness.StorageRoot, share.Id, file.Id);
+        Directory.CreateDirectory(Path.GetDirectoryName(failedPath)!);
+        await File.WriteAllTextAsync(failedPath, DateTime.UtcNow.ToString("O"));
+        File.SetLastWriteTimeUtc(failedPath, DateTime.UtcNow.AddMinutes(-10));
+        Assert.InRange(harness.Service.FailedCooldownRemaining(share.Id, file.Id), TimeSpan.FromMinutes(19), TimeSpan.FromMinutes(20));
+
+        File.SetLastWriteTimeUtc(failedPath, DateTime.UtcNow.AddMinutes(-31));
+        Assert.Equal(TimeSpan.Zero, harness.Service.FailedCooldownRemaining(share.Id, file.Id));
+    }
+
+    [Fact]
+    public async Task The_preview_job_skips_a_source_that_failed_recently()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var (share, file) = harness.NewShareFile();
+        share.ShareToken = "cooldown1";
+        share.UploaderEmail = "owner@example.com";
+        share.ZipDisplayName = "files.zip";
+        share.ZipDiskPath = "zips/cooldown1.zip";
+        share.ExpiresAtUtc = DateTime.UtcNow.AddDays(1);
+        // The source object is missing, so a run that gets past the cooldown rejects it and rewrites the marker.
+        file.StoredRelativePath = "shares/2026/11/cooldown1/photo.jpg";
+        share.Files = [file];
+        harness.Db.Shares.Add(share);
+        await harness.Db.SaveChangesAsync();
+
+        var failedPath = SharePreviewPaths.FailedPath(harness.StorageRoot, share.Id, file.Id);
+        Directory.CreateDirectory(Path.GetDirectoryName(failedPath)!);
+        await File.WriteAllTextAsync(failedPath, "old");
+        var recent = DateTime.UtcNow.AddMinutes(-10);
+        File.SetLastWriteTimeUtc(failedPath, recent);
+
+        await harness.Service.GeneratePreviewAsync(share.Id, file.Id, CancellationToken.None);
+        Assert.Equal("old", await File.ReadAllTextAsync(failedPath));
+        Assert.False(File.Exists(SharePreviewPaths.LockPath(harness.StorageRoot, share.Id, file.Id)));
+
+        File.SetLastWriteTimeUtc(failedPath, DateTime.UtcNow.AddMinutes(-31));
+        await harness.Service.GeneratePreviewAsync(share.Id, file.Id, CancellationToken.None);
+        Assert.NotEqual("old", await File.ReadAllTextAsync(failedPath));
+    }
+
     private sealed class Harness : IAsyncDisposable
     {
         private readonly SqliteConnection _connection;
@@ -195,6 +243,7 @@ public sealed class PublicShareStateTests
         }
 
         public string StorageRoot { get; }
+        public AgoraDbContext Db => _db;
         public int RetentionHours { get; }
         public CountingJobClient Jobs { get; }
         public SharePreviewJobService Service { get; }

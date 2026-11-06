@@ -175,6 +175,11 @@ public sealed class ShareManager(
                 downloadPassword is null ? "application/zip" : "application/octet-stream",
                 cancellationToken);
 
+            // Owner lock from here to the insert: serialized with account deletion (the owner must still exist, and be
+            // enabled, when the row is inserted, otherwise the uploaded objects are removed again by the failure path
+            // below) and with account background replacement, which deletes the old object only under this lock, so
+            // a background read from the template here is still there when it is copied.
+            using var ownerLock = await draftLocks.LockAsync(OwnerLockKey(owner.UserId), cancellationToken);
             var template = await ResolveTemplateAsync(command, cancellationToken);
             logger.LogInformation(
                 "Resolved download page template for uploader {UploaderEmail} mode {TemplateMode} with background marker {BackgroundMarker}",
@@ -208,9 +213,6 @@ public sealed class ShareManager(
                     copiedMarker ?? "<none>");
             }
 
-            // Serialized with account deletion: the owner must still exist (and be enabled) when the row is inserted,
-            // otherwise the uploaded objects are removed again by the failure path below.
-            using var ownerLock = await draftLocks.LockAsync(OwnerLockKey(owner.UserId), cancellationToken);
             if (!await db.Users.AnyAsync(x => x.Id == owner.UserId && x.IsEnabled, cancellationToken))
             {
                 throw new InvalidOperationException("The account that owns this share no longer exists.");
@@ -784,6 +786,7 @@ public sealed class ShareManager(
         var mode = (share.NotifyMode ?? "none").Trim().ToLowerInvariant();
 
         var shouldSend = false;
+        var coalesce = false;
 
         await using var tx = await db.Database.BeginTransactionAsync(cancellationToken);
         if (mode == "once")
@@ -800,7 +803,7 @@ public sealed class ShareManager(
         }
         else if (mode == "every_time")
         {
-            shouldSend = true;
+            coalesce = true;
             if (share.FirstDownloadedAtUtc is null)
             {
                 share.FirstDownloadedAtUtc = now;
@@ -827,11 +830,54 @@ public sealed class ShareManager(
             backgroundJobs.Enqueue<EmailNotificationJob>(x =>
                 x.ProcessDownloadEventAsync(downloadEvent.Id, token, CancellationToken.None, null));
         }
+        else if (coalesce)
+        {
+            await QueueCoalescedNotificationAsync(share.Id, downloadEvent.Id, token, now, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// <c>every_time</c> notifications send at most one email per share per
+    /// <see cref="EmailNotificationJob.CoalesceWindow"/>, covering every download since the previous one. State lives
+    /// in the download events: an event not yet notified (and without an error) means a job is pending. Otherwise the
+    /// email goes out at once when the share had no other download within two windows (so no email can have been
+    /// sent within the last window: a delayed job runs at most one window after its first download), else one window
+    /// from now. A pending event older than two windows counts as lost and no longer blocks a new job.
+    /// </summary>
+    private async Task QueueCoalescedNotificationAsync(Guid shareId, Guid eventId, string token, DateTime now, CancellationToken cancellationToken)
+    {
+        var window = EmailNotificationJob.CoalesceWindow;
+        var lookback = now - (window + window);
+        // Only earlier downloads count (ties broken by id), so of two concurrent downloads exactly one queues the job.
+        var recent = (await db.DownloadEvents
+                .AsNoTracking()
+                .Where(x => x.ShareId == shareId && x.Id != eventId && x.DownloadedAtUtc >= lookback && x.DownloadedAtUtc <= now)
+                .Select(x => new { x.Id, x.DownloadedAtUtc, x.NotificationSent, x.NotificationError })
+                .ToListAsync(cancellationToken))
+            .Where(x => x.DownloadedAtUtc < now || x.Id.CompareTo(eventId) < 0)
+            .ToList();
+
+        if (recent.Any(x => !x.NotificationSent && x.NotificationError == null))
+        {
+            return;
+        }
+
+        if (recent.Count == 0)
+        {
+            backgroundJobs.Enqueue<EmailNotificationJob>(x =>
+                x.ProcessShareDownloadsAsync(shareId, token, CancellationToken.None, null));
+        }
+        else
+        {
+            backgroundJobs.Schedule<EmailNotificationJob>(x =>
+                x.ProcessShareDownloadsAsync(shareId, token, CancellationToken.None, null), window);
+        }
     }
 
     public async Task UpsertAccountTemplateAsync(ShareOwner owner, ShareTemplateData template, CancellationToken cancellationToken)
     {
         var existing = await TemplatesOwnedBy(owner).FirstOrDefaultAsync(cancellationToken);
+        var previousBackground = existing?.BackgroundImageUrl;
         if (existing is null)
         {
             db.AccountTemplates.Add(new AccountTemplate
@@ -860,6 +906,47 @@ public sealed class ShareManager(
         }
 
         await db.SaveChangesAsync(cancellationToken);
+        // Under the owner lock share creation holds while it reads the account template and copies its background,
+        // so a creation that already read the old marker finishes its copy first.
+        using (await draftLocks.LockAsync(OwnerLockKey(owner.UserId), cancellationToken))
+        {
+            await DeleteReplacedAccountBackgroundAsync(previousBackground, template.BackgroundImageUrl, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Removes the account background object a template no longer points to, once the new state is committed. Only
+    /// <c>uploads/templates/</c> keys are touched, and only when no share or template row still references the
+    /// marker (shares created before backgrounds were copied per share point at the account object directly).
+    /// A failure is logged and leaves an orphan; the saved template is unaffected.
+    /// </summary>
+    private async Task DeleteReplacedAccountBackgroundAsync(string? previousMarker, string? currentMarker, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(previousMarker) || string.Equals(previousMarker, currentMarker, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var key = ObjectKey.FromInternalMarker(previousMarker);
+        if (key is null || !key.StartsWith("uploads/templates/", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        try
+        {
+            if (await db.Shares.AsNoTracking().AnyAsync(x => x.BackgroundImageUrl == previousMarker, cancellationToken) ||
+                await db.AccountTemplates.AsNoTracking().AnyAsync(x => x.BackgroundImageUrl == previousMarker, cancellationToken))
+            {
+                return;
+            }
+
+            await objectStore.DeleteAsync(key, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Unable to delete the replaced account background {BackgroundKey}", key);
+        }
     }
 
     public async Task<ShareTemplateData> GetAccountTemplateAsync(ShareOwner owner, CancellationToken cancellationToken)
@@ -1217,6 +1304,13 @@ public sealed class ShareManager(
                 return false;
             }
 
+            // Only the signed-in owner's own drafts; a public-upload draft answers like a missing upload.
+            var draft = await ReadDraftMetadataAsync(normalizedDraftShareId, cancellationToken);
+            if (draft is null || draft.OwnerUserId != ownerUserId || draft.PublicUpload)
+            {
+                return false;
+            }
+
             var stagingDirectory = Path.Combine(GetStagingRoot(UploadPurposeShareFile), normalizedUploadId);
             var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
             var payloadPath = Path.Combine(stagingDirectory, "payload.bin");
@@ -1253,6 +1347,21 @@ public sealed class ShareManager(
     }
 
     private sealed record DraftStagedTotals(int Count, long Bytes);
+
+    /// <summary>
+    /// Bytes still allowed into a draft's share files: the per-share total minus what is already staged. Call only
+    /// after the caller's ownership of the draft was checked (<see cref="EnsureDraftShareAsync"/>).
+    /// </summary>
+    public long GetDraftRemainingShareBytes(string draftShareId)
+    {
+        if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId))
+        {
+            return 0;
+        }
+
+        var staged = ReadDraftStagedTotals(normalizedId, GetStagingRoot(UploadPurposeShareFile)).Bytes;
+        return Math.Max(0, _options.MaxTotalUploadBytes - staged);
+    }
 
     /// <summary>
     /// Files and bytes currently staged for a draft, read from the per-draft slot markers. A marker whose staging
@@ -1792,7 +1901,9 @@ public sealed class ShareManager(
         using (await draftLocks.LockAsync(DraftLockKey(draftShareId), cancellationToken))
         {
             var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
-            if (metadata is not null && metadata.OwnerUserId != ownerUserId)
+            // A draft opened through an upload link is never usable by the signed-in endpoints and vice versa; the
+            // mismatch is refused exactly like someone else's draft, so neither side learns the other kind exists.
+            if (metadata is not null && (metadata.OwnerUserId != ownerUserId || metadata.PublicUpload != publicUpload))
             {
                 throw new InvalidOperationException("Draft share does not belong to the current user.");
             }
@@ -1824,10 +1935,19 @@ public sealed class ShareManager(
         }
     }
 
+    /// <summary>
+    /// Read-only check for signed-in read paths: the draft exists, belongs to the caller and was not opened through an
+    /// upload link. Nothing is created or touched.
+    /// </summary>
+    public async Task<bool> IsOwnSignedInDraftAsync(Guid ownerUserId, string draftShareId, CancellationToken cancellationToken) =>
+        TryNormalizeDraftShareId(draftShareId, out var normalizedId) &&
+        await ReadDraftMetadataAsync(normalizedId, cancellationToken) is { PublicUpload: false } metadata &&
+        metadata.OwnerUserId == ownerUserId;
+
     public async Task<DraftTemplateState> GetDraftTemplateAsync(Guid ownerUserId, string draftShareId, CancellationToken cancellationToken)
     {
         var metadata = await ReadDraftMetadataAsync(draftShareId, cancellationToken);
-        if (metadata is null || metadata.OwnerUserId != ownerUserId)
+        if (metadata is null || metadata.OwnerUserId != ownerUserId || metadata.PublicUpload)
         {
             return new DraftTemplateState(draftShareId, "account_default", string.Empty, string.Empty, string.Empty, null, null, null, "center");
         }
@@ -1866,7 +1986,8 @@ public sealed class ShareManager(
         using (await draftLocks.LockAsync(DraftLockKey(normalizedId), cancellationToken))
         {
             var metadata = await ReadDraftMetadataAsync(normalizedId, cancellationToken);
-            if (metadata is not null && metadata.OwnerUserId != ownerUserId)
+            // Only signed-in drafts carry a per-share design; a public-upload draft is refused like someone else's.
+            if (metadata is not null && (metadata.OwnerUserId != ownerUserId || metadata.PublicUpload))
             {
                 throw new InvalidOperationException("Draft share does not belong to the current user.");
             }

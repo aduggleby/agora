@@ -20,7 +20,7 @@ public sealed class ResendEmailSender(
     public async Task SendDownloadNotificationAsync(DownloadNotification notification, CancellationToken cancellationToken)
     {
         var html = await templateRenderer.RenderDownloadNotificationHtmlAsync(notification, cancellationToken);
-        await SendHtmlEmailAsync(notification.To, "Your shared file was downloaded", html, cancellationToken);
+        await SendHtmlEmailAsync(notification.To, DownloadNotificationText.Subject(notification), html, cancellationToken);
     }
 
     public async Task SendAuthEmailAsync(AuthEmailMessage message, CancellationToken cancellationToken)

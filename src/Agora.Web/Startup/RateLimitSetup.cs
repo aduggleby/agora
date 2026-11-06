@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Claims;
 using System.Threading.RateLimiting;
 using Agora.Application.Models;
+using Agora.Application.Utilities;
 using Microsoft.AspNetCore.RateLimiting;
 
 namespace Agora.Web.Startup;
@@ -133,6 +134,7 @@ public static class RateLimitSetup
         });
     }
 
+    // IPv6 clients are grouped by /64 (ClientAddresses), so rotating addresses within a prefix shares one budget.
     private static string ClientIp(HttpContext httpContext) =>
-        httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        ClientAddresses.PartitionKey(httpContext.Connection.RemoteIpAddress);
 }

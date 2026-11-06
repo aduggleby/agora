@@ -19,18 +19,28 @@ public sealed class AuthService(
     IEmailSender emailSender,
     IBackgroundJobClient? backgroundJobs = null,
     LoginLockouts? loginLockouts = null,
-    KeyedAsyncLock? ownerLocks = null)
+    KeyedAsyncLock? ownerLocks = null,
+    PasswordHashingGate? passwordHashing = null)
 {
     public const string TryAgainError = "Please try again.";
     private readonly LoginLockouts _lockouts = loginLockouts ?? new LoginLockouts(new MemoryCache(new MemoryCacheOptions()));
     /// <summary>Shared with <see cref="ShareManager"/>: share creation and account deletion serialize per owner.</summary>
     private readonly KeyedAsyncLock _ownerLocks = ownerLocks ?? new KeyedAsyncLock();
+    /// <summary>Every PBKDF2 run goes through this process-wide ceiling (see <see cref="PasswordHashingGate"/>).</summary>
+    private readonly PasswordHashingGate _hashing = passwordHashing ?? new PasswordHashingGate();
 
     public const string DevelopmentUserEmail = "dev@example.com";
     public const string EmailConfirmationRequiredError = "Please confirm your email before signing in.";
     /// <summary>The one failure message sign-in returns for a wrong password, an unknown, disabled or locked account.</summary>
     public const string LoginFailedError = "Invalid credentials.";
     private const string ConfirmationLinkError = "This confirmation link is invalid or expired.";
+    /// <summary>
+    /// The one answer of the confirmation page for a wrong password and for a locked (account, address), so it is no
+    /// lockout oracle; the link stays usable. Worded to hold for both: a lockout ends after a while, and registering
+    /// again replaces the password (it does not lift a lockout, hence "in a few minutes").
+    /// </summary>
+    public const string ConfirmationPasswordError =
+        "That password doesn't match this registration. Check it and try again in a few minutes, or register again with a new password.";
     private const string PasswordResetLinkError = "This password reset link is invalid or expired.";
     /// <summary>
     /// Verified against when the account does not exist, so an unknown address costs the same PBKDF2 work as a wrong
@@ -80,7 +90,7 @@ public sealed class AuthService(
                 // the one that becomes active when the address is confirmed; the stamp rotates and the earlier
                 // confirmation link stops working, so a first registrant cannot plant a password the mailbox owner
                 // later activates.
-                existing.PasswordHash = PasswordHasher.Hash(password);
+                existing.PasswordHash = await _hashing.HashAsync(password, cancellationToken);
                 existing.SecurityStamp = SecurityStamps.New();
                 var claimToken = IssueEmailConfirmationToken(existing, DateTime.UtcNow);
                 try
@@ -97,7 +107,7 @@ public sealed class AuthService(
                 return (true, string.Empty);
             }
 
-            PasswordHasher.Verify(password, DummyPasswordHash);
+            await _hashing.VerifyAsync(password, DummyPasswordHash, cancellationToken);
             if (existing.EmailConfirmed)
             {
                 await QueueAuthEmailAsync(new AuthEmailMessage(
@@ -117,13 +127,14 @@ public sealed class AuthService(
         }
 
         var isFirstUser = userCount == 0;
+        var passwordHash = await _hashing.HashAsync(password, cancellationToken);
         var user = new UserAccount
         {
             Id = Guid.NewGuid(),
             Email = email,
             DisplayName = DefaultDisplayNameForEmail(email),
             EmailConfirmed = false,
-            PasswordHash = PasswordHasher.Hash(password),
+            PasswordHash = passwordHash,
             SecurityStamp = SecurityStamps.New(),
             Role = isFirstUser ? "admin" : "user",
             DefaultNotifyMode = "once",
@@ -149,7 +160,7 @@ public sealed class AuthService(
         Preheader: "Complete your registration",
         Headline: "Confirm your email",
         IntroText: "Please confirm your email address before signing in to Agora.",
-        DetailText: "If you did not request this account, you can ignore this email.",
+        DetailText: "You will be asked for the password you chose when registering. If you did not request this account, you can ignore this email.",
         ActionLabel: "Confirm email",
         ActionUrl: BuildConfirmationUrl(confirmEmailUrlBase, email, token),
         SecondaryText: "This link expires in 24 hours.");
@@ -192,7 +203,7 @@ public sealed class AuthService(
     public async Task ResendEmailConfirmationAsync(string email, string confirmEmailUrlBase, CancellationToken cancellationToken)
     {
         // Same cost for every account state, so timing reveals nothing about the address.
-        PasswordHasher.Verify(string.Empty, DummyPasswordHash);
+        await _hashing.VerifyAsync(string.Empty, DummyPasswordHash, cancellationToken);
         email = NormalizeEmail(email);
         if (string.IsNullOrWhiteSpace(email) || !IsValidEmail(email))
         {
@@ -230,12 +241,12 @@ public sealed class AuthService(
         // a wrong password, a disabled account and a locked address are indistinguishable to the caller. Only a
         // caller who presented the correct password learns that the account still needs its email confirmed.
         var storedHash = user?.PasswordHash ?? DummyPasswordHash;
-        var passwordMatches = PasswordHasher.Verify(password ?? string.Empty, storedHash);
+        var passwordMatches = await _hashing.VerifyAsync(password ?? string.Empty, storedHash, cancellationToken);
         if (!passwordMatches && user is not null && PasswordHasher.NeedsRehash(storedHash))
         {
             // A legacy hash verifies at fewer iterations than the current format; spend the current cost as well so
             // a wrong password costs the same for legacy, upgraded and unknown accounts.
-            PasswordHasher.Verify(password ?? string.Empty, DummyPasswordHash);
+            await _hashing.VerifyAsync(password ?? string.Empty, DummyPasswordHash, cancellationToken);
         }
 
         if (user is null)
@@ -251,21 +262,9 @@ public sealed class AuthService(
 
         if (!passwordMatches)
         {
-            // Unconfirmed accounts accumulate nothing: they cannot be signed into anyway.
-            if (user.EmailConfirmed)
-            {
-                RegisterFailedLoginAttempt(user, nowUtc);
-                _lockouts.RecordFailure(user.Id, clientIp);
-                try
-                {
-                    await db.SaveChangesAsync(cancellationToken);
-                }
-                catch (DbUpdateConcurrencyException)
-                {
-                    // A credential change raced the counter update; the counter is informational only.
-                }
-            }
-
+            // Unconfirmed accounts count too: their "confirm your email" answer reveals a correct password, so
+            // guessing against them must lock out like any other account.
+            await RecordFailedPasswordAsync(user, clientIp, nowUtc, cancellationToken);
             return (false, LoginFailedError, null);
         }
 
@@ -301,7 +300,7 @@ public sealed class AuthService(
         // sign-in. The password is already known to be correct, and nothing else about the account changes.
         if (PasswordHasher.NeedsRehash(user.PasswordHash))
         {
-            user.PasswordHash = PasswordHasher.Hash(password!);
+            user.PasswordHash = await _hashing.HashAsync(password!, cancellationToken);
             changed = true;
         }
 
@@ -398,6 +397,7 @@ public sealed class AuthService(
         }
 
         var generatedPassword = GenerateDevelopmentPassword();
+        var generatedPasswordHash = await _hashing.HashAsync(generatedPassword, cancellationToken);
         var user = new UserAccount
         {
             Id = Guid.NewGuid(),
@@ -405,7 +405,7 @@ public sealed class AuthService(
             DisplayName = DefaultDisplayNameForEmail(email),
             EmailConfirmed = true,
             EmailConfirmedAtUtc = DateTime.UtcNow,
-            PasswordHash = PasswordHasher.Hash(generatedPassword),
+            PasswordHash = generatedPasswordHash,
             SecurityStamp = SecurityStamps.New(),
             Role = "admin",
             DefaultNotifyMode = "once",
@@ -755,7 +755,13 @@ public sealed class AuthService(
         return await TrySaveUserChangeAsync(cancellationToken);
     }
 
-    public async Task<(bool Success, string Error)> ConfirmEmailAsync(string email, string token, CancellationToken cancellationToken)
+    /// <summary>
+    /// Activates an account from its emailed link. The account password is required as well: re-registering an
+    /// unconfirmed address replaces its password, so without it the mailbox owner could confirm (and activate) a
+    /// password someone else chose. A wrong password leaves the token unused and counts as a failed sign-in for the
+    /// (account, <paramref name="clientIp"/>) lockout; a locked address gets the same answer even with the right one.
+    /// </summary>
+    public async Task<(bool Success, string Error)> ConfirmEmailAsync(string email, string token, string password, string clientIp, CancellationToken cancellationToken)
     {
         email = NormalizeEmail(email);
         if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(token))
@@ -764,14 +770,34 @@ public sealed class AuthService(
         }
 
         // Unknown address, already confirmed account and bad token all read the same, so the link endpoint cannot be
-        // used to probe which addresses have an account or whether it was confirmed.
+        // used to probe which addresses have an account or whether it was confirmed. Every path that gets this far
+        // costs one password verification.
+        var nowUtc = DateTime.UtcNow;
         var user = await db.Users.SingleOrDefaultAsync(x => x.Email == email, cancellationToken);
-        if (user is null || user.EmailConfirmed ||
-            !IsTokenValid(user.EmailConfirmationTokenHash, user.EmailConfirmationTokenExpiresAtUtc, token, DateTime.UtcNow))
+        var linkValid = user is not null && !user.EmailConfirmed &&
+                        IsTokenValid(user.EmailConfirmationTokenHash, user.EmailConfirmationTokenExpiresAtUtc, token, nowUtc);
+        var storedHash = linkValid ? user!.PasswordHash : DummyPasswordHash;
+        var passwordMatches = await _hashing.VerifyAsync(password ?? string.Empty, storedHash, cancellationToken);
+        if (!linkValid)
         {
             return (false, ConfirmationLinkError);
         }
 
+        if (_lockouts.IsLockedOut(user!.Id, clientIp))
+        {
+            return (false, ConfirmationPasswordError);
+        }
+
+        if (!passwordMatches)
+        {
+            await RecordFailedPasswordAsync(user, clientIp, nowUtc, cancellationToken);
+            return (false, ConfirmationPasswordError);
+        }
+
+        _lockouts.Reset(user.Id, clientIp);
+        user.FailedLoginCount = 0;
+        user.LastFailedLoginAtUtc = null;
+        user.LockoutEndUtc = null;
         user.EmailConfirmed = true;
         user.EmailConfirmedAtUtc = DateTime.UtcNow;
         user.EmailConfirmationTokenHash = null;
@@ -812,7 +838,7 @@ public sealed class AuthService(
             return (false, "Account not found.");
         }
 
-        if (!PasswordHasher.Verify(currentPassword, user.PasswordHash))
+        if (!await _hashing.VerifyAsync(currentPassword, user.PasswordHash, cancellationToken))
         {
             return (false, "Current password is incorrect.");
         }
@@ -991,17 +1017,17 @@ public sealed class AuthService(
             return (false, "Account not found.");
         }
 
-        if (!PasswordHasher.Verify(currentPassword, user.PasswordHash))
+        if (!await _hashing.VerifyAsync(currentPassword, user.PasswordHash, cancellationToken))
         {
             return (false, "Current password is incorrect.");
         }
 
-        if (PasswordHasher.Verify(newPassword, user.PasswordHash))
+        if (await _hashing.VerifyAsync(newPassword, user.PasswordHash, cancellationToken))
         {
             return (false, "New password must be different from the current password.");
         }
 
-        var token = IssuePendingPasswordToken(user, newPassword, DateTime.UtcNow);
+        var token = IssuePendingPasswordToken(user, await _hashing.HashAsync(newPassword, cancellationToken), DateTime.UtcNow);
         if (!await TrySaveUserChangeAsync(cancellationToken))
         {
             return (false, TryAgainError);
@@ -1062,7 +1088,7 @@ public sealed class AuthService(
     public async Task RequestPasswordResetAsync(string email, string resetPasswordUrlBase, CancellationToken cancellationToken)
     {
         // Same cost for every account state, so timing reveals nothing about the address.
-        PasswordHasher.Verify(string.Empty, DummyPasswordHash);
+        await _hashing.VerifyAsync(string.Empty, DummyPasswordHash, cancellationToken);
         email = NormalizeEmail(email);
         if (string.IsNullOrWhiteSpace(email) || !IsValidEmail(email))
         {
@@ -1109,7 +1135,7 @@ public sealed class AuthService(
             return (false, PasswordResetLinkError);
         }
 
-        user.PasswordHash = PasswordHasher.Hash(newPassword);
+        user.PasswordHash = await _hashing.HashAsync(newPassword, cancellationToken);
         ClearPendingCredentialTokens(user);
         user.SecurityStamp = SecurityStamps.New();
         if (!await TrySaveUserChangeAsync(cancellationToken))
@@ -1222,6 +1248,24 @@ public sealed class AuthService(
         }
     }
 
+    /// <summary>
+    /// A wrong account password (sign-in or email confirmation): counts toward the per-(account, address) lockout
+    /// and the informational per-account counter.
+    /// </summary>
+    private async Task RecordFailedPasswordAsync(UserAccount user, string clientIp, DateTime nowUtc, CancellationToken cancellationToken)
+    {
+        RegisterFailedLoginAttempt(user, nowUtc);
+        _lockouts.RecordFailure(user.Id, clientIp);
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // A credential change raced the counter update; the counter is informational only.
+        }
+    }
+
     /// <summary>Per-account failure counters, kept for admin visibility; blocking is per (account, address) in <see cref="LoginLockouts"/>.</summary>
     private static void RegisterFailedLoginAttempt(UserAccount user, DateTime nowUtc)
     {
@@ -1285,10 +1329,10 @@ public sealed class AuthService(
         return token;
     }
 
-    private static string IssuePendingPasswordToken(UserAccount user, string newPassword, DateTime nowUtc)
+    private static string IssuePendingPasswordToken(UserAccount user, string newPasswordHash, DateTime nowUtc)
     {
         var token = TokenCodec.GenerateToken();
-        user.PendingPasswordHash = PasswordHasher.Hash(newPassword);
+        user.PendingPasswordHash = newPasswordHash;
         user.PendingPasswordTokenHash = TokenCodec.HashToken(token);
         user.PendingPasswordTokenExpiresAtUtc = nowUtc.Add(EmailConfirmationTokenLifetime);
         return token;

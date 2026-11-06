@@ -204,8 +204,8 @@ public sealed class AuthServiceAccountLifecycleTests
         Assert.NotEqual(stampBefore, (await harness.Db.Users.SingleAsync(x => x.Email == "victim@example.com")).SecurityStamp);
 
         // The attacker's earlier link is dead; the victim's works and activates the victim's password only.
-        Assert.False((await harness.Service.ConfirmEmailAsync("victim@example.com", attackerToken, CancellationToken.None)).Success);
-        var confirmed = await harness.Service.ConfirmEmailAsync("victim@example.com", victimToken, CancellationToken.None);
+        Assert.False((await harness.Service.ConfirmEmailAsync("victim@example.com", attackerToken, "AttackerChosen123!", Ip, CancellationToken.None)).Success);
+        var confirmed = await harness.Service.ConfirmEmailAsync("victim@example.com", victimToken, "VictimChosen123!", Ip, CancellationToken.None);
         Assert.True(confirmed.Success, confirmed.Error);
         Assert.False((await harness.Service.LoginAsync("victim@example.com", "AttackerChosen123!", Ip, CancellationToken.None)).Success);
         Assert.True((await harness.Service.LoginAsync("victim@example.com", "VictimChosen123!", Ip, CancellationToken.None)).Success);
@@ -224,7 +224,7 @@ public sealed class AuthServiceAccountLifecycleTests
         var attackerService = new AuthService(attackerContext, harness.Emails);
         _ = await attackerContext.Users.SingleAsync(x => x.Email == "victim@example.com");
 
-        var confirmed = await harness.Service.ConfirmEmailAsync("victim@example.com", victimToken, CancellationToken.None);
+        var confirmed = await harness.Service.ConfirmEmailAsync("victim@example.com", victimToken, "VictimChosen123!", Ip, CancellationToken.None);
         Assert.True(confirmed.Success, confirmed.Error);
 
         var attacker = await attackerService.RegisterAsync("victim@example.com", "AttackerChosen123!", ConfirmUrl, CancellationToken.None);
@@ -402,23 +402,18 @@ public sealed class AuthServiceAccountLifecycleTests
     }
 
     [Fact]
-    public async Task Login_reveals_an_unconfirmed_account_only_to_the_correct_password_and_accumulates_nothing()
+    public async Task Login_reveals_an_unconfirmed_account_only_to_the_correct_password()
     {
         await using var harness = await Harness.CreateAsync();
         var user = await harness.UserAsync();
         user.EmailConfirmed = false;
         await harness.Db.SaveChangesAsync();
 
-        for (var i = 0; i < LoginLockouts.MaxFailures + 1; i++)
-        {
-            Assert.Equal(AuthService.LoginFailedError, (await harness.Service.LoginAsync(Email, "wrong-password", Ip, CancellationToken.None)).Error);
-        }
-
+        Assert.Equal(AuthService.LoginFailedError, (await harness.Service.LoginAsync(Email, "wrong-password", Ip, CancellationToken.None)).Error);
         var right = await harness.Service.LoginAsync(Email, Password, Ip, CancellationToken.None);
 
         Assert.Equal(AuthService.EmailConfirmationRequiredError, right.Error);
-        Assert.Equal(0, user.FailedLoginCount);
-        Assert.Null(user.LastFailedLoginAtUtc);
+        Assert.Null(right.User);
     }
 
     [Fact]
@@ -442,8 +437,8 @@ public sealed class AuthServiceAccountLifecycleTests
     {
         await using var harness = await Harness.CreateAsync();
 
-        var confirmUnknown = await harness.Service.ConfirmEmailAsync("nobody@example.com", Token, CancellationToken.None);
-        var confirmBadToken = await harness.Service.ConfirmEmailAsync(Email, Token, CancellationToken.None);
+        var confirmUnknown = await harness.Service.ConfirmEmailAsync("nobody@example.com", Token, Password, Ip, CancellationToken.None);
+        var confirmBadToken = await harness.Service.ConfirmEmailAsync(Email, Token, Password, Ip, CancellationToken.None);
         Assert.Equal(confirmUnknown, confirmBadToken);
         Assert.False(confirmBadToken.Success);
 

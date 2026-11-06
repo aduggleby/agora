@@ -2,6 +2,7 @@ using Agora.Application.Abstractions;
 using Agora.Application.Models;
 using Agora.Application.Utilities;
 using Agora.Infrastructure.Services;
+using Agora.Web.Auth;
 using Agora.Web.Services;
 using Agora.Web.Startup;
 using Microsoft.AspNetCore.Http;
@@ -15,6 +16,7 @@ public static class PublicShareEndpoints
 {
     public static WebApplication MapPublicShareEndpoints(this WebApplication app)
     {
+        // A password-protected share's background is part of what stays hidden until the password was entered.
         app.MapGet("/s/{token}/background", async (ShareManager manager, IObjectStore objectStore, string token, HttpResponse response, ILoggerFactory loggerFactory, CancellationToken ct) =>
         {
             var logger = loggerFactory.CreateLogger("Agora.DownloadPageBackground");
@@ -29,6 +31,11 @@ public static class PublicShareEndpoints
             {
                 logger.LogInformation("Background request for share {TokenRef} denied: share expired.", LogSafe.Token(token));
                 return Results.StatusCode(StatusCodes.Status410Gone);
+            }
+
+            if (!string.IsNullOrWhiteSpace(share.DownloadPasswordHash) && !ShareUnlockGate.IsUnlocked(response.HttpContext, share.Id))
+            {
+                return Results.NotFound();
             }
 
             var marker = share.BackgroundImageUrl ?? string.Empty;
@@ -50,8 +57,9 @@ public static class PublicShareEndpoints
             }
 
             logger.LogDebug("Background request for share {TokenRef} served object {Key}.", LogSafe.Token(token), key);
+            ObjectResults.ApplyNoStore(response);
             return ObjectResults.UserContent(response, background, key);
-        });
+        }).RequireRateLimiting(RateLimitSetup.DownloadEndpoints);
 
         // The PNG is rendered once per share and cached under previews/{shareId}/og.png (purged with the share's
         // other previews on deletion; page settings never change after creation). Password-protected shares get the
@@ -182,6 +190,7 @@ public static class PublicShareEndpoints
             // Type and disposition come from the file name only (ContentTypePolicy); the stored
             // DetectedContentType may hold a client-declared value from older uploads.
             var asAttachment = request.Query["download"].ToString() == "1";
+            ObjectResults.ApplyNoStore(request.HttpContext.Response);
             return ObjectResults.UserContent(request.HttpContext.Response, stored, file.OriginalFilename, forceAttachment: asAttachment);
         }).RequireRateLimiting(RateLimitSetup.DownloadEndpoints);
 
@@ -310,6 +319,7 @@ public static class PublicShareEndpoints
             SharePreviewJobService previewJobService,
             string token,
             Guid fileId,
+            HttpRequest request,
             CancellationToken ct) =>
         {
             var share = await manager.FindByTokenAsync(token, ct);
@@ -340,6 +350,15 @@ public static class PublicShareEndpoints
                 return Results.Ok(new { state = "unavailable", reason = "unsupported_type" });
             }
 
+            // A source that just failed is not retried on demand: each retry re-runs the full download and render.
+            var cooldown = previewJobService.FailedCooldownRemaining(share.Id, file.Id);
+            if (cooldown > TimeSpan.Zero)
+            {
+                var seconds = Math.Max(1, (int)Math.Ceiling(cooldown.TotalSeconds));
+                request.HttpContext.Response.Headers.RetryAfter = seconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                return Results.Ok(new { state = "unavailable", reason = "generation_failed", retryAfterSeconds = seconds });
+            }
+
             previewJobService.QueueGeneration(share.Id, file.Id);
             return Results.Accepted();
         }).RequireRateLimiting(RateLimitSetup.DownloadEndpoints);
@@ -352,7 +371,7 @@ public static class PublicShareEndpoints
             await RedirectToSharePageAsync(manager, token, ct))
             .RequireRateLimiting(RateLimitSetup.DownloadEndpoints);
 
-        app.MapPost("/s/{token}/download", async (ShareManager manager, IObjectStore objectStore, IOptions<AgoraOptions> options, string token, HttpRequest request, CancellationToken ct) =>
+        app.MapPost("/s/{token}/download", async (ShareManager manager, IObjectStore objectStore, IOptions<AgoraOptions> options, Agora.Infrastructure.Auth.PasswordHashingGate passwordHashing, string token, HttpRequest request, CancellationToken ct) =>
         {
             var share = await manager.FindByTokenAsync(token, ct);
             if (share is null || ShareManager.IsDeleted(share))
@@ -375,8 +394,9 @@ public static class PublicShareEndpoints
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
 
-            var isAuthenticatedRequester = request.HttpContext.User.Identity?.IsAuthenticated == true;
-            Task RecordDownloadAsync() => isAuthenticatedRequester
+            // Only the share's owner checking their own share is not counted; any other visitor, signed in or not, is.
+            var isOwner = share.OwnerUserId is { } ownerUserId && request.HttpContext.User.UserId() == ownerUserId;
+            Task RecordDownloadAsync() => isOwner
                 ? Task.CompletedTask
                 : manager.RecordDownloadAsync(share, token, ResolveRequesterIp(request), request.Headers.UserAgent.ToString(), ct);
 
@@ -399,6 +419,7 @@ public static class PublicShareEndpoints
                 }
 
                 ObjectResults.ApplyUserContentHeaders(request.HttpContext.Response);
+                ObjectResults.ApplyNoStore(request.HttpContext.Response);
                 return Results.File(archive.Content, "application/zip", share.ZipDisplayName);
             }
 
@@ -414,7 +435,8 @@ public static class PublicShareEndpoints
                 return Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=password_required");
             }
 
-            if (!PasswordHasher.Verify(downloadPassword, share.DownloadPasswordHash))
+            // Under the process-wide PBKDF2 ceiling like account passwords (busy: 503 + Retry-After).
+            if (!await passwordHashing.VerifyAsync(downloadPassword, share.DownloadPasswordHash, ct))
             {
                 return Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=invalid_password");
             }
@@ -433,10 +455,53 @@ public static class PublicShareEndpoints
                         downloadPassword,
                         options.Value.StorageRoot,
                         share.ZipDisplayName,
-                        RecordDownloadAsync,
+                        async () =>
+                        {
+                            await RecordDownloadAsync();
+                            // A recipient who downloads straight from the locked card sees the full page on reload.
+                            ShareUnlockGate.Grant(request.HttpContext, share.Id, token);
+                        },
                         ct)
                     ?? Results.Redirect($"/s/{Uri.EscapeDataString(token)}?downloadError=invalid_password");
             }
+        }).RequireRateLimiting(RateLimitSetup.DownloadEndpoints);
+
+        // The locked page of a password-protected share: a correct password sets the share's unlock cookie and returns
+        // to the page, which then shows the share as usual (the download still asks for the password, which decrypts
+        // the archive). Antiforgery applies like on every form post.
+        app.MapPost("/s/{token}/unlock", async (ShareManager manager, Agora.Infrastructure.Auth.PasswordHashingGate passwordHashing, string token, HttpRequest request, CancellationToken ct) =>
+        {
+            var share = await manager.FindByTokenAsync(token, ct);
+            if (share is null || ShareManager.IsDeleted(share))
+            {
+                return Results.NotFound();
+            }
+
+            if (ShareManager.IsExpired(share, DateTime.UtcNow))
+            {
+                return Results.StatusCode(StatusCodes.Status410Gone);
+            }
+
+            var pageUrl = $"/s/{Uri.EscapeDataString(token)}";
+            if (string.IsNullOrWhiteSpace(share.DownloadPasswordHash))
+            {
+                return Results.Redirect(pageUrl);
+            }
+
+            var form = request.HasFormContentType ? await request.ReadFormAsync(ct) : null;
+            var password = form?["downloadPassword"].ToString() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(password))
+            {
+                return Results.Redirect($"{pageUrl}?downloadError=password_required");
+            }
+
+            if (!await passwordHashing.VerifyAsync(password, share.DownloadPasswordHash, ct))
+            {
+                return Results.Redirect($"{pageUrl}?downloadError=invalid_password");
+            }
+
+            ShareUnlockGate.Grant(request.HttpContext, share.Id, token);
+            return Results.Redirect(pageUrl);
         }).RequireRateLimiting(RateLimitSetup.DownloadEndpoints);
 
         return app;

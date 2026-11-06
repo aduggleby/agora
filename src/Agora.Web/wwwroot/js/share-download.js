@@ -1,6 +1,10 @@
 "use strict";
 (() => {
   // scripts/ts/share-download.ts
+  var formatRetryWait = (seconds) => {
+    const minutes = Math.max(1, Math.ceil(seconds / 60));
+    return minutes === 1 ? "1 min" : `${minutes} min`;
+  };
   (() => {
     const maxAutoRetryMs = 5 * 60 * 1e3;
     const autoRetryIntervalMs = 15 * 1e3;
@@ -181,11 +185,25 @@
         button.disabled = true;
         label.textContent = "Retry requested...";
         try {
-          await fetch(`${retryUrl}${retryUrl.includes("?") ? "&" : "?"}_=${Date.now()}`, {
+          const response = await fetch(`${retryUrl}${retryUrl.includes("?") ? "&" : "?"}_=${Date.now()}`, {
             method: "GET",
             cache: "no-store",
             credentials: "same-origin"
           });
+          if (response.status === 200) {
+            const refused = await response.json().catch(() => ({}));
+            if ((refused.state || "").toLowerCase() === "unavailable") {
+              button.disabled = false;
+              if ((refused.reason || "").toLowerCase() === "unsupported_type") {
+                hidePlaceholder();
+                setPanel("Preview cannot be shown for this file type.", false);
+              } else {
+                const wait = typeof refused.retryAfterSeconds === "number" && refused.retryAfterSeconds > 0 ? ` Retry available in ${formatRetryWait(refused.retryAfterSeconds)}.` : "";
+                setPanel(`Preview failed.${wait}`, wait.length === 0);
+              }
+              return;
+            }
+          }
           startedAt = Date.now();
           button.disabled = false;
           showPlaceholder();

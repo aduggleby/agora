@@ -426,15 +426,20 @@ test.describe('Public upload intake', () => {
     await anonPage.close();
   });
 
-  test('rejects a sender name longer than 200 characters on create-share endpoint', async ({ browser, page, request }, testInfo) => {
-    const user = await createE2EUser(request, 'public-upload-long-name');
+  for (const tooLong of [
+    { label: 'a sender name longer than 200 characters', suffix: 'long-name', senderName: 'a'.repeat(201), senderMessage: 'Hello', error: 'senderName must be at most 200 characters.' },
+    { label: 'a sender message longer than 2000 characters', suffix: 'long-message', senderName: 'Long Message', senderMessage: 'm'.repeat(2001), error: 'senderMessage must be at most 2000 characters.' },
+  ]) {
+  test(`rejects ${tooLong.label} on create-share endpoint`, async ({ browser, page, request }, testInfo) => {
+    const user = await createE2EUser(request, `public-upload-${tooLong.suffix}`);
     await login(page, user.email, user.password);
 
     await page.goto('/account/settings');
     const uploadUrl = await uploadUrlFromSettings(page);
 
-    const files = await createTempFiles(testInfo.outputPath('public-intake-long-name'), [
-      { name: 'long-name-check.txt', content: 'long sender name test' },
+    const files = await createTempFiles(testInfo.outputPath(`public-intake-${tooLong.suffix}`), [
+      // Over the app-wide 1 MiB body limit: the public stage route still takes it.
+      { name: 'long-name-check.txt', content: 'long sender test '.repeat(100_000) },
     ]);
 
     const anonPage = await browser.newPage();
@@ -469,9 +474,9 @@ test.describe('Public upload intake', () => {
     form.set('__RequestVerificationToken', csrfToken);
     form.set('uploadToken', uploadToken);
     form.set('draftShareId', draftShareId);
-    form.set('senderName', 'a'.repeat(201));
+    form.set('senderName', tooLong.senderName);
     form.set('senderEmail', 'long.name@example.test');
-    form.set('senderMessage', 'Hello');
+    form.set('senderMessage', tooLong.senderMessage);
     form.append('uploadedFileIds', staged.uploadId || '');
 
     const createResponse = await anonPage.request.post('/api/public-uploads/create-share', {
@@ -481,9 +486,10 @@ test.describe('Public upload intake', () => {
       }
     });
     expect(createResponse.status()).toBe(400);
-    expect(await createResponse.text()).toContain('senderName must be at most 200 characters.');
+    expect(await createResponse.text()).toContain(tooLong.error);
     await anonPage.close();
   });
+  }
 
   test('stage endpoint refuses the file that would exceed max-per-share for a draft', async ({ browser, page, request }, testInfo) => {
     const user = await createE2EUser(request, 'public-upload-stage-limit');

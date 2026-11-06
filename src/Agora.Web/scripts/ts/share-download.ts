@@ -6,6 +6,18 @@ type PreviewStatusResponse = {
   retryUrl?: string;
 };
 
+/** Body of a refused retry (the source failed recently); an accepted retry answers 202 without a body. */
+type PreviewRetryResponse = {
+  state?: string;
+  reason?: string;
+  retryAfterSeconds?: number;
+};
+
+const formatRetryWait = (seconds: number): string => {
+  const minutes = Math.max(1, Math.ceil(seconds / 60));
+  return minutes === 1 ? '1 min' : `${minutes} min`;
+};
+
 (() => {
   const maxAutoRetryMs = 5 * 60 * 1000;
   const autoRetryIntervalMs = 15 * 1000;
@@ -218,11 +230,28 @@ type PreviewStatusResponse = {
       button.disabled = true;
       label.textContent = 'Retry requested...';
       try {
-        await fetch(`${retryUrl}${retryUrl.includes('?') ? '&' : '?'}_=${Date.now()}`, {
+        const response = await fetch(`${retryUrl}${retryUrl.includes('?') ? '&' : '?'}_=${Date.now()}`, {
           method: 'GET',
           cache: 'no-store',
           credentials: 'same-origin'
         });
+        if (response.status === 200) {
+          const refused = (await response.json().catch(() => ({}))) as PreviewRetryResponse;
+          if ((refused.state || '').toLowerCase() === 'unavailable') {
+            button.disabled = false;
+            if ((refused.reason || '').toLowerCase() === 'unsupported_type') {
+              hidePlaceholder();
+              setPanel('Preview cannot be shown for this file type.', false);
+            } else {
+              const wait = typeof refused.retryAfterSeconds === 'number' && refused.retryAfterSeconds > 0
+                ? ` Retry available in ${formatRetryWait(refused.retryAfterSeconds)}.`
+                : '';
+              setPanel(`Preview failed.${wait}`, wait.length === 0);
+            }
+            return;
+          }
+        }
+
         startedAt = Date.now();
         button.disabled = false;
         showPlaceholder();

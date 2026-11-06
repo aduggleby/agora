@@ -14,7 +14,17 @@ public sealed record DownloadNotification(
     string BrowserFamily,
     string OsFamily,
     string DeviceType,
-    string DownloaderIpDisplay);
+    string DownloaderIpDisplay,
+    int BatchCount = 1,
+    DateTime? BatchFirstDownloadedAtUtc = null);
+
+public static class DownloadNotificationText
+{
+    /// <summary>Subject line of a download notification; a coalesced one names how many downloads it covers.</summary>
+    public static string Subject(DownloadNotification notification) => notification.BatchCount > 1
+        ? $"Your shared file was downloaded {notification.BatchCount} times"
+        : "Your shared file was downloaded";
+}
 
 public sealed record AuthEmailMessage(
     string To,

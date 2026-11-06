@@ -229,7 +229,8 @@ async function createShareAndGetToken(
   const createResponse = await page.request.post('/api/shares', {
     data: form.toString(),
     headers: {
-      'Content-Type': 'application/x-www-form-urlencoded'
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'X-CSRF-TOKEN': csrfToken
     }
   });
   if (!createResponse.ok()) {

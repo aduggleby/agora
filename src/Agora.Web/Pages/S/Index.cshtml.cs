@@ -6,9 +6,17 @@ using Agora.Web.Endpoints;
 using Agora.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.AspNetCore.RateLimiting;
+using Agora.Web.Startup;
 
 namespace Agora.Web.Pages.S;
 
+/// <summary>
+/// The public share page. Every request (page view, direct-link bytes, HEAD) counts against the per-share download
+/// rate limit. A password-protected share stays a generic locked card until the password was entered
+/// (<see cref="ShareUnlockGate"/>); an expired direct link is a generic expired page.
+/// </summary>
+[EnableRateLimiting(RateLimitSetup.DownloadEndpoints)]
 public class IndexModel(ShareManager manager, IObjectStore objectStore, ShareExperienceRendererResolver shareExperienceRendererResolver, PublicBaseUrlResolver publicBaseUrls, ILogger<IndexModel> logger) : PageModel
 {
     public sealed record PreviewItemViewModel(
@@ -36,6 +44,12 @@ public class IndexModel(ShareManager manager, IObjectStore objectStore, ShareExp
     public string PageUrl { get; private set; } = string.Empty;
     public string? DownloadError { get; private set; }
     public bool RequiresPassword { get; private set; }
+    /// <summary>
+    /// Nothing of the share may be rendered: a password-protected share before the password was entered, or an
+    /// expired direct link. The page shows a generic card and generic meta tags only.
+    /// </summary>
+    public bool IsGeneric { get; private set; }
+    public bool IsLocked { get; private set; }
     public string DisplayH1 { get; private set; } = "File Download";
     public bool AllowsPreview { get; private set; }
     public bool AllowsZipDownload { get; private set; }
@@ -46,7 +60,12 @@ public class IndexModel(ShareManager manager, IObjectStore objectStore, ShareExp
     public bool IsImageMosaicPreview => HasPreviewExperience && PreviewItems.Count > 1 && PreviewItems.All(x => x.PreviewKind == "image");
     public bool IsMixedFilePreview => HasPreviewExperience && !IsSingleFilePreview && !IsImageMosaicPreview;
 
-    public async Task<IActionResult> OnGet(string token, CancellationToken ct)
+    public Task<IActionResult> OnGet(string token, CancellationToken ct) => RenderAsync(token, recordDownload: true, ct);
+
+    /// <summary>HEAD answers like GET (headers only) but never counts as a download.</summary>
+    public Task<IActionResult> OnHead(string token, CancellationToken ct) => RenderAsync(token, recordDownload: false, ct);
+
+    private async Task<IActionResult> RenderAsync(string token, bool recordDownload, CancellationToken ct)
     {
         // The token is the share's access key: never let it leave in a Referer when the page links out.
         Response.Headers["Referrer-Policy"] = "same-origin";
@@ -74,11 +93,27 @@ public class IndexModel(ShareManager manager, IObjectStore objectStore, ShareExp
         if (ShareModes.IsDirectLink(Share.AccessMode) && !IsExpired)
         {
             // A live direct link is the file itself; an expired one falls through to the expired view (410).
-            return await ServeDirectLinkAsync(Share, token, ct);
+            return await ServeDirectLinkAsync(Share, token, recordDownload, ct);
+        }
+
+        RequiresPassword = !string.IsNullOrWhiteSpace(Share.DownloadPasswordHash);
+        if (ShareModes.IsDirectLink(Share.AccessMode) || (RequiresPassword && (IsExpired || !ShareUnlockGate.IsUnlocked(HttpContext, Share.Id))))
+        {
+            // Expired direct links and locked (or expired) password shares: no name, title, description, size,
+            // background or sender, in the body or the meta tags.
+            IsGeneric = true;
+            IsLocked = RequiresPassword && !IsExpired;
+            DisplayH1 = IsLocked ? "Password-protected share" : "This link has expired";
+            DownloadError = ResolveDownloadError();
+            var genericBase = publicBaseUrls.Resolve(Request);
+            // A direct link has no og-image; a password share's is the generic one.
+            OgImageUrl = IsLocked ? $"{genericBase}/s/{Uri.EscapeDataString(token)}/og-image" : string.Empty;
+            PageUrl = $"{genericBase}/s/{Uri.EscapeDataString(token)}";
+            ViewData["Title"] = DisplayH1;
+            return Page();
         }
 
         DisplayH1 = ResolveDisplayH1(Share.PageH1, Share.Files.Count);
-        RequiresPassword = !string.IsNullOrWhiteSpace(Share.DownloadPasswordHash);
         var presentation = shareExperienceRendererResolver.Resolve(Share);
         AllowsPreview = presentation.AllowsPreview && !RequiresPassword;
         AllowsZipDownload = presentation.AllowsZipDownload;
@@ -99,23 +134,16 @@ public class IndexModel(ShareManager manager, IObjectStore objectStore, ShareExp
                 ResolveExtensionLabel(file.OriginalFilename)))
             .ToList();
         InitialPreviewItem = PreviewItems.FirstOrDefault();
-        DownloadError = (Request.Query["downloadError"].ToString().Trim().ToLowerInvariant()) switch
-        {
-            "password_required" => "Enter the password to download this file.",
-            "invalid_password" => "Password was incorrect or the encrypted file could not be unlocked.",
-            "download_disabled" => "ZIP download is disabled for this share mode.",
-            _ => null
-        };
-        BackgroundImageUrl = string.IsNullOrWhiteSpace(Share.BackgroundImageUrl)
+        DownloadError = ResolveDownloadError();
+        // Only stored backgrounds (internal: markers) render, always through the share's own route; any other value
+        // renders no background image.
+        BackgroundImageUrl = ObjectKey.FromInternalMarker(Share.BackgroundImageUrl ?? string.Empty) is null
             ? string.Empty
-            : Share.BackgroundImageUrl.StartsWith("internal:", StringComparison.OrdinalIgnoreCase)
-                ? $"/s/{token}/background"
-                : Share.BackgroundImageUrl;
+            : $"/s/{Uri.EscapeDataString(token)}/background";
         logger.LogDebug(
-            "Download page load for share {TokenRef}: marker {BackgroundMarker}, background {BackgroundKind}",
+            "Download page load for share {TokenRef}: background {BackgroundKind}",
             LogSafe.Token(token),
-            string.IsNullOrWhiteSpace(Share.BackgroundImageUrl) ? "<empty>" : Share.BackgroundImageUrl,
-            string.IsNullOrWhiteSpace(BackgroundImageUrl) ? "none" : BackgroundImageUrl.StartsWith("/s/", StringComparison.Ordinal) ? "internal" : "external");
+            BackgroundImageUrl.Length == 0 ? "none" : "internal");
         SizeDisplay = FormatSize(Share.ZipSizeBytes);
         var containerPosition = ShareManager.NormalizeContainerPosition(Share.PageContainerPosition);
         (ContainerAlignItems, ContainerJustifyContent) = containerPosition switch
@@ -142,9 +170,10 @@ public class IndexModel(ShareManager manager, IObjectStore objectStore, ShareExp
 
     /// <summary>
     /// Streams the single file of a direct link under the user-content policy (extension-derived type, nosniff,
-    /// sandbox CSP). Every request counts as a download, whoever makes it; direct links never notify.
+    /// sandbox CSP), never cached. Every GET counts as a download, whoever makes it (HEAD does not); direct links
+    /// never notify.
     /// </summary>
-    private async Task<IActionResult> ServeDirectLinkAsync(Domain.Entities.Share share, string token, CancellationToken ct)
+    private async Task<IActionResult> ServeDirectLinkAsync(Domain.Entities.Share share, string token, bool recordDownload, CancellationToken ct)
     {
         var file = share.Files.SingleOrDefault();
         var stored = file is not null && ObjectKey.TryNormalize(file.StoredRelativePath, out var key)
@@ -155,6 +184,18 @@ public class IndexModel(ShareManager manager, IObjectStore objectStore, ShareExp
             return StatusCode(StatusCodes.Status410Gone);
         }
 
+        if (recordDownload)
+        {
+            await RecordDirectLinkDownloadAsync(share, token, stored, ct);
+        }
+
+        ObjectResults.ApplyNoStore(Response);
+        await ObjectResults.UserContent(Response, stored, file.OriginalFilename).ExecuteAsync(HttpContext);
+        return new EmptyResult();
+    }
+
+    private async Task RecordDirectLinkDownloadAsync(Domain.Entities.Share share, string token, ObjectStream stored, CancellationToken ct)
+    {
         try
         {
             var remote = HttpContext.Connection.RemoteIpAddress?.ToString();
@@ -166,10 +207,17 @@ public class IndexModel(ShareManager manager, IObjectStore objectStore, ShareExp
             await stored.Content.DisposeAsync();
             throw;
         }
-
-        await ObjectResults.UserContent(Response, stored, file.OriginalFilename).ExecuteAsync(HttpContext);
-        return new EmptyResult();
     }
+
+    private string? ResolveDownloadError() =>
+        Request.Query["downloadError"].ToString().Trim().ToLowerInvariant() switch
+        {
+            "password_required" => "Enter the password to download this file.",
+            "invalid_password" => "Password was incorrect or the encrypted file could not be unlocked.",
+            "download_disabled" => "ZIP download is disabled for this share mode.",
+            "busy" => "The server is busy right now. Please try again in a few seconds.",
+            _ => null
+        };
 
     private static string ResolveDisplayH1(string? rawH1, int fileCount)
     {

@@ -19,9 +19,21 @@
       <p class="text-sm text-ink-light break-all">@Model.Email</p>
     </div>
 
+    @if (!string.IsNullOrEmpty(Model.Error))
+    {
+      <div role="alert" class="rounded-xl border border-danger/20 bg-danger-wash p-4 mb-5 text-sm text-danger" data-confirm-error>@Model.Error</div>
+    }
+
     <form method="post" action="@Model.FormAction" asp-antiforgery="true" class="space-y-3">
       <input type="hidden" name="email" value="@Model.Email" />
       <input type="hidden" name="token" value="@Model.Token" />
+      @if (Model.RequiresPassword)
+      {
+        <div>
+          <label for="confirm-password" class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Password</label>
+          <input id="confirm-password" type="password" name="password" required autocomplete="current-password" autofocus class="w-full px-3 py-2.5 text-sm border border-border rounded-lg bg-white focus:outline-none focus:border-terra focus:ring-1 focus:ring-terra/20 transition-all" />
+        </div>
+      }
       <button type="submit" class="w-full px-4 py-2 bg-ink text-white text-sm font-medium rounded-lg hover:bg-ink/90 transition-colors">@Model.ButtonLabel</button>
     </form>
   }

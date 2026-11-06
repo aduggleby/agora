@@ -7,8 +7,6 @@ using Agora.Infrastructure.Auth;
 using Agora.Infrastructure.Services;
 using Agora.Web.Auth;
 using Agora.Web.Startup;
-using Microsoft.AspNetCore.Http.Features;
-using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
@@ -151,6 +149,7 @@ public static class ApiV1Endpoints
         HttpContext context,
         ShareManager manager,
         ScratchSpaceMonitor scratchSpace,
+        UploadConcurrency concurrency,
         IPublicOriginProvider publicOrigin,
         IOptions<AgoraOptions> options,
         ILoggerFactory loggerFactory,
@@ -172,12 +171,19 @@ public static class ApiV1Endpoints
             return ApiError(StatusCodes.Status400BadRequest, "Expected multipart/form-data with one part named file.");
         }
 
+        // Each capture opens its own draft, so the in-flight cap is per account.
+        if (!concurrency.TryAdmit(context, UploadConcurrency.AccountKey(owner.UserId)))
+        {
+            return ApiError(StatusCodes.Status429TooManyRequests, UploadConcurrency.RefusalMessage);
+        }
+
         var cfg = options.Value;
         string draftShareId;
+        long bodyCap;
         try
         {
             // Scratch first, so a 507 leaves no draft behind.
-            UploadStagingEndpoints.ReserveRequestBuffer(context, scratchSpace, cfg.MaxFileSizeBytes);
+            bodyCap = UploadStagingEndpoints.ReserveRequestBuffer(context, scratchSpace, MaxCaptureBytes(cfg));
             draftShareId = await manager.EnsureDraftShareAsync(owner.UserId, Guid.NewGuid().ToString("N"), ct);
         }
         catch (InvalidOperationException ex)
@@ -193,7 +199,7 @@ public static class ApiV1Endpoints
         var created = false;
         try
         {
-            var stage = await StageCaptureAsync(context.Request, manager, cfg, owner.UserId, draftShareId, ct);
+            var stage = await StageCaptureAsync(context.Request, manager, cfg, owner.UserId, draftShareId, bodyCap, ct);
             if (stage.Refusal is not null)
             {
                 return stage.Refusal;
@@ -241,27 +247,17 @@ public static class ApiV1Endpoints
         AgoraOptions cfg,
         Guid ownerUserId,
         string draftShareId,
+        long bodyCap,
         CancellationToken ct)
     {
-        IFormFile? file;
-        try
+        // Parsed up to the admitted body cap; an oversized or malformed body is the same 413/400 as on the stage routes.
+        var read = await UploadStagingEndpoints.ReadUploadFormAsync(request, bodyCap, ct);
+        if (read.Refusal is not null)
         {
-            // Parse up to the endpoint's own body cap rather than the app-wide multipart limit (MaxTotalUploadBytes),
-            // which can be smaller than the file limit: an oversized image must be a 413 below, not a parser error.
-            var bodyCap = request.HttpContext.GetEndpoint()?.Metadata.GetMetadata<IRequestSizeLimitMetadata>()?.MaxRequestBodySize
-                          ?? cfg.MaxFileSizeBytes + 1024 * 1024;
-            var form = await request.ReadFormAsync(new FormOptions { MultipartBodyLengthLimit = bodyCap }, ct);
-            file = form.Files["file"] is { Length: > 0 } part ? part : null;
-        }
-        catch (BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge)
-        {
-            return Refuse(StatusCodes.Status413PayloadTooLarge, "The image is larger than this server accepts.");
-        }
-        catch (Exception ex) when (ex is BadHttpRequestException or InvalidDataException)
-        {
-            return Refuse(StatusCodes.Status400BadRequest, "The multipart body could not be read.");
+            return new UploadStagingEndpoints.StageResult(null, read.Refusal);
         }
 
+        var file = read.Form!.Files["file"] is { Length: > 0 } part ? part : null;
         if (file is null)
         {
             return Refuse(StatusCodes.Status400BadRequest, "A file part named file is required.");
@@ -270,7 +266,7 @@ public static class ApiV1Endpoints
         // A capture is one file in one draft, so both the per-file and the per-share limit apply (as /me reports).
         if (file.Length > MaxCaptureBytes(cfg))
         {
-            return Refuse(StatusCodes.Status413PayloadTooLarge, "The image is larger than this server accepts.");
+            return Refuse(StatusCodes.Status413PayloadTooLarge, UploadStagingEndpoints.TooLargeMessage);
         }
 
         if (!await CaptureImages.IsPngOrJpegAsync(file, ct))

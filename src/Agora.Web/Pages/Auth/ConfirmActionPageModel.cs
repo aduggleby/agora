@@ -13,6 +13,11 @@ public abstract class ConfirmActionPageModel : PageModel
     public string Email { get; private set; } = string.Empty;
     public string Token { get; private set; } = string.Empty;
     public bool CanSubmit { get; private set; }
+    /// <summary>Shown above the form when the POST re-renders it (for example a wrong password).</summary>
+    public string? Error { get; private set; }
+
+    /// <summary>True when the form asks for the account password (posted as <c>password</c>).</summary>
+    public virtual bool RequiresPassword => false;
 
     /// <summary>The page's own path, without the query string: tokens travel only in the hidden form fields.</summary>
     public string FormAction => Request.Path.Value ?? "/";
@@ -46,4 +51,15 @@ public abstract class ConfirmActionPageModel : PageModel
     }
 
     protected abstract Task<IActionResult> ConfirmAsync(string email, string token, CancellationToken ct);
+
+    /// <summary>Renders the form again for the same link, with an error; the token was not used.</summary>
+    protected IActionResult ShowFormWithError(string email, string token, string error)
+    {
+        Email = email;
+        Token = token;
+        CanSubmit = true;
+        Error = error;
+        ViewData["Title"] = Heading;
+        return Page();
+    }
 }

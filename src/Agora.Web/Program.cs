@@ -50,16 +50,16 @@ if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_TEM
 
 var initialUploadLimits = builder.Configuration.GetSection(AgoraOptions.Section);
 var configuredMaxFileSizeBytes = initialUploadLimits.GetValue<long?>("MaxFileSizeBytes") ?? (5L * 1024 * 1024 * 1024);
-var configuredMaxTotalUploadBytes = initialUploadLimits.GetValue<long?>("MaxTotalUploadBytes") ?? (10L * 1024 * 1024 * 1024);
-var maxRequestBodySize = Math.Max(configuredMaxFileSizeBytes, configuredMaxTotalUploadBytes);
 // One stage request carries one file; cap its body at that file size plus multipart overhead so a single request can
 // never buffer more than one file's worth into tmp/aspnet.
 var stageRequestBodyLimit = configuredMaxFileSizeBytes + 1024 * 1024;
-// Anonymous submissions carry only form fields (file ids, sender details), never a file.
-const long createRequestBodyLimit = 1024 * 1024;
+// Share submissions (signed-in and anonymous) carry only form fields (file ids, options, sender details), never a file.
+const long createRequestBodyLimit = FormLimits.DefaultMaxRequestBodyBytes;
+// Every request body is small unless its endpoint says otherwise: only the upload endpoints carry a larger
+// RequestSizeLimit, and they lower it again per request to what was admitted (UploadStagingEndpoints).
 builder.WebHost.ConfigureKestrel(options =>
 {
-    options.Limits.MaxRequestBodySize = maxRequestBodySize;
+    options.Limits.MaxRequestBodySize = FormLimits.DefaultMaxRequestBodyBytes;
 });
 
 builder.Services.Configure<AgoraOptions>(builder.Configuration.GetSection(AgoraOptions.Section));
@@ -174,10 +174,13 @@ builder.Services.AddHangfireServer(options =>
 });
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<LoginLockouts>();
+// One PBKDF2 ceiling per process (Agora:Auth:MaxConcurrentPasswordHashes, 0 = processor count).
+builder.Services.AddSingleton(new PasswordHashingGate(authOptions.MaxConcurrentPasswordHashes));
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<ApiTokenService>();
 builder.Services.AddScoped<ShareManager>();
 builder.Services.AddSingleton<KeyedAsyncLock>();
+builder.Services.AddSingleton<UploadConcurrency>();
 builder.Services.AddSingleton(sp => new ScratchSpaceMonitor(
     sp.GetRequiredService<IOptions<AgoraOptions>>(),
     storageProvider,
@@ -213,10 +216,8 @@ else
     builder.Services.AddHttpClient<IEmailSender, ResendEmailSender>();
 }
 
-builder.Services.Configure<FormOptions>(options =>
-{
-    options.MultipartBodyLengthLimit = configuredMaxTotalUploadBytes;
-});
+// Small app-wide form limits (also what the antiforgery form fallback reads with); upload endpoints pass their own.
+builder.Services.Configure<FormOptions>(FormLimits.Configure);
 // X-Forwarded-* headers are honoured only from loopback and the proxies listed in Agora:TrustedProxies; from any
 // other peer they are ignored, so clients cannot pick their own RemoteIpAddress (every per-IP rate limiter and the
 // download log key on it), scheme or host. The setup resets the known lists first, so ASPNETCORE_FORWARDEDHEADERS_ENABLED
@@ -330,6 +331,7 @@ if (!isDevelopment)
 {
     app.UseAgoraExceptionHandler();
 }
+app.UsePasswordHashingBusyHandling();
 
 app.UseStaticFiles();
 app.UseAuthentication();
@@ -825,7 +827,7 @@ app.MapGet("/api/shares/{token}/status", async (string token, HttpContext contex
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/account/template", async (HttpContext context, ShareManager manager, IOptions<AgoraOptions> agoraOptions, ScratchSpaceMonitor scratchSpace, HttpRequest request, CancellationToken ct) =>
+app.MapPost("/api/account/template", async (HttpContext context, ShareManager manager, IOptions<AgoraOptions> agoraOptions, ScratchSpaceMonitor scratchSpace, UploadConcurrency concurrency, HttpRequest request, CancellationToken ct) =>
 {
     if (!request.HasFormContentType)
     {
@@ -839,16 +841,27 @@ app.MapPost("/api/account/template", async (HttpContext context, ShareManager ma
 
     var cfg = agoraOptions.Value;
     // Like the stage endpoints: the multipart body is buffered into scratch, so that space is reserved before it is read.
+    if (!concurrency.TryAdmit(context, UploadConcurrency.AccountKey(owner.UserId)))
+    {
+        return Results.Redirect($"/account/landing-page-designer?msg={Uri.EscapeDataString(UploadConcurrency.RefusalMessage)}");
+    }
+
+    long bodyCap;
     try
     {
-        UploadStagingEndpoints.ReserveRequestBuffer(context, scratchSpace, cfg.MaxFileSizeBytes);
+        bodyCap = UploadStagingEndpoints.ReserveRequestBuffer(context, scratchSpace, cfg.MaxFileSizeBytes);
     }
     catch (UploadLimitException ex)
     {
         return Results.Redirect($"/account/landing-page-designer?msg={Uri.EscapeDataString(ex.Message)}");
     }
 
-    var form = await request.ReadFormAsync(ct);
+    var read = await UploadStagingEndpoints.ReadUploadFormAsync(request, bodyCap, ct);
+    if (read.Form is not { } form)
+    {
+        return Results.Redirect("/account/landing-page-designer?msg=The%20background%20image%20could%20not%20be%20uploaded");
+    }
+
     var existingTemplate = await manager.GetAccountTemplateAsync(owner, ct);
     var backgroundImageUrl = existingTemplate.BackgroundImageUrl;
     var backgroundColorMode = form["backgroundColorMode"].ToString();
@@ -984,6 +997,11 @@ app.MapGet("/api/share-drafts/{draftShareId}/background-preview", async (HttpCon
         return Results.BadRequest();
     }
 
+    if (!await manager.IsOwnSignedInDraftAsync(owner.UserId, draftShareId, ct))
+    {
+        return Results.NotFound();
+    }
+
     IReadOnlyList<ShareManager.StagedUploadFile> staged;
     try
     {
@@ -1078,6 +1096,11 @@ app.MapPost("/api/public-uploads/create-share", async (
     if (senderName.Length > 200)
     {
         return Results.BadRequest("senderName must be at most 200 characters.");
+    }
+
+    if (senderMessage.Length > 2000)
+    {
+        return Results.BadRequest("senderMessage must be at most 2000 characters.");
     }
 
     if (senderEmail.Length > 320 || !IsValidEmailAddress(senderEmail))
@@ -1330,17 +1353,8 @@ app.MapPost("/api/shares", async (
 
     var uploaderEmail = owner.Email;
     var cfg = options.Value;
-    // API clients may post files directly here (the UI stages first), so the multipart buffer is reserved against
-    // the scratch budget before the body is read, like on the stage endpoints.
-    try
-    {
-        UploadStagingEndpoints.ReserveRequestBuffer(context, scratchSpace, cfg.MaxTotalUploadBytes);
-    }
-    catch (UploadLimitException ex)
-    {
-        return UploadLimitText(ex);
-    }
-
+    // Files are staged first (/api/uploads/stage); this request carries only form fields, within the small app-wide
+    // body and form limits.
     var form = await request.ReadFormAsync(ct);
     var draftShareId = form["draftShareId"].ToString().Trim();
     if (string.IsNullOrWhiteSpace(draftShareId))
@@ -1566,7 +1580,7 @@ app.MapPost("/api/shares", async (
 
     return Results.Redirect($"/shares/created/{Uri.EscapeDataString(shareToken)}");
 }).RequireAuthorization()
-  .WithMetadata(new UploadEndpointMetadata(RequiresHeaderCsrfToken: false), new RequestSizeLimitAttribute(configuredMaxTotalUploadBytes + 1024 * 1024));
+  .WithMetadata(new UploadEndpointMetadata(RequiresHeaderCsrfToken: true), new RequestSizeLimitAttribute(createRequestBodyLimit));
 
 // Anonymous share summary: only what the download page itself shows. No uploader message, page text, or storage markers.
 app.MapGet("/api/shares/{token}", async (ShareManager manager, string token, CancellationToken ct) =>

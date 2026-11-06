@@ -8,11 +8,13 @@ with one data volume, a SQL Server or PostgreSQL database, and optionally an S3-
 
 - Upload one or many files and share them with one link (`/s/{token}`), with custom link tokens if you want them
 - Expiring or indefinite share links (1 hour to 1 year, or never); expired shares can be re-enabled for 24 hours
-- Download notifications by email (`none`, `once`, `every_time`), optionally with the downloader's city and country
+- Download notifications by email (`none`, `once`, `every_time`; `every_time` sends at most one email per share every
+  5 minutes, summarizing the downloads since the previous one), optionally with the downloader's city and country
 - Download pages with a per-account template: title, text, background image, card position
 - Gallery and preview modes: an image mosaic with a lightbox for image-only shares, file-by-file previews
   (images, PDF first page) for mixed shares, or a plain download page
-- Password-protected archives: the zip is encrypted at rest and decrypted only for a correct password
+- Password-protected archives: the zip is encrypted at rest and decrypted only for a correct password; until the
+  password is entered the share page shows only a generic password card (no name, size, title or background)
 - Public upload links (`/u/{code}`): anyone can send files to your account without signing in, with server-side quotas
 - Temporary direct links: one image, video, audio file, PDF or text file served raw at `/s/{token}` for 30 minutes
   to 7 days, for chats, forums or `<img src>`
@@ -502,7 +504,7 @@ In `Production` it warns when `Agora__TrustedProxies` is empty or `AllowedHosts`
 | `Agora__StorageRoot` | `storage` | `/app/data/uploads` | Scratch root and, with `Storage__Provider=FileSystem`, the durable content root |
 | `Agora__MaxFilesPerShare` | `20` | | Maximum files per share, enforced while files are staged |
 | `Agora__MaxFileSizeBytes` | `5368709120` (5 GB) | | Per-file upload limit; also caps one stage request (plus 1 MB of form overhead) |
-| `Agora__MaxTotalUploadBytes` | `10737418240` (10 GB) | | Per-share total, enforced per draft while staging; also bounds the multipart body of `POST /api/shares` (plus 1 MB) |
+| `Agora__MaxTotalUploadBytes` | `10737418240` (10 GB) | | Per-share total, enforced per draft while staging (a stage request may carry at most what its draft still accepts) |
 | `Agora__DownloadEventRetentionDays` | `90` | | How long download-event records are kept |
 | `Agora__ZombieUploadRetentionHours` | `24` | | Age after which abandoned staged uploads, drafts of signed-in users, share-creation status files, `tmp/` files and preview `.lock` markers are swept; also the shortest interval at which a polling download page can re-queue a missing preview |
 
@@ -513,6 +515,7 @@ In `Production` it warns when `Agora__TrustedProxies` is empty or `AllowedHosts`
 | `Agora__Auth__SessionLifetimeDays` | `14` | Sliding lifetime of the sign-in cookie |
 | `Agora__Auth__SessionRevalidationMinutes` | `5` | How often a session is checked against the user record; `0` = every request |
 | `Agora__Auth__SecureCookies` | `Auto` | `Auto` (Secure always in `Production`, on HTTPS requests elsewhere), `Always`, `SameAsRequest` |
+| `Agora__Auth__MaxConcurrentPasswordHashes` | `0` | Most password hashes (PBKDF2) computed at once; `0` = one per processor. Requests that wait more than 2 s for a slot get `503` with `Retry-After: 5` |
 
 ### `Agora__RateLimits__*`, `Agora__GeoLookup__*`, `Agora__SecurityHeaders__*`
 
@@ -616,7 +619,7 @@ forums or an `<img src>`.
 - Eligible files are the ones the content policy serves inline: raster images, common video and audio, PDF and plain
   text. Other types keep the button disabled with the reason as a tooltip.
 - Durations are fixed: 30 minutes, 6 hours, 1 day (default) or 7 days; the last choice is remembered in the browser.
-- No archive is built and no notification email is ever sent; every view counts as a download in "My shares".
+- No archive is built and no notification email is ever sent; every view (GET) counts as a download in "My shares"; HEAD requests do not.
 - After the chosen duration the link answers `410 Gone` (the expired page for browsers, the same status for embeds)
   and the stored file is purged by the next cleanup run, at most 30 minutes later. A deleted direct link answers 410
   as well. Direct links show a "Direct link" badge in "My shares", can be deleted early, and cannot be re-enabled or

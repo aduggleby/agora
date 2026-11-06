@@ -50,6 +50,7 @@ public sealed class PublicShareDownloadGateTests
         builder.Services.AddSingleton<IShareContentStore, ShareContentStore>();
         builder.Services.AddSingleton<IBackgroundJobClient, NoopJobClient>();
         builder.Services.AddSingleton<KeyedAsyncLock>();
+        builder.Services.AddSingleton(new Agora.Infrastructure.Auth.PasswordHashingGate());
         builder.Services.AddSingleton(new ScratchSpaceMonitor(new AgoraOptions { StorageRoot = storageRoot }, StorageProvider.FileSystem, _ => long.MaxValue, _ => 0, TimeProvider.System));
         builder.Services.AddScoped<ShareManager>();
         // Injected by the og-image and preview endpoints of the same group; registered so they bind as services.

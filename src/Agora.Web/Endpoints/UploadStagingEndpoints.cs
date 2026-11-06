@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Http.Metadata;
 using System.Security.Claims;
 using Agora.Application.Models;
@@ -14,9 +15,10 @@ namespace Agora.Web.Endpoints;
 
 /// <summary>
 /// The three endpoints that write a file into staging. Each one resolves identity and the draft from the query string,
-/// runs admission (draft caps, sealed check, scratch budget) and reserves scratch for the multipart buffer before the
-/// body is read; the staging copy then takes its own reservation. Bodies are capped at one file plus overhead and the
-/// CSRF token must come in the header (<see cref="UploadEndpointMetadata"/>).
+/// runs admission (draft caps, sealed check, in-flight caps per client and per draft, scratch budget) and reserves
+/// scratch for the multipart buffer before the body is read; the staging copy then takes its own reservation. Bodies
+/// are capped at what the draft still accepts plus overhead and the CSRF token must come in the header
+/// (<see cref="UploadEndpointMetadata"/>).
 /// </summary>
 public static class UploadStagingEndpoints
 {
@@ -46,24 +48,39 @@ public static class UploadStagingEndpoints
         Results.Text(ex.Message, statusCode: ex.StatusCode);
 
     // Forwarded headers from trusted proxies have already replaced RemoteIpAddress by the time endpoints run.
+    // A per-address key, not the address itself: IPv6 clients are grouped by /64 (ClientAddresses).
     public static string ClientAddress(HttpContext context) =>
-        context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        ClientAddresses.PartitionKey(context.Connection.RemoteIpAddress);
+
+    /// <summary>The one 413 text of every upload route (stage, template, capture), whichever check refuses.</summary>
+    public const string TooLargeMessage = "The file is larger than this upload accepts.";
+
+    /// <summary>Room for multipart framing and form fields on top of the file itself.</summary>
+    public const long MultipartOverheadBytes = 1024 * 1024;
 
     /// <summary>
-    /// Scratch the multipart buffer of a request can take, known before its body is read: min(Content-Length, limit),
-    /// or the full limit for a chunked body. The limit is the endpoint's own RequestSizeLimit (the most Kestrel lets
-    /// through), falling back to the configured maximum when an endpoint carries none.
+    /// The most this request's body may carry: the file allowance plus multipart overhead, never more than the
+    /// endpoint's own RequestSizeLimit.
     /// </summary>
-    private static ScratchDemand RequestBufferDemand(HttpContext context, long fallbackMaxBodyBytes)
+    private static long RequestBodyCap(HttpContext context, long allowanceBytes)
     {
-        var limit = context.GetEndpoint()?.Metadata.GetMetadata<IRequestSizeLimitMetadata>()?.MaxRequestBodySize ?? fallbackMaxBodyBytes;
-        return ScratchDemand.Scratch(Math.Min(context.Request.ContentLength ?? limit, limit));
+        var cap = Math.Max(0, allowanceBytes) + MultipartOverheadBytes;
+        var endpointLimit = context.GetEndpoint()?.Metadata.GetMetadata<IRequestSizeLimitMetadata>()?.MaxRequestBodySize;
+        return endpointLimit is { } limit ? Math.Min(limit, cap) : cap;
+    }
+
+    /// <summary>Scratch the multipart buffer can take, known before the body is read: min(Content-Length, cap).</summary>
+    private static ScratchDemand RequestBufferDemand(HttpContext context, long allowanceBytes)
+    {
+        var cap = RequestBodyCap(context, allowanceBytes);
+        return ScratchDemand.Scratch(Math.Min(context.Request.ContentLength ?? cap, cap));
     }
 
     private static async Task<IResult> StageShareFileAsync(
         HttpContext context,
         ShareManager manager,
         ScratchSpaceMonitor scratchSpace,
+        UploadConcurrency concurrency,
         IOptions<AgoraOptions> options,
         HttpRequest request,
         CancellationToken ct)
@@ -86,10 +103,16 @@ public static class UploadStagingEndpoints
         }
 
         var cfg = options.Value;
+        long bodyCap;
         try
         {
             draftShareId = await manager.EnsureDraftShareAsync(owner.UserId, draftShareId, ct);
-            ReserveRequestBuffer(context, scratchSpace, cfg.MaxFileSizeBytes);
+            if (!concurrency.TryAdmit(context, UploadConcurrency.AccountKey(owner.UserId), UploadConcurrency.DraftKey(draftShareId)))
+            {
+                return UploadConcurrency.TooManyJson();
+            }
+
+            bodyCap = ReserveRequestBuffer(context, scratchSpace, ShareFileAllowance(manager, cfg, draftShareId));
         }
         catch (InvalidOperationException ex)
         {
@@ -100,13 +123,14 @@ public static class UploadStagingEndpoints
             return UploadLimitJson(ex);
         }
 
-        return await StageFormFileAsync(request, manager, cfg, owner.UserId, draftShareId, ShareManager.UploadPurposeShareFile, "A file is required.", ct);
+        return await StageFormFileAsync(request, manager, cfg, owner.UserId, draftShareId, ShareManager.UploadPurposeShareFile, "A file is required.", bodyCap, ct);
     }
 
     private static async Task<IResult> StageTemplateBackgroundAsync(
         HttpContext context,
         ShareManager manager,
         ScratchSpaceMonitor scratchSpace,
+        UploadConcurrency concurrency,
         IOptions<AgoraOptions> options,
         HttpRequest request,
         CancellationToken ct)
@@ -128,10 +152,17 @@ public static class UploadStagingEndpoints
         }
 
         var cfg = options.Value;
+        long bodyCap;
         try
         {
             draftShareId = await manager.EnsureDraftShareAsync(owner.UserId, draftShareId, ct);
-            ReserveRequestBuffer(context, scratchSpace, cfg.MaxFileSizeBytes);
+            if (!concurrency.TryAdmit(context, UploadConcurrency.AccountKey(owner.UserId), UploadConcurrency.DraftKey(draftShareId)))
+            {
+                return UploadConcurrency.TooManyJson();
+            }
+
+            // A background is not counted against the share's file total, only against the per-file limit.
+            bodyCap = ReserveRequestBuffer(context, scratchSpace, cfg.MaxFileSizeBytes);
         }
         catch (InvalidOperationException ex)
         {
@@ -142,8 +173,13 @@ public static class UploadStagingEndpoints
             return UploadLimitJson(ex);
         }
 
-        var form = await request.ReadFormAsync(ct);
-        var file = form.Files["file"];
+        var read = await ReadUploadFormAsync(request, bodyCap, ct);
+        if (read.Refusal is not null)
+        {
+            return read.Refusal;
+        }
+
+        var file = read.Form!.Files["file"];
         if (file is null || file.Length <= 0)
         {
             return Results.BadRequest(new { error = "An image file is required." });
@@ -161,6 +197,7 @@ public static class UploadStagingEndpoints
         AuthService authService,
         ShareManager manager,
         ScratchSpaceMonitor scratchSpace,
+        UploadConcurrency concurrency,
         IOptions<AgoraOptions> options,
         HttpContext context,
         HttpRequest request,
@@ -184,13 +221,26 @@ public static class UploadStagingEndpoints
             return Results.NotFound(new { error = "Upload link not found." });
         }
 
+        if (!concurrency.TryAdmit(context, UploadConcurrency.AddressKey(ClientAddress(context))))
+        {
+            return UploadConcurrency.TooManyJson();
+        }
+
         var cfg = options.Value;
+        long bodyCap;
         try
         {
-            // Scratch first, so a 507 leaves no empty draft behind; a new draft then counts against the open-draft
-            // caps of this upload code and of the client address.
-            ReserveRequestBuffer(context, scratchSpace, cfg.MaxFileSizeBytes);
+            // Scratch is checked first, so a 507 normally leaves no empty draft behind; a new draft then counts
+            // against the open-draft caps of this upload code and of the client address. The reservation itself is
+            // sized from the draft's remaining allowance, which is only read once the draft is known to be ours.
+            scratchSpace.EnsureCanAdmit(RequestBufferDemand(context, cfg.MaxFileSizeBytes));
             draftShareId = await manager.EnsurePublicUploadDraftAsync(user.Id, draftShareId, user.UploadToken, ClientAddress(context), ct);
+            if (!concurrency.TryAdmit(context, UploadConcurrency.DraftKey(draftShareId)))
+            {
+                return UploadConcurrency.TooManyJson();
+            }
+
+            bodyCap = ReserveRequestBuffer(context, scratchSpace, ShareFileAllowance(manager, cfg, draftShareId));
         }
         catch (InvalidOperationException ex)
         {
@@ -201,18 +251,85 @@ public static class UploadStagingEndpoints
             return UploadLimitJson(ex);
         }
 
-        return await StageFormFileAsync(request, manager, cfg, user.Id, draftShareId, ShareManager.UploadPurposeShareFile, "A file is required.", ct);
+        return await StageFormFileAsync(request, manager, cfg, user.Id, draftShareId, ShareManager.UploadPurposeShareFile, "A file is required.", bodyCap, ct);
+    }
+
+    /// <summary>
+    /// What one more share file may still add to a draft: the per-file limit, or less when the draft is close to the
+    /// per-share total. Throws 413 when nothing is left.
+    /// </summary>
+    private static long ShareFileAllowance(ShareManager manager, AgoraOptions cfg, string draftShareId)
+    {
+        var remaining = manager.GetDraftRemainingShareBytes(draftShareId);
+        if (remaining <= 0)
+        {
+            throw new UploadLimitException(UploadLimitKind.TooManyBytes, "Total upload size exceeds the limit per share.");
+        }
+
+        return Math.Min(cfg.MaxFileSizeBytes, remaining);
     }
 
     /// <summary>
     /// Holds scratch for the multipart buffer ASP.NET writes under tmp/aspnet until the request (and with it the
-    /// buffered form) is disposed. Two uploads that each fit cannot both buffer past the budget. Throws 507.
+    /// buffered form) is disposed, sized min(Content-Length, allowance + overhead) rather than the endpoint maximum,
+    /// and caps the request body at that size so the buffer can never outgrow its reservation. Also raises the
+    /// minimum body data rate so a stalled upload releases its reservation. Throws 413 (declared body too large)
+    /// or 507; returns the body cap to parse the form with.
     /// </summary>
-    public static void ReserveRequestBuffer(HttpContext context, ScratchSpaceMonitor scratchSpace, long maxBodyBytes)
+    public static long ReserveRequestBuffer(HttpContext context, ScratchSpaceMonitor scratchSpace, long allowanceBytes)
     {
-        var reservation = scratchSpace.Reserve(RequestBufferDemand(context, maxBodyBytes));
+        var cap = RequestBodyCap(context, allowanceBytes);
+        if (context.Request.ContentLength is { } declared && declared > cap)
+        {
+            throw new UploadLimitException(UploadLimitKind.TooManyBytes, TooLargeMessage);
+        }
+
+        var reservation = scratchSpace.Reserve(RequestBufferDemand(context, allowanceBytes));
         context.Response.RegisterForDispose(reservation);
+        if (context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } bodySize)
+        {
+            bodySize.MaxRequestBodySize = cap;
+        }
+
+        UploadConcurrency.ApplyMinBodyDataRate(context);
+        return cap;
     }
+
+    /// <summary>The parsed form, or the refusal for a body that is too large (413) or malformed (400).</summary>
+    public sealed record FormReadResult(IFormCollection? Form, IResult? Refusal);
+
+    /// <summary>
+    /// Parses a multipart upload with a per-call limit (the app-wide form limits are deliberately small, so only the
+    /// upload endpoints can buffer a file, and never past <paramref name="bodyCap"/>).
+    /// </summary>
+    public static async Task<FormReadResult> ReadUploadFormAsync(HttpRequest request, long bodyCap, CancellationToken ct)
+    {
+        try
+        {
+            var form = await request.ReadFormAsync(UploadFormOptions(bodyCap), ct);
+            return new FormReadResult(form, null);
+        }
+        catch (BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge)
+        {
+            return new FormReadResult(null, Results.Json(new { error = TooLargeMessage }, statusCode: StatusCodes.Status413PayloadTooLarge));
+        }
+        catch (InvalidDataException ex) when (ex.Message.Contains("length limit", StringComparison.OrdinalIgnoreCase))
+        {
+            return new FormReadResult(null, Results.Json(new { error = TooLargeMessage }, statusCode: StatusCodes.Status413PayloadTooLarge));
+        }
+        catch (Exception ex) when (ex is BadHttpRequestException or InvalidDataException)
+        {
+            return new FormReadResult(null, Results.BadRequest(new { error = "The multipart body could not be read." }));
+        }
+    }
+
+    /// <summary>Form limits for an upload request: the file part up to the body cap, everything else as small as app-wide.</summary>
+    public static FormOptions UploadFormOptions(long bodyCap) => new()
+    {
+        MultipartBodyLengthLimit = bodyCap,
+        ValueLengthLimit = FormLimits.ValueLengthLimit,
+        ValueCountLimit = FormLimits.ValueCountLimit
+    };
 
     private static async Task<IResult> StageFormFileAsync(
         HttpRequest request,
@@ -222,23 +339,22 @@ public static class UploadStagingEndpoints
         string draftShareId,
         string purpose,
         string missingFileError,
+        long bodyCap,
         CancellationToken ct)
     {
-        var file = await ReadFormFileAsync(request, ct);
-        if (file is null)
+        var read = await ReadUploadFormAsync(request, bodyCap, ct);
+        if (read.Refusal is not null)
+        {
+            return read.Refusal;
+        }
+
+        var file = read.Form!.Files["file"];
+        if (file is null || file.Length <= 0)
         {
             return Results.BadRequest(new { error = missingFileError });
         }
 
         return (await StageFileAsync(file, manager, cfg, ownerUserId, draftShareId, purpose, ct)).ToResponse();
-    }
-
-    /// <summary>The non-empty <c>file</c> part of the multipart body (buffering it), or null when there is none.</summary>
-    public static async Task<IFormFile?> ReadFormFileAsync(HttpRequest request, CancellationToken ct)
-    {
-        var form = await request.ReadFormAsync(ct);
-        var file = form.Files["file"];
-        return file is null || file.Length <= 0 ? null : file;
     }
 
     /// <summary>A staged file, or the refusal to answer with (400, or the <see cref="UploadLimitException"/> status).</summary>

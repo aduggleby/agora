@@ -1,6 +1,9 @@
 using Agora.Web.Auth;
 using Agora.Web.Endpoints;
 using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authorization;
 
 namespace Agora.Web.Startup;
 
@@ -9,6 +12,9 @@ namespace Agora.Web.Startup;
 /// client, unsafe methods are validated (except the E2E test routes and the Hangfire dashboard). Endpoints marked
 /// with <see cref="UploadEndpointMetadata"/> that require the header token are refused before anything reads the form,
 /// because the antiforgery form fallback would otherwise buffer the multipart body ahead of every admission check.
+/// For the same reason no unsafe request has its body read here before it could possibly be admitted: an anonymous
+/// request to an endpoint that requires a signed-in user gets the cookie challenge (what authorization would answer),
+/// and a request that matched no endpoint goes straight on to its 404.
 /// The <c>/api/v1</c> endpoints (<see cref="ApiEndpointMetadata"/>) never run antiforgery and get no CSRF cookies:
 /// their authorization policy accepts only API tokens, which carry no ambient browser authority, and the anonymous
 /// token exchange is protected by PKCE.
@@ -67,6 +73,19 @@ public static class CsrfValidation
                 return;
             }
 
+            // Nothing to protect and nothing to read: an unmatched route answers 404 further down.
+            if (endpoint is null)
+            {
+                await next();
+                return;
+            }
+
+            if (RequiresSignedInUser(endpoint) && context.User.Identity?.IsAuthenticated != true)
+            {
+                await context.ChallengeAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+                return;
+            }
+
             if (isE2E && context.Request.Path.StartsWithSegments("/api/e2e", StringComparison.OrdinalIgnoreCase))
             {
                 await next();
@@ -112,6 +131,15 @@ public static class CsrfValidation
             await next();
         });
     }
+
+    /// <summary>
+    /// Whether authorization would refuse an anonymous caller here: the endpoint carries authorization metadata
+    /// (<c>[Authorize]</c>, <c>RequireAuthorization</c>) and no <c>[AllowAnonymous]</c>. Every such policy in this
+    /// app needs an authenticated user; the fallback policy (no metadata) admits everyone.
+    /// </summary>
+    public static bool RequiresSignedInUser(Endpoint endpoint) =>
+        endpoint.Metadata.GetMetadata<IAllowAnonymous>() is null &&
+        (endpoint.Metadata.GetMetadata<IAuthorizeData>() is not null || endpoint.Metadata.GetMetadata<AuthorizationPolicy>() is not null);
 
     private static bool IsHealthPath(PathString path) =>
         path.Equals("/live", StringComparison.OrdinalIgnoreCase) || path.Equals("/ready", StringComparison.OrdinalIgnoreCase);

@@ -121,6 +121,64 @@ public sealed class ApiV1HostTests
     }
 
     [Fact]
+    public async Task Anonymous_post_to_a_signed_in_endpoint_is_challenged_before_the_body_is_read()
+    {
+        await using var host = await Host.StartAsync();
+        var body = new ThrowingStream();
+
+        var context = await host.PostRawMultipartAsync("/cookie-only", string.Empty, body, bearer: null, cookie: null, contentLength: 50L * 1024 * 1024);
+
+        Assert.Equal(StatusCodes.Status302Found, context.Response.StatusCode);
+        Assert.Contains("/login?returnUrl=", context.Response.Headers.Location.ToString());
+        Assert.False(body.ReadAttempted);
+    }
+
+    [Fact]
+    public async Task Post_to_an_unmatched_route_is_404_without_reading_the_body()
+    {
+        await using var host = await Host.StartAsync();
+        var body = new ThrowingStream();
+
+        var context = await host.PostRawMultipartAsync("/does-not-exist", string.Empty, body, bearer: null, cookie: null, contentLength: 50L * 1024 * 1024);
+
+        Assert.Equal(StatusCodes.Status404NotFound, context.Response.StatusCode);
+        Assert.False(body.ReadAttempted);
+    }
+
+    [Fact]
+    public async Task Anonymous_form_post_stops_reading_at_the_app_wide_form_limit()
+    {
+        await using var host = await Host.StartAsync();
+        var payload = MultipartFile("big.bin", new byte[3 * 1024 * 1024]);
+        var body = new CountingStream(payload);
+
+        var context = await host.PostRawMultipartAsync("/anonymous-form", string.Empty, body, bearer: null, cookie: null, contentLength: payload.Length);
+
+        Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
+        // The antiforgery form fallback gives up at the 1 MiB section limit (plus one read buffer), not at 3 MiB.
+        Assert.True(body.BytesRead < FormLimits.DefaultMaxRequestBodyBytes + 128 * 1024, $"read {body.BytesRead} bytes");
+    }
+
+    [Fact]
+    public async Task Capture_larger_than_the_app_wide_form_limit_still_succeeds()
+    {
+        await using var host = await Host.StartAsync(maxFileSizeBytes: 4L * 1024 * 1024);
+        var token = await host.IssueTokenAsync();
+
+        var response = await host.SendAsync(HttpMethod.Post, "/api/v1/captures?duration=1d", bearer: token,
+            content: Multipart("capture.png", PaddedPng(2 * 1024 * 1024)));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    private static byte[] MultipartFile(string fileName, byte[] content) =>
+    [
+        .. Encoding.ASCII.GetBytes($"--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{fileName}\"\r\nContent-Type: application/octet-stream\r\n\r\n"),
+        .. content,
+        .. Encoding.ASCII.GetBytes("\r\n--b--\r\n")
+    ];
+
+    [Fact]
     public async Task Bearer_token_is_ignored_outside_api_v1()
     {
         await using var host = await Host.StartAsync();
@@ -315,6 +373,7 @@ public sealed class ApiV1HostTests
         var tooLarge = await host.SendAsync(HttpMethod.Post, "/api/v1/captures?duration=1d", bearer: token,
             content: Multipart("capture.png", PaddedPng(2000)));
         Assert.Equal(HttpStatusCode.RequestEntityTooLarge, tooLarge.StatusCode);
+        Assert.Equal(UploadStagingEndpoints.TooLargeMessage, (await tooLarge.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("error").GetString());
         Assert.Empty(host.ScratchEntries());
 
         var fits = await host.SendAsync(HttpMethod.Post, "/api/v1/captures?duration=1d", bearer: token,
@@ -431,11 +490,9 @@ public sealed class ApiV1HostTests
                 o.MaxFileSizeBytes = maxFileSizeBytes ?? o.MaxFileSizeBytes;
                 o.MaxTotalUploadBytes = maxTotalUploadBytes ?? o.MaxTotalUploadBytes;
             });
-            // As in Program.cs: the app-wide multipart limit is the per-share total.
-            if (maxTotalUploadBytes is { } total)
-            {
-                builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o => o.MultipartBodyLengthLimit = total);
-            }
+            // As in Program.cs: small app-wide form limits; upload endpoints pass their own per call.
+            builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(FormLimits.Configure);
+            builder.Services.AddSingleton<UploadConcurrency>();
             builder.Services.AddDbContext<AgoraDbContext>(o => o.UseSqlite(connection));
             builder.Services.AddSingleton<IObjectStore>(new FileSystemObjectStore(storageRoot));
             builder.Services.AddSingleton<IShareContentStore, ShareContentStore>();
@@ -476,6 +533,8 @@ public sealed class ApiV1HostTests
             app.MapGet("/cookie-only", (HttpContext context) => context.User.Identity!.AuthenticationType).RequireAuthorization();
             app.MapGet("/admin-only", () => "admin").RequireAuthorization(AuthSetup.AdminOnlyPolicy);
             app.MapPost("/cookie-only", () => "posted").RequireAuthorization();
+            // Stands in for anonymous form endpoints such as /login: antiforgery reads the form when no header token is sent.
+            app.MapPost("/anonymous-form", () => "posted");
             app.MapApiV1Endpoints(captureRequestBodyLimit: maxFileSizeBytes is { } maxFile ? maxFile + 1024 * 1024 : 10 * 1024 * 1024);
             await app.StartAsync();
 
@@ -531,14 +590,14 @@ public sealed class ApiV1HostTests
         }
 
         /// <summary>A multipart POST whose body stream is handed to the server untouched (HttpClient would read it first).</summary>
-        public Task<HttpContext> PostRawMultipartAsync(string path, string query, Stream body, string? bearer, string? cookie) =>
+        public Task<HttpContext> PostRawMultipartAsync(string path, string query, Stream body, string? bearer, string? cookie, long contentLength = 100) =>
             _app.GetTestServer().SendAsync(ctx =>
             {
                 ctx.Request.Method = HttpMethods.Post;
                 ctx.Request.Path = path;
                 ctx.Request.QueryString = new QueryString(query);
                 ctx.Request.ContentType = "multipart/form-data; boundary=b";
-                ctx.Request.ContentLength = 100;
+                ctx.Request.ContentLength = contentLength;
                 ctx.Request.Body = body;
                 if (bearer is not null)
                 {

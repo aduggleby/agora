@@ -37,6 +37,7 @@ public static class EncryptedArchiveDownload
                 return Task.CompletedTask;
             });
             ObjectResults.ApplyUserContentHeaders(context.Response);
+            ObjectResults.ApplyNoStore(context.Response);
             return Results.File(plaintext, "application/zip", downloadName);
         }
         catch (CryptographicException)

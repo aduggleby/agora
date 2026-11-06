@@ -77,12 +77,12 @@ public sealed class DirectLinkPublicPageTests
         }
 
         var server = app.GetTestServer();
-        async Task<(int Status, string ContentType, string Body, IHeaderDictionary Headers)> GetAsync(string token)
+        async Task<(int Status, string ContentType, string Body, IHeaderDictionary Headers)> GetAsync(string token, string? method = null)
         {
             var body = new MemoryStream();
             var ctx = await server.SendAsync(c =>
             {
-                c.Request.Method = HttpMethods.Get;
+                c.Request.Method = method ?? HttpMethods.Get;
                 c.Request.Path = $"/s/{token}";
                 c.Response.Body = body;
             });
@@ -96,6 +96,13 @@ public sealed class DirectLinkPublicPageTests
         Assert.Equal("nosniff", live.Headers["X-Content-Type-Options"].ToString());
         Assert.Equal(Agora.Web.Endpoints.ObjectResults.UserContentCsp, live.Headers["Content-Security-Policy"].ToString());
         Assert.False(live.Headers.ContainsKey("Content-Disposition"));
+        Assert.Equal("private, no-store", live.Headers.CacheControl.ToString());
+
+        // HEAD answers with the headers but is not a download.
+        var head = await GetAsync("livelink", HttpMethods.Head);
+        Assert.Equal((int)HttpStatusCode.OK, head.Status);
+        Assert.Equal("image/png", head.ContentType);
+        Assert.Equal(string.Empty, head.Body);
 
         foreach (var token in new[] { "expiredl", "deletedl", "purgedlk" })
         {
@@ -103,6 +110,8 @@ public sealed class DirectLinkPublicPageTests
             Assert.Equal((int)HttpStatusCode.Gone, gone.Status);
             Assert.Contains("text/html", gone.ContentType);
             Assert.Contains("This link has expired.", gone.Body);
+            // Nothing of the file survives on the expired page: no name, title or H1, in the body or the meta tags.
+            Assert.DoesNotContain("photo.png", gone.Body);
         }
 
         Assert.Equal((int)HttpStatusCode.NotFound, (await GetAsync("deletedo")).Status);

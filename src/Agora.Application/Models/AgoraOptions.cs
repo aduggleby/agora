@@ -116,6 +116,12 @@ public sealed class AgoraAuthOptions
     /// elsewhere. SameAsRequest on a public HTTP site lets anyone on the path read the session cookie.
     /// </summary>
     public SecureCookiesMode SecureCookies { get; set; } = SecureCookiesMode.Auto;
+
+    /// <summary>
+    /// Most password hashes (PBKDF2) computed at once in this process; 0 means one per processor. Requests that find
+    /// every slot busy for 2 seconds get 503 with Retry-After.
+    /// </summary>
+    public int MaxConcurrentPasswordHashes { get; set; }
 }
 
 public enum SecureCookiesMode

@@ -567,10 +567,30 @@
       }
       return "Upload failed.";
     };
+    const maxParallelUploads = 2;
+    let runningUploads = 0;
+    const waitingUploads = [];
+    const startWaitingUploads = () => {
+      while (runningUploads < maxParallelUploads && waitingUploads.length > 0) {
+        waitingUploads.shift()?.start();
+      }
+    };
     const uploadFile = (file) => {
       const ui = createRow(file);
       activeUploads += 1;
       refreshState();
+      waitingUploads.push({
+        start: () => sendUpload(file, ui),
+        cancel: () => {
+          activeUploads = Math.max(0, activeUploads - 1);
+          markCanceledUi(ui);
+          refreshState();
+        }
+      });
+      startWaitingUploads();
+    };
+    const sendUpload = (file, ui) => {
+      runningUploads += 1;
       const xhr = new XMLHttpRequest();
       activeRequests.add(xhr);
       xhr.open("POST", `/api/uploads/stage?draftShareId=${encodeURIComponent(draftShareIdInput.value)}`);
@@ -581,7 +601,9 @@
         settled = true;
         activeRequests.delete(xhr);
         activeUploads = Math.max(0, activeUploads - 1);
+        runningUploads = Math.max(0, runningUploads - 1);
         refreshState();
+        startWaitingUploads();
       };
       xhr.upload.addEventListener("progress", (event) => {
         if (!event.lengthComputable) return;
@@ -655,6 +677,7 @@
       uploadedIds.clear();
       uploads.clear();
       hidden.querySelectorAll('input[name="uploadedFileIds"]').forEach((input) => input.remove());
+      waitingUploads.splice(0).forEach((waiting) => waiting.cancel());
       activeRequests.forEach((request) => request.abort());
       await queueDraftCleanup();
       cancelRequested = false;
@@ -852,9 +875,47 @@
         }
       }
     });
+    const unlockAfterFailedSubmit = (message) => {
+      isSubmitting = false;
+      submit.textContent = submitLabel;
+      submitPending?.classList.add("hidden");
+      form.removeAttribute("aria-busy");
+      fileInput.disabled = false;
+      pickButton.disabled = false;
+      optionsToggle?.removeAttribute("disabled");
+      shareTokenInput?.removeAttribute("readonly");
+      downloadPasswordInput?.removeAttribute("readonly");
+      refreshState();
+      status.textContent = message;
+    };
+    const submitShare = async () => {
+      const data = new FormData(form);
+      data.delete("files");
+      try {
+        const response = await fetch(form.action, { method: "POST", body: data, credentials: "same-origin" });
+        if (response.redirected) {
+          window.location.assign(response.url);
+          return;
+        }
+        const text = (await response.text()).trim();
+        let message = text;
+        try {
+          const parsed = JSON.parse(text);
+          if (typeof parsed === "string") message = parsed;
+          else if (parsed && typeof parsed === "object" && typeof parsed.error === "string") {
+            message = parsed.error;
+          }
+        } catch {
+        }
+        unlockAfterFailedSubmit(message || "Creating the share failed. Please try again.");
+      } catch {
+        unlockAfterFailedSubmit("Creating the share failed. Check your connection and try again.");
+      }
+    };
+    const submitLabel = submit.textContent || "Create share";
     form.addEventListener("submit", (event) => {
+      event.preventDefault();
       if (submit.disabled || isSubmitting) {
-        event.preventDefault();
         return;
       }
       isSubmitting = true;
@@ -869,6 +930,7 @@
       shareTokenInput?.setAttribute("readonly", "readonly");
       downloadPasswordInput?.setAttribute("readonly", "readonly");
       refreshState();
+      void submitShare();
     });
     restoreOptionsState();
     restoreDirectDuration();

@@ -75,6 +75,26 @@ test.describe('Share user stories', () => {
     expect(names).toEqual(['alpha.txt', 'beta.txt', 'gamma.txt']);
   });
 
+  test('uploads more files than the server runs at once and creates the share', async ({ page, request }, testInfo) => {
+    const user = await createE2EUser(request, 'queued-uploads');
+    await login(page, user.email, user.password);
+
+    // The server admits two uploads per account at a time; the page queues the rest instead of failing them.
+    const inputFiles = await createTempFiles(testInfo.outputPath('files-queued'), [1, 2, 3, 4, 5].map((n) => ({
+      name: `queued-${n}.txt`,
+      // Each file is over the app-wide 1 MiB body limit that only the upload routes may exceed.
+      content: `queued upload ${n} `.repeat(150_000),
+    })));
+
+    await page.goto('/shares/new');
+    await page.setInputFiles('[data-file-input]', inputFiles);
+    await expect(page.locator('[data-upload-list] li[data-upload-id]')).toHaveCount(5);
+    await expect(page.locator('[data-upload-list] li.border-danger\\/35')).toHaveCount(0);
+
+    await page.locator('[data-submit]').click();
+    await page.waitForURL(/\/shares\/created\/[^/?#]+$/);
+  });
+
   test('uploads a PDF and creates a downloadable shared archive', async ({ page, request }, testInfo) => {
     const user = await createE2EUser(request, 'pdf-share');
     await login(page, user.email, user.password);

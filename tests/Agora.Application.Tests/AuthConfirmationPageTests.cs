@@ -27,6 +27,7 @@ namespace Agora.Application.Tests;
 public sealed class AuthConfirmationPageTests
 {
     private const string Email = "newuser@example.com";
+    private const string Password = "a-strong-password";
 
     [Fact]
     public async Task Confirm_email_link_is_consumed_by_the_post_not_the_get()
@@ -49,16 +50,42 @@ public sealed class AuthConfirmationPageTests
         }
 
         var page = await host.GetAsync(link.PathAndQuery);
-        var post = await host.PostAsync("/auth/confirm-email", new() { ["email"] = Email, ["token"] = token }, Host.AntiforgeryField(page.Body));
+        var post = await host.PostAsync("/auth/confirm-email", new() { ["email"] = Email, ["token"] = token, ["password"] = Password }, Host.AntiforgeryField(page.Body));
         Assert.Equal(HttpStatusCode.Redirect, post.Status);
         Assert.Equal("/login?msg=Email%20confirmed.%20You%20can%20now%20sign%20in", post.Headers["Location"]);
         Assert.True(await host.IsConfirmedAsync());
 
         // Second use of the same link fails without side effects.
-        var replay = await host.PostAsync("/auth/confirm-email", new() { ["email"] = Email, ["token"] = token }, Host.AntiforgeryField(page.Body));
+        var replay = await host.PostAsync("/auth/confirm-email", new() { ["email"] = Email, ["token"] = token, ["password"] = Password }, Host.AntiforgeryField(page.Body));
         Assert.Equal(HttpStatusCode.Redirect, replay.Status);
         Assert.StartsWith("/login?msg=", replay.Headers["Location"], StringComparison.Ordinal);
         Assert.NotEqual(post.Headers["Location"], replay.Headers["Location"]);
+    }
+
+    [Fact]
+    public async Task Confirm_email_requires_the_account_password_and_a_wrong_one_keeps_the_link_usable()
+    {
+        await using var host = await Host.StartAsync();
+        var link = await host.RegisterAndGetLinkAsync();
+        var token = HttpUtility.ParseQueryString(link.Query)["token"]!;
+
+        var page = await host.GetAsync(link.PathAndQuery);
+        Assert.Matches("<input[^>]*type=\"password\"[^>]*name=\"password\"[^>]*autocomplete=\"current-password\"", page.Body);
+        Assert.Contains("<label for=\"confirm-password\"", page.Body);
+
+        foreach (var password in new[] { "not-the-password", string.Empty })
+        {
+            var wrong = await host.PostAsync("/auth/confirm-email", new() { ["email"] = Email, ["token"] = token, ["password"] = password }, Host.AntiforgeryField(page.Body));
+            Assert.Equal(HttpStatusCode.OK, wrong.Status);
+            Assert.Contains("data-confirm-error", wrong.Body);
+            Assert.Contains($"name=\"token\" value=\"{token}\"", wrong.Body);
+            Assert.False(await host.IsConfirmedAsync());
+        }
+
+        var right = await host.PostAsync("/auth/confirm-email", new() { ["email"] = Email, ["token"] = token, ["password"] = Password }, Host.AntiforgeryField(page.Body));
+        Assert.Equal(HttpStatusCode.Redirect, right.Status);
+        Assert.Equal("/login?msg=Email%20confirmed.%20You%20can%20now%20sign%20in", right.Headers["Location"]);
+        Assert.True(await host.IsConfirmedAsync());
     }
 
     [Fact]
@@ -69,10 +96,10 @@ public sealed class AuthConfirmationPageTests
         var token = HttpUtility.ParseQueryString(link.Query)["token"]!;
         await host.GetAsync(link.PathAndQuery); // establishes the antiforgery cookie
 
-        var missing = await host.PostAsync("/auth/confirm-email", new() { ["email"] = Email, ["token"] = token }, antiforgeryField: null);
+        var missing = await host.PostAsync("/auth/confirm-email", new() { ["email"] = Email, ["token"] = token, ["password"] = Password }, antiforgeryField: null);
         Assert.Equal(HttpStatusCode.BadRequest, missing.Status);
 
-        var invalid = await host.PostAsync("/auth/confirm-email", new() { ["email"] = Email, ["token"] = token }, antiforgeryField: "not-a-real-antiforgery-token");
+        var invalid = await host.PostAsync("/auth/confirm-email", new() { ["email"] = Email, ["token"] = token, ["password"] = Password }, antiforgeryField: "not-a-real-antiforgery-token");
         Assert.Equal(HttpStatusCode.BadRequest, invalid.Status);
 
         Assert.False(await host.IsConfirmedAsync());
@@ -180,7 +207,7 @@ public sealed class AuthConfirmationPageTests
         {
             using var scope = _app.Services.CreateScope();
             var auth = scope.ServiceProvider.GetRequiredService<AuthService>();
-            var registered = await auth.RegisterAsync(Email, "a-strong-password", "https://files.example.com/auth/confirm-email", CancellationToken.None);
+            var registered = await auth.RegisterAsync(Email, Password, "https://files.example.com/auth/confirm-email", CancellationToken.None);
             Assert.True(registered.Success, registered.Error);
             var link = new Uri(Assert.Single(_sender.Messages).ActionUrl);
             Assert.Equal(Email, HttpUtility.ParseQueryString(link.Query)["email"]);

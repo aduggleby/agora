@@ -21,6 +21,8 @@ public sealed class SharePreviewJobService(
     ILogger<SharePreviewJobService> logger)
 {
     private const int PreviewRetryWindowMinutes = 5;
+    /// <summary>How long a rejected source (<c>.failed</c> marker) is left alone before a retry may run it again.</summary>
+    public static readonly TimeSpan FailedRetryCooldown = TimeSpan.FromMinutes(30);
     private readonly AgoraOptions _options = options.Value;
 
     public sealed record Availability(string State, string PreviewKey, string? Reason);
@@ -145,6 +147,22 @@ public sealed class SharePreviewJobService(
         }
     }
 
+    /// <summary>
+    /// Time left before a failed source may be generated again: positive while the <c>.failed</c> marker is younger
+    /// than <see cref="FailedRetryCooldown"/>, zero when there is no marker or it is older.
+    /// </summary>
+    public TimeSpan FailedCooldownRemaining(Guid shareId, Guid fileId)
+    {
+        var failedPath = SharePreviewPaths.FailedPath(_options.StorageRoot, shareId, fileId);
+        if (!File.Exists(failedPath))
+        {
+            return TimeSpan.Zero;
+        }
+
+        var remaining = FailedRetryCooldown - (DateTime.UtcNow - File.GetLastWriteTimeUtc(failedPath));
+        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+    }
+
     public async Task<Availability> GetAvailabilityAsync(Share share, ShareFile file, CancellationToken ct)
     {
         if (!CanGeneratePreview(file))
@@ -241,6 +259,12 @@ public sealed class SharePreviewJobService(
         if (previewExists && !thumbnailMissing)
         {
             performContext?.WriteLine("Preview already exists.");
+            return;
+        }
+
+        if (FailedCooldownRemaining(shareId, fileId) > TimeSpan.Zero)
+        {
+            performContext?.WriteLine("Preview skipped: the source failed recently.");
             return;
         }
 

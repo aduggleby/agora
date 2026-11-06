@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { createE2EUser, createTempFiles, login, waitForShareReady, writePngFile } from '../support/helpers';
@@ -7,6 +8,30 @@ import { createE2EUser, createTempFiles, login, waitForShareReady, writePngFile 
 // HTTP-level contract for user-uploaded content (stored XSS hardening): the extension decides the
 // content type, only an allowlist is served inline, and every user-content response is nosniff + CSP.
 const FULL_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+
+/** Waits for a download notification email to <to> written after <since> by the filesystem email sender. */
+async function waitForDownloadEmail(to: string, since: number, timeoutMs = 60_000): Promise<{ subject: string }> {
+  const runsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../.e2e-data/runs');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const runs = await fs.readdir(runsRoot, { withFileTypes: true }).catch(() => []);
+    for (const run of runs.filter((entry) => entry.isDirectory())) {
+      const dir = path.join(runsRoot, run.name, 'emails');
+      const names = await fs.readdir(dir).catch(() => [] as string[]);
+      for (const name of names.filter((n) => n.endsWith('.json'))) {
+        const file = path.join(dir, name);
+        const stats = await fs.stat(file).catch(() => null);
+        if (!stats || stats.mtimeMs < since) continue;
+        const record = JSON.parse(await fs.readFile(file, 'utf8')) as { to?: string; kind?: string; subject?: string };
+        if (record.kind === 'download_notification' && record.to?.toLowerCase() === to.toLowerCase()) {
+          return { subject: record.subject ?? '' };
+        }
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error(`No download notification email to ${to}`);
+}
 
 async function readCsrfToken(page: Page): Promise<string> {
   const token = await page.evaluate(() => {
@@ -57,7 +82,7 @@ async function createPreviewShare(page: Page, files: string[], extraFields: Reco
   form.append('__RequestVerificationToken', csrfToken);
   form.append('draftShareId', draftShareId);
   form.append('shareToken', token);
-  form.append('notifyMode', 'none');
+  form.append('notifyMode', extraFields.notifyMode ?? 'none');
   form.append('expiryMode', '7_days');
   form.append('templateMode', 'account_default');
   form.append('showPreviews', '1');
@@ -65,11 +90,12 @@ async function createPreviewShare(page: Page, files: string[], extraFields: Reco
     form.append('uploadedFileIds', uploadId);
   }
   for (const [key, value] of Object.entries(extraFields)) {
+    if (key === 'notifyMode') continue;
     form.append(key, value);
   }
   const createResponse = await page.request.post('/api/shares', {
     data: form.toString(),
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-TOKEN': csrfToken }
   });
   expect(createResponse.ok(), `create share: ${createResponse.status()} ${await createResponse.text()}`).toBeTruthy();
 
@@ -107,6 +133,9 @@ test('uploaded files are served by extension with nosniff and CSP', async ({ pag
     expect(headers['content-disposition'], name).toContain(name);
     expect(headers['x-content-type-options'], name).toBe('nosniff');
     expect(headers['content-security-policy'], name).toBe(FULL_CSP);
+    // Originals are never kept by browser or shared caches (a signed-in session may answer with its own
+    // no-cache,no-store; anonymous visitors get private, no-store).
+    expect(headers['cache-control'], name).toContain('no-store');
   }
   // The declared text/html never reached storage either.
   expect(byName.get('noextension')!.detectedContentType).toBe('application/octet-stream');
@@ -231,3 +260,58 @@ test('share summary, og-image and deleted shares expose nothing beyond the downl
     expect(response.status(), route).toBe(404);
   }
 });
+
+// A password-protected share page shows a generic card (no name, size, title or background) until the password was
+// entered; the unlock sets a share-scoped cookie, after which the page and its background show as usual.
+test('password-protected share page stays generic until unlocked', async ({ page, request, browser }, testInfo) => {
+  const user = await createE2EUser(request, 'locked-share');
+  await login(page, user.email, user.password);
+
+  const files = await createTempFiles(testInfo.outputPath('files-locked'), [
+    { name: 'secret-plan.txt', content: 'confidential' }
+  ]);
+  const token = await createPreviewShare(page, files, { downloadPassword: 'correct horse battery', notifyMode: 'every_time' });
+  const startedAt = Date.now();
+
+  const visitor = await browser.newContext();
+  try {
+    const visitorPage = await visitor.newPage();
+    const locked = await visitorPage.goto(`/s/${token}`);
+    expect(locked?.status()).toBe(200);
+    await expect(visitorPage.getByRole('heading', { name: 'Password-protected share' })).toBeVisible();
+    await expect(visitorPage).toHaveTitle('Password-protected share - Agora');
+    const lockedHtml = await visitorPage.content();
+    expect(lockedHtml).not.toContain('secret-plan');
+    expect(lockedHtml).not.toContain('/background');
+    expect((await visitorPage.request.get(`/s/${token}/background`)).status()).toBe(404);
+
+    await visitorPage.fill('#download-password', 'wrong password');
+    await visitorPage.getByRole('button', { name: 'Unlock' }).click();
+    await expect(visitorPage.locator('.download-error')).toContainText('Password was incorrect');
+    expect(await visitorPage.content()).not.toContain('secret-plan');
+
+    await visitorPage.fill('#download-password', 'correct horse battery');
+    await visitorPage.getByRole('button', { name: 'Unlock' }).click();
+    await expect(visitorPage.locator('[data-share-preview-card]')).toBeVisible();
+    await expect(visitorPage.locator('[data-share-preview-card]')).toContainText('1 file');
+    const cookies = await visitor.cookies();
+    const unlock = cookies.find((cookie) => cookie.name === 'agora.share.unlock');
+    expect(unlock?.httpOnly).toBe(true);
+    expect(unlock?.path).toBe(`/s/${token}`);
+
+    // The download still asks for the password (it decrypts the archive) and works as before.
+    await visitorPage.fill('#download-password', 'correct horse battery');
+    const [download] = await Promise.all([
+      visitorPage.waitForEvent('download'),
+      visitorPage.getByRole('button', { name: 'Download' }).click()
+    ]);
+    expect(download.suggestedFilename()).toMatch(/\.zip$/);
+  } finally {
+    await visitor.close();
+  }
+
+  // The every_time notification runs through the coalescing job and renders the download email for the owner.
+  const email = await waitForDownloadEmail(user.email, startedAt);
+  expect(email.subject).toBe('Your shared file was downloaded');
+});
+

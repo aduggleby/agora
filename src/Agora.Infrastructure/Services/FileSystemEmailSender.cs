@@ -18,7 +18,7 @@ public sealed class FileSystemEmailSender(
         var html = await templateRenderer.RenderDownloadNotificationHtmlAsync(notification, cancellationToken);
         await WriteEmailAsync(
             to: notification.To,
-            subject: "Your shared file was downloaded",
+            subject: DownloadNotificationText.Subject(notification),
             kind: "download_notification",
             metadata: new
             {
@@ -29,7 +29,9 @@ public sealed class FileSystemEmailSender(
                 notification.DownloaderIp,
                 notification.DownloaderIpDisplay,
                 notification.DownloaderUserAgent,
-                notification.BrowserMetadataJson
+                notification.BrowserMetadataJson,
+                notification.BatchCount,
+                notification.BatchFirstDownloadedAtUtc
             },
             html: html,
             cancellationToken: cancellationToken);

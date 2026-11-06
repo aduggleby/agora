@@ -13,6 +13,9 @@
     <PackageReference Include="Hangfire.SqlServer" Version="1.8.23" />
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.4" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.4" />
+    <!-- Direct references lift transitive versions with known advisories (SqlClient pulled Pkcs 9.0.4). -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.8" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>

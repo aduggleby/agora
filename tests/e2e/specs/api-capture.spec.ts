@@ -248,7 +248,8 @@ test.describe('Capture app API', () => {
     const app = await connectApp(page, request);
 
     const pngPath = path.join(testInfo.outputPath('files'), 'capture.png');
-    await writePngFile(pngPath, { comment: 'api-capture-marker' });
+    // Over the app-wide 1 MiB body limit: only the capture route may take a body this large.
+    await writePngFile(pngPath, { comment: `api-capture-marker${'x'.repeat(1_500_000)}` });
 
     const created = await uploadCapture(request, app.accessToken, pngPath);
     expect(created.status()).toBe(200);

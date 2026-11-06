@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Agora.Application.Abstractions;
 using Agora.Application.Models;
 using Agora.Application.Utilities;
@@ -79,15 +80,21 @@ public sealed class UploadStagingEndpointTests
 
         // The first request holds the buffer reservation while its body is still streaming in.
         var firstRequest = host.PostStageAsync("/api/public-uploads/stage", first, body.Length, host.Csrf);
-        await first.Started.Task;
+        try
+        {
+            await host.WaitUntilReadingAsync(first, firstRequest);
 
-        var second = new ThrowingStream();
-        var secondContext = await host.PostStageAsync("/api/public-uploads/stage", second, body.Length, host.Csrf);
-        Assert.Equal(StatusCodes.Status507InsufficientStorage, secondContext.Response.StatusCode);
-        Assert.False(second.ReadAttempted);
+            var second = new ThrowingStream();
+            var secondContext = await host.PostStageAsync("/api/public-uploads/stage", second, body.Length, host.Csrf).WaitAsync(Host.Timeout);
+            Assert.Equal(StatusCodes.Status507InsufficientStorage, secondContext.Response.StatusCode);
+            Assert.False(second.ReadAttempted);
+        }
+        finally
+        {
+            first.Release();
+        }
 
-        first.Release();
-        var firstContext = await firstRequest;
+        var firstContext = await firstRequest.WaitAsync(Host.Timeout);
         Assert.Equal(StatusCodes.Status200OK, firstContext.Response.StatusCode);
 
         // The buffer reservation is released by the response's dispose callbacks, which run after the pipeline returns.
@@ -99,6 +106,166 @@ public sealed class UploadStagingEndpointTests
         Assert.Equal((0L, 0L), host.Scratch.Reserved);
     }
 
+    [Fact]
+    public async Task Third_concurrent_stage_from_one_address_gets_429_before_the_body_is_read()
+    {
+        await using var host = await Host.StartAsync(scratchMaxBytes: 0);
+        var body = Host.MultipartBody("hello");
+        var first = new GateStream(body);
+        var second = new GateStream(body);
+        // One at a time up to the gate: the test host shares one in-memory SQLite connection, which must not be used
+        // by two requests at once (production uses a pooled database).
+        var firstRequest = host.PostStageAsync("/api/public-uploads/stage", first, body.Length, host.Csrf);
+        Task<HttpContext>? secondRequest = null;
+        try
+        {
+            await host.WaitUntilReadingAsync(first, firstRequest);
+            secondRequest = host.PostStageAsync("/api/public-uploads/stage", second, body.Length, host.Csrf);
+            await host.WaitUntilReadingAsync(second, secondRequest);
+
+            var third = new ThrowingStream();
+            var thirdContext = await host.PostStageAsync("/api/public-uploads/stage", third, body.Length, host.Csrf).WaitAsync(Host.Timeout);
+            Assert.Equal(StatusCodes.Status429TooManyRequests, thirdContext.Response.StatusCode);
+            Assert.False(third.ReadAttempted);
+
+            // Another address is not affected.
+            var other = await host.PostStageAsync("/api/public-uploads/stage", new MemoryStream(body), body.Length, host.Csrf, remoteIp: "198.51.100.7").WaitAsync(Host.Timeout);
+            Assert.Equal(StatusCodes.Status200OK, other.Response.StatusCode);
+        }
+        finally
+        {
+            first.Release();
+            second.Release();
+        }
+
+        Assert.Equal(StatusCodes.Status200OK, (await firstRequest.WaitAsync(Host.Timeout)).Response.StatusCode);
+        Assert.Equal(StatusCodes.Status200OK, (await secondRequest!.WaitAsync(Host.Timeout)).Response.StatusCode);
+        await host.WaitForNoUploadsInFlightAsync("addr:203.0.113.1");
+
+        var afterwards = await host.PostStageAsync("/api/public-uploads/stage", new MemoryStream(body), body.Length, host.Csrf);
+        Assert.Equal(StatusCodes.Status200OK, afterwards.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Third_concurrent_stage_into_one_draft_gets_429_from_any_address()
+    {
+        await using var host = await Host.StartAsync(scratchMaxBytes: 0);
+        var body = Host.MultipartBody("hello");
+        var draft = Guid.NewGuid().ToString("N");
+        var first = new GateStream(body);
+        var second = new GateStream(body);
+        // One at a time up to the gate (shared in-memory SQLite connection, see above).
+        var firstRequest = host.PostStageAsync("/api/public-uploads/stage", first, body.Length, host.Csrf, draft, "198.51.100.1");
+        Task<HttpContext>? secondRequest = null;
+        try
+        {
+            await host.WaitUntilReadingAsync(first, firstRequest);
+            secondRequest = host.PostStageAsync("/api/public-uploads/stage", second, body.Length, host.Csrf, draft, "198.51.100.2");
+            await host.WaitUntilReadingAsync(second, secondRequest);
+
+            var third = new ThrowingStream();
+            var thirdContext = await host.PostStageAsync("/api/public-uploads/stage", third, body.Length, host.Csrf, draft, "198.51.100.3").WaitAsync(Host.Timeout);
+            Assert.Equal(StatusCodes.Status429TooManyRequests, thirdContext.Response.StatusCode);
+            Assert.False(third.ReadAttempted);
+        }
+        finally
+        {
+            first.Release();
+            second.Release();
+        }
+
+        Assert.Equal(StatusCodes.Status200OK, (await firstRequest.WaitAsync(Host.Timeout)).Response.StatusCode);
+        Assert.Equal(StatusCodes.Status200OK, (await secondRequest!.WaitAsync(Host.Timeout)).Response.StatusCode);
+        await host.WaitForNoUploadsInFlightAsync(UploadConcurrency.DraftKey(draft));
+    }
+
+    [Fact]
+    public async Task Stage_accepts_a_file_larger_than_the_app_wide_form_limit()
+    {
+        await using var host = await Host.StartAsync(scratchMaxBytes: 0);
+        var body = Host.MultipartBody(new string('x', 3 * 1024 * 1024));
+
+        var context = await host.PostStageAsync("/api/public-uploads/stage", new MemoryStream(body), body.Length, host.Csrf);
+
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Stage_reserves_only_what_the_draft_still_accepts()
+    {
+        const long maxTotal = 100_000;
+        await using var host = await Host.StartAsync(scratchMaxBytes: 0, maxTotalUploadBytes: maxTotal);
+        var body = Host.MultipartBody("hello");
+        var gate = new GateStream(body);
+
+        var request = host.PostStageAsync("/api/public-uploads/stage", gate, contentLength: null, host.Csrf);
+        try
+        {
+            await host.WaitUntilReadingAsync(gate, request);
+            // A chunked body reserves the draft's remaining allowance plus overhead, not the 10 MiB endpoint limit.
+            Assert.Equal(maxTotal + UploadStagingEndpoints.MultipartOverheadBytes, host.Scratch.Reserved.ScratchBytes);
+        }
+        finally
+        {
+            gate.Release();
+        }
+
+        Assert.Equal(StatusCodes.Status200OK, (await request.WaitAsync(Host.Timeout)).Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Stage_declaring_more_than_the_draft_accepts_is_413_before_the_body_is_read()
+    {
+        await using var host = await Host.StartAsync(scratchMaxBytes: 0, maxTotalUploadBytes: 100_000);
+        var body = new ThrowingStream();
+
+        var context = await host.PostStageAsync("/api/public-uploads/stage", body, contentLength: 5L * 1024 * 1024, host.Csrf);
+
+        Assert.Equal(StatusCodes.Status413PayloadTooLarge, context.Response.StatusCode);
+        Assert.Equal(UploadStagingEndpoints.TooLargeMessage, await host.ErrorAsync(context));
+        Assert.False(body.ReadAttempted);
+    }
+
+    [Fact]
+    public async Task Public_stage_refuses_a_signed_in_draft_like_someone_elses()
+    {
+        await using var host = await Host.StartAsync(scratchMaxBytes: 0);
+        var signedInDraft = await host.WithManagerAsync(m => m.EnsureDraftShareAsync(host.OwnerId, null, CancellationToken.None));
+        var body = new ThrowingStream();
+
+        var context = await host.PostStageAsync("/api/public-uploads/stage", body, 100, host.Csrf, signedInDraft);
+
+        Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
+        Assert.Equal("Draft share does not belong to the current user.", await host.ErrorAsync(context));
+        Assert.False(body.ReadAttempted);
+    }
+
+    [Fact]
+    public async Task Signed_in_paths_refuse_a_public_upload_draft_like_someone_elses()
+    {
+        await using var host = await Host.StartAsync(scratchMaxBytes: 0);
+        var body = Host.MultipartBody("hello");
+        var publicDraft = Guid.NewGuid().ToString("N");
+        var staged = await host.PostStageAsync("/api/public-uploads/stage", new MemoryStream(body), body.Length, host.Csrf, publicDraft);
+        Assert.Equal(StatusCodes.Status200OK, staged.Response.StatusCode);
+        var uploadId = JsonDocument.Parse(await host.BodyAsync(staged)).RootElement.GetProperty("uploadId").GetString()!;
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            host.WithManagerAsync(m => m.EnsureDraftShareAsync(host.OwnerId, publicDraft, CancellationToken.None)));
+        Assert.Equal("Draft share does not belong to the current user.", refused.Message);
+        Assert.False(await host.WithManagerAsync(m => m.DeleteStagedUploadAsync(host.OwnerId, publicDraft, uploadId, CancellationToken.None)));
+        Assert.Single(await host.WithManagerAsync(m => m.ListStagedUploadsForDraftAsync(host.OwnerId, publicDraft, CancellationToken.None)));
+
+        // The per-share design and the signed-in read paths treat it the same way.
+        var template = new ShareTemplateData("t", "h", "d", null, null, "center");
+        var designRefused = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            host.WithManagerAsync(async m => { await m.SaveDraftTemplateAsync(host.OwnerId, publicDraft, "per_upload", template, null, CancellationToken.None); return true; }));
+        Assert.Equal("Draft share does not belong to the current user.", designRefused.Message);
+        Assert.False(await host.WithManagerAsync(m => m.IsOwnSignedInDraftAsync(host.OwnerId, publicDraft, CancellationToken.None)));
+        var signedInDraft = await host.WithManagerAsync(m => m.EnsureDraftShareAsync(host.OwnerId, null, CancellationToken.None));
+        Assert.True(await host.WithManagerAsync(m => m.IsOwnSignedInDraftAsync(host.OwnerId, signedInDraft, CancellationToken.None)));
+    }
+
     private sealed record CsrfTokens(string CookieHeader, string? HeaderToken);
 
     private sealed class Host : IAsyncDisposable
@@ -108,6 +275,7 @@ public sealed class UploadStagingEndpointTests
 
         public string StorageRoot { get; }
         public ScratchSpaceMonitor Scratch { get; }
+        public Guid OwnerId { get; private set; }
         public CsrfTokens Csrf { get; private set; } = new(string.Empty, null);
 
         private Host(WebApplication app, SqliteConnection connection, string storageRoot, ScratchSpaceMonitor scratch)
@@ -118,7 +286,7 @@ public sealed class UploadStagingEndpointTests
             Scratch = scratch;
         }
 
-        public static async Task<Host> StartAsync(long scratchMaxBytes)
+        public static async Task<Host> StartAsync(long scratchMaxBytes, long? maxTotalUploadBytes = null)
         {
             var storageRoot = Path.Combine(Path.GetTempPath(), "agora-stage-endpoint-tests", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(storageRoot);
@@ -133,7 +301,11 @@ public sealed class UploadStagingEndpointTests
             {
                 o.StorageRoot = storageRoot;
                 o.Scratch = options.Scratch;
+                o.MaxTotalUploadBytes = maxTotalUploadBytes ?? o.MaxTotalUploadBytes;
             });
+            // As in Program.cs: small app-wide form limits; the stage endpoints pass their own per call.
+            builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(FormLimits.Configure);
+            builder.Services.AddSingleton<UploadConcurrency>();
             builder.Services.AddDbContext<AgoraDbContext>(o => o.UseSqlite(connection));
             builder.Services.AddSingleton<IObjectStore>(new FileSystemObjectStore(storageRoot));
             builder.Services.AddSingleton<IShareContentStore, ShareContentStore>();
@@ -158,13 +330,14 @@ public sealed class UploadStagingEndpointTests
             app.MapUploadStagingEndpoints(stageRequestBodyLimit: 10 * 1024 * 1024);
             await app.StartAsync();
 
+            var ownerId = Guid.NewGuid();
             using (var scope = app.Services.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<AgoraDbContext>();
                 await db.Database.EnsureCreatedAsync();
                 db.Users.Add(new UserAccount
                 {
-                    Id = Guid.NewGuid(),
+                    Id = ownerId,
                     Email = Owner,
                     EmailConfirmed = true,
                     PasswordHash = "x",
@@ -175,7 +348,7 @@ public sealed class UploadStagingEndpointTests
                 await db.SaveChangesAsync();
             }
 
-            var host = new Host(app, connection, storageRoot, scratch);
+            var host = new Host(app, connection, storageRoot, scratch) { OwnerId = ownerId };
             await host.FetchCsrfAsync();
             return host;
         }
@@ -201,13 +374,68 @@ public sealed class UploadStagingEndpointTests
             "--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\n" +
             content + "\r\n--b--\r\n");
 
-        public Task<HttpContext> PostStageAsync(string path, Stream body, long? contentLength, CsrfTokens csrf)
+        public async Task<T> WithManagerAsync<T>(Func<ShareManager, Task<T>> action)
+        {
+            using var scope = _app.Services.CreateScope();
+            return await action(scope.ServiceProvider.GetRequiredService<ShareManager>());
+        }
+
+        public async Task<string> BodyAsync(HttpContext context)
+        {
+            if (context.Response.Body.CanSeek)
+            {
+                context.Response.Body.Position = 0;
+            }
+
+            return await new StreamReader(context.Response.Body).ReadToEndAsync();
+        }
+
+        public async Task<string?> ErrorAsync(HttpContext context) =>
+            JsonDocument.Parse(await BodyAsync(context)).RootElement.GetProperty("error").GetString();
+
+        /// <summary>Bound for every await on a request, so a broken test fails instead of hanging the run.</summary>
+        public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
+
+        /// <summary>
+        /// Waits until the request is blocked reading its gated body; fails (with the response it gave instead) when
+        /// the request ended without reading, or after <see cref="Timeout"/>.
+        /// </summary>
+        public async Task WaitUntilReadingAsync(GateStream gate, Task<HttpContext> request)
+        {
+            var finished = await Task.WhenAny(gate.Started.Task, request, Task.Delay(Timeout));
+            if (finished == gate.Started.Task)
+            {
+                return;
+            }
+
+            if (finished == request)
+            {
+                var context = await request;
+                Assert.Fail($"The request ended before reading its body: {context.Response.StatusCode} {await BodyAsync(context)}");
+            }
+
+            Assert.Fail("The request neither read its body nor finished in time.");
+        }
+
+        public async Task WaitForNoUploadsInFlightAsync(string key)
+        {
+            var concurrency = _app.Services.GetRequiredService<UploadConcurrency>();
+            for (var i = 0; i < 100 && concurrency.InFlight(key) > 0; i++)
+            {
+                await Task.Delay(20);
+            }
+
+            Assert.Equal(0, concurrency.InFlight(key));
+        }
+
+        public Task<HttpContext> PostStageAsync(string path, Stream body, long? contentLength, CsrfTokens csrf, string? draftShareId = null, string remoteIp = "203.0.113.1")
         {
             return _app.GetTestServer().SendAsync(ctx =>
             {
                 ctx.Request.Method = HttpMethods.Post;
                 ctx.Request.Path = path;
-                ctx.Request.QueryString = new QueryString($"?uploadToken={UploadCode}&draftShareId={Guid.NewGuid():N}");
+                ctx.Connection.RemoteIpAddress = IPAddress.Parse(remoteIp);
+                ctx.Request.QueryString = new QueryString($"?uploadToken={UploadCode}&draftShareId={draftShareId ?? Guid.NewGuid().ToString("N")}");
                 ctx.Request.ContentType = "multipart/form-data; boundary=b";
                 ctx.Request.ContentLength = contentLength;
                 ctx.Request.Body = body;

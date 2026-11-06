@@ -27,6 +27,55 @@ public sealed class ShareOwnershipTests
     private const string Email = "owner@example.com";
 
     [Fact]
+    public async Task Replacing_the_account_background_deletes_the_previous_object_unless_a_share_still_uses_it()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var user = harness.AddUser(Email);
+        await harness.Db.SaveChangesAsync();
+        var owner = ShareOwner.For(user.Id, Email);
+        const string first = "uploads/templates/general/first.png";
+        const string second = "uploads/templates/general/second.png";
+        const string third = "uploads/templates/general/third.png";
+        harness.PutObject(first);
+        harness.PutObject(second);
+        harness.PutObject(third);
+
+        await harness.Manager.UpsertAccountTemplateAsync(owner, Template($"internal:{first}"), CancellationToken.None);
+        // Saving again without a new image keeps the object.
+        await harness.Manager.UpsertAccountTemplateAsync(owner, Template($"internal:{first}"), CancellationToken.None);
+        Assert.True(harness.ObjectExists(first));
+
+        await harness.Manager.UpsertAccountTemplateAsync(owner, Template($"internal:{second}"), CancellationToken.None);
+        Assert.False(harness.ObjectExists(first));
+        Assert.True(harness.ObjectExists(second));
+
+        // A share that points at the account object directly (created before backgrounds were copied) keeps it alive.
+        harness.AddShare(owner.UserId, Email, "legacy-bg").BackgroundImageUrl = $"internal:{second}";
+        await harness.Db.SaveChangesAsync();
+        await harness.Manager.UpsertAccountTemplateAsync(owner, Template($"internal:{third}"), CancellationToken.None);
+        Assert.True(harness.ObjectExists(second));
+        Assert.True(harness.ObjectExists(third));
+
+        // A share creation holding the owner lock (it read the template and is copying its background) finishes first.
+        const string fourth = "uploads/templates/general/fourth.png";
+        harness.PutObject(fourth);
+        Task replace;
+        using (await harness.Locks.LockAsync(ShareManager.OwnerLockKey(owner.UserId), CancellationToken.None))
+        {
+            replace = harness.Manager.UpsertAccountTemplateAsync(owner, Template($"internal:{fourth}"), CancellationToken.None);
+            await Task.Delay(200);
+            Assert.False(replace.IsCompleted);
+            Assert.True(harness.ObjectExists(third));
+        }
+
+        await replace;
+        Assert.False(harness.ObjectExists(third));
+
+        static ShareTemplateData Template(string background) =>
+            new("Subtitle", "Title", "Description", background, null, "center");
+    }
+
+    [Fact]
     public async Task Rows_match_by_owner_id_only()
     {
         await using var harness = await Harness.CreateAsync();
@@ -255,6 +304,16 @@ public sealed class ShareOwnershipTests
             Locks = locks;
             Auth = new AuthService(db, new NoopEmailSender(), ownerLocks: locks);
         }
+
+        /// <summary>Writes a durable object straight into the file-system store's layout.</summary>
+        public void PutObject(string key)
+        {
+            var path = Path.Combine(_storageRoot, key);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllBytes(path, [1, 2, 3]);
+        }
+
+        public bool ObjectExists(string key) => File.Exists(Path.Combine(_storageRoot, key));
 
         /// <summary>Every durable object currently in the file-system store (archives and share content).</summary>
         public List<string> DurableFiles() =>

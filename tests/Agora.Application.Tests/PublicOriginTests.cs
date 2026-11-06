@@ -74,6 +74,7 @@ public sealed class PublicOriginTests
             sender,
             new BareIpGeoLookup(),
             new PublicBaseUrlResolver(origin, allowRequestHostFallback: origin is null),
+            new NoopJobClient(),
             NullLogger<EmailNotificationJob>.Instance);
 
         await job.ProcessDownloadEventAsync(downloadEvent.Id, share.ShareToken, CancellationToken.None);
@@ -101,5 +102,11 @@ public sealed class PublicOriginTests
     private sealed class BareIpGeoLookup : IDownloaderGeoLookup
     {
         public Task<string> FormatForNotificationAsync(string ipAddress, CancellationToken cancellationToken) => Task.FromResult(ipAddress);
+    }
+
+    private sealed class NoopJobClient : Hangfire.IBackgroundJobClient
+    {
+        public string Create(Hangfire.Common.Job job, Hangfire.States.IState state) => Guid.NewGuid().ToString("N");
+        public bool ChangeState(string jobId, Hangfire.States.IState state, string expectedState) => true;
     }
 }

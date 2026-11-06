@@ -25,6 +25,7 @@
         {
           <label for="download-password" style="display:block;font-size:0.75rem;font-weight:600;color:#5C534A;text-transform:uppercase;letter-spacing:.08em;margin-bottom:0.4rem;">Download password</label>
           <input id="download-password" name="downloadPassword" type="password" required autocomplete="current-password" style="width:100%;padding:0.7rem 0.8rem;border:1px solid #E5DFD7;border-radius:0.5rem;margin-bottom:0.6rem;font-size:0.875rem;" />
+          <p style="color:#9B9189;font-size:0.75rem;margin:-0.2rem 0 0.6rem;">Enter the password again to download; it decrypts the files.</p>
         }
         @if (!string.IsNullOrWhiteSpace(Model.DownloadError))
         {

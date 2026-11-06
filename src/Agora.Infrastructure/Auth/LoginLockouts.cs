@@ -1,9 +1,10 @@
+using Agora.Application.Utilities;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace Agora.Infrastructure.Auth;
 
 /// <summary>
-/// Sign-in lockout per (account, client IP): after <see cref="MaxFailures"/> wrong passwords for one account from one
+/// Sign-in lockout per (account, client address; IPv6 grouped by /64): after <see cref="MaxFailures"/> wrong passwords for one account from one
 /// address within <see cref="Window"/>, that address is refused for that account for <see cref="Duration"/>, while
 /// other addresses with the correct password still sign in. State lives in process memory, so it is per instance
 /// (a single running instance is assumed) and resets on restart.
@@ -57,9 +58,7 @@ public sealed class LoginLockouts(IMemoryCache cache, TimeProvider? timeProvider
 
     public void Reset(Guid userId, string clientIp) => cache.Remove(Key(userId, clientIp));
 
-    private static string Key(Guid userId, string clientIp)
-    {
-        var ip = (clientIp ?? string.Empty).Trim().ToLowerInvariant();
-        return $"login-lockout:{userId:N}:{(ip.Length == 0 ? "unknown" : ip)}";
-    }
+    // IPv6 addresses share one bucket per /64, so rotating within a prefix does not reset the count.
+    private static string Key(Guid userId, string clientIp) =>
+        $"login-lockout:{userId:N}:{ClientAddresses.PartitionKey(clientIp)}";
 }
