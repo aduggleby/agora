@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.1] - 2026-11-06
+
+### Added
+- Files can be dropped anywhere on an upload page (home, new share, public upload link, landing page designers), not only on the dropzone; a full-page hint shows while files are dragged over the window.
+- Password-protected share pages have an Unlock step: until the password is entered, the page and its link previews show only "Password-protected share" (no file name, count, size, title, description or background).
+- `Agora__Auth__MaxConcurrentPasswordHashes` caps concurrent password hashing (default: number of processors); requests over the cap get a "server busy, try again" answer.
+
+### Changed
+- "Every time" download notifications are combined: at most one email per share every 5 minutes, summarizing the downloads since the previous email.
+- Confirming a new account's email address asks for the account password.
+- Request bodies are limited to 1 MB except on upload endpoints; requests to signed-in endpoints without a session are refused before their body is read, and requests to unknown paths answer 404 without being read. `POST /api/shares` requires the `X-CSRF-TOKEN` header (the share page now submits it with fetch).
+- Uploads: at most two at a time per account and draft (per address and draft for public upload links; extra requests get 429), each reserves only what its draft can still take, and uploads slower than 32 KiB/s after the first minute are dropped. The new-share page uploads two files at a time.
+- Per-address limits and login lockouts treat an IPv6 /64 as one client.
+- Expired or deleted direct links show a generic expired page without the file name.
+- Retrying a failed preview is possible again 30 minutes after the failure.
+- Share pages, backgrounds and direct-link views count toward the download rate limit; HEAD requests to direct links are not recorded as downloads. Signed-in users other than the owner are now counted as downloads.
+- Original files, archives, direct links and backgrounds are sent with `Cache-Control: private, no-store`.
+- The public upload sender message is limited to 2000 characters.
+
+### Fixed
+- A background image dropped on the account landing page designer is now saved, not only previewed.
+- Replacing the account background image deletes the previous image.
+- Public-upload drafts and signed-in drafts can no longer be used through each other's endpoints.
+- Accounts awaiting email confirmation lock out after repeated wrong passwords like confirmed accounts.
+
+### Security
+- Updated Microsoft.Data.SqlClient and System.Security.Cryptography.Pkcs; release images are built on a current .NET runtime.
+- `appsettings.Development.json` is no longer included in the published app.
+
 ## [Agora Capture 0.1.5] - 2026-11-04
 
 ### Changed

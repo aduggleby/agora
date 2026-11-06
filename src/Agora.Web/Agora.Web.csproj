@@ -25,7 +25,7 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <Version>0.10.0</Version>
+    <Version>0.10.1</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
@@ -38,6 +38,8 @@
          the Web SDK's **/*.json glob would otherwise publish staged upload metadata and the like. -->
     <Content Remove="storage/**;logs/**;emails/**;keys/**;Temp/**" />
     <None Remove="storage/**;logs/**;emails/**;keys/**;Temp/**" />
+    <!-- Development settings stay in the source tree; they never ship in a publish or the image. -->
+    <Content Update="appsettings.Development.json" CopyToPublishDirectory="Never" />
   </ItemGroup>
 
   <ItemGroup>
