@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.2] - 2026-11-12
+
+### Added
+- Pasting files (Ctrl/Cmd+V) anywhere on an upload page uploads them like a drop: home, new share, public upload link and the landing page designers. Clipboard images such as screenshots get a timestamped name (`pasted-YYYY-MM-DD-HHMMSS.png`). A paste into a text field that also carries text stays a normal text paste. Files copied in a file manager arrive as files where the browser supports it.
+
+### Fixed
+- The landing page designers show a hint instead of failing when a dropped or pasted file is not a .jpg, .jpeg, .png or .webp image.
+
 ## [0.10.1] - 2026-11-06
 
 ### Added
