@@ -1,4 +1,4 @@
-import { enablePageDrop } from './page-drop';
+import { backgroundImageHint, enablePageDrop, isBackgroundImage } from './page-drop';
 
 (() => {
   const form = document.getElementById('account-template-form') as HTMLFormElement | null;
@@ -121,6 +121,10 @@ import { enablePageDrop } from './page-drop';
     dropzone: uploadDropzone,
     label: 'Drop an image to use as the background',
     onFiles: (files) => {
+      if (!isBackgroundImage(files[0])) {
+        uploadStatus.textContent = backgroundImageHint;
+        return;
+      }
       // The form is saved from its inputs, so a dropped file must land in the file input, not only in the preview.
       const transfer = new DataTransfer();
       transfer.items.add(files[0]);

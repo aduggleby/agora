@@ -144,3 +144,17 @@ test('public upload page uploads pasted files, but a text paste into the message
   await expect(anonPage.locator('[data-public-upload-list] li').first()).toContainText('pasted-');
   await anon.close();
 });
+
+test('landing page designer refuses a pasted non-image with a hint', async ({ page, request }) => {
+  const user = await createE2EUser(request, 'page-paste-designer');
+  await login(page, user.email, user.password);
+  await page.goto('/account/landing-page-designer');
+
+  await page.evaluate(() => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['%PDF-1.4'], 'notes.pdf', { type: 'application/pdf' }));
+    document.body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }));
+  });
+  await expect(page.locator('[data-preview-upload-status]')).toContainText('Only .jpg, .jpeg, .png or .webp images');
+  expect(await page.locator('#account-template-form input[type="file"]').evaluate((el) => (el as HTMLInputElement).files?.length ?? 0)).toBe(0);
+});

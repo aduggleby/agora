@@ -29,10 +29,17 @@ const isTextField = (target: EventTarget | null): boolean =>
 
 const pad = (value: number): string => String(value).padStart(2, '0');
 
+/** Background images the landing page designers accept (the server enforces the same list). */
+export const isBackgroundImage = (file: File): boolean => /\.(jpe?g|png|webp)$/i.test(file.name);
+
+export const backgroundImageHint = 'Only .jpg, .jpeg, .png or .webp images can be used as the background.';
+
 /** Clipboard images arrive as "image.png" (or nameless); give them a distinct, sortable name. */
 export const namePastedFile = (file: File, now: Date = new Date()): File => {
   if (file.name && !/^image\.[a-z0-9]+$/i.test(file.name)) return file;
-  const extension = (file.name.split('.').pop() || file.type.split('/')[1] || 'png').toLowerCase().replace('jpeg', 'jpg');
+  // Nameless files take the MIME subtype without suffix or "x-" prefix: "image/svg+xml" -> "svg", "image/x-icon" -> "icon".
+  const fromType = (file.type.split('/')[1] ?? '').split('+')[0].replace(/^x-/, '');
+  const extension = ((file.name ? file.name.split('.').pop() : '') || fromType || 'png').toLowerCase().replace('jpeg', 'jpg');
   const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
   return new File([file], `pasted-${stamp}.${extension}`, { type: file.type, lastModified: file.lastModified });
 };

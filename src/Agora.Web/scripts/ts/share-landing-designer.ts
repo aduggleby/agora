@@ -1,4 +1,4 @@
-import { enablePageDrop } from './page-drop';
+import { backgroundImageHint, enablePageDrop, isBackgroundImage } from './page-drop';
 
 (() => {
   const form = document.getElementById('share-template-form') as HTMLFormElement | null;
@@ -149,7 +149,13 @@ import { enablePageDrop } from './page-drop';
   enablePageDrop({
     dropzone: uploadDropzone,
     label: 'Drop an image to use as the background',
-    onFiles: (files) => stageBackground(files[0]),
+    onFiles: (files) => {
+      if (!isBackgroundImage(files[0])) {
+        setStatus(backgroundImageHint, true);
+        return;
+      }
+      stageBackground(files[0]);
+    },
   });
 
   refreshColorMode();

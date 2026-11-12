@@ -5,9 +5,12 @@
   var carriesFiles = (event) => Array.from(event.dataTransfer?.types ?? []).includes("Files");
   var isTextField = (target) => target instanceof HTMLElement && (target.isContentEditable || target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement && !["button", "checkbox", "color", "file", "radio", "range", "reset", "submit"].includes(target.type));
   var pad = (value) => String(value).padStart(2, "0");
+  var isBackgroundImage = (file) => /\.(jpe?g|png|webp)$/i.test(file.name);
+  var backgroundImageHint = "Only .jpg, .jpeg, .png or .webp images can be used as the background.";
   var namePastedFile = (file, now = /* @__PURE__ */ new Date()) => {
     if (file.name && !/^image\.[a-z0-9]+$/i.test(file.name)) return file;
-    const extension = (file.name.split(".").pop() || file.type.split("/")[1] || "png").toLowerCase().replace("jpeg", "jpg");
+    const fromType = (file.type.split("/")[1] ?? "").split("+")[0].replace(/^x-/, "");
+    const extension = ((file.name ? file.name.split(".").pop() : "") || fromType || "png").toLowerCase().replace("jpeg", "jpg");
     const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
     return new File([file], `pasted-${stamp}.${extension}`, { type: file.type, lastModified: file.lastModified });
   };
@@ -185,7 +188,13 @@
     enablePageDrop({
       dropzone: uploadDropzone,
       label: "Drop an image to use as the background",
-      onFiles: (files) => stageBackground(files[0])
+      onFiles: (files) => {
+        if (!isBackgroundImage(files[0])) {
+          setStatus(backgroundImageHint, true);
+          return;
+        }
+        stageBackground(files[0]);
+      }
     });
     refreshColorMode();
     if (initialBackgroundUrl || backgroundUploadIdInput.value) {
