@@ -115,6 +115,14 @@
   // scripts/ts/page-drop.ts
   var highlightClasses = ["ring-2", "ring-terra/40"];
   var carriesFiles = (event) => Array.from(event.dataTransfer?.types ?? []).includes("Files");
+  var isTextField = (target) => target instanceof HTMLElement && (target.isContentEditable || target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement && !["button", "checkbox", "color", "file", "radio", "range", "reset", "submit"].includes(target.type));
+  var pad = (value) => String(value).padStart(2, "0");
+  var namePastedFile = (file, now = /* @__PURE__ */ new Date()) => {
+    if (file.name && !/^image\.[a-z0-9]+$/i.test(file.name)) return file;
+    const extension = (file.name.split(".").pop() || file.type.split("/")[1] || "png").toLowerCase().replace("jpeg", "jpg");
+    const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    return new File([file], `pasted-${stamp}.${extension}`, { type: file.type, lastModified: file.lastModified });
+  };
   var createOverlay = (label) => {
     const overlay = document.createElement("div");
     overlay.setAttribute("aria-hidden", "true");
@@ -168,6 +176,14 @@
       if (files.length > 0 && isEnabled()) onFiles(files);
     });
     window.addEventListener("dragend", reset);
+    document.addEventListener("paste", (event) => {
+      const clipboard = event.clipboardData;
+      const files = Array.from(clipboard?.files ?? []);
+      if (files.length === 0) return;
+      if (isTextField(event.target) && (clipboard?.types ?? []).includes("text/plain")) return;
+      event.preventDefault();
+      if (isEnabled()) onFiles(files.map((file) => namePastedFile(file)));
+    });
   }
 
   // scripts/ts/shares-new.ts
@@ -297,17 +313,17 @@
       }
     };
     const toLocalDateTimeValue = (date) => {
-      const pad = (n) => String(n).padStart(2, "0");
+      const pad2 = (n) => String(n).padStart(2, "0");
       return [
         date.getFullYear(),
         "-",
-        pad(date.getMonth() + 1),
+        pad2(date.getMonth() + 1),
         "-",
-        pad(date.getDate()),
+        pad2(date.getDate()),
         "T",
-        pad(date.getHours()),
+        pad2(date.getHours()),
         ":",
-        pad(date.getMinutes())
+        pad2(date.getMinutes())
       ].join("");
     };
     const formatBytes = (bytes) => {

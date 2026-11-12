@@ -3,6 +3,9 @@
  * dropzone and shows a full-page hint, and dropping them anywhere hands them to the same handler the dropzone
  * uses. Drags that carry no files (text, links) are left to the browser. Files dropped while the page cannot take
  * them are swallowed so the browser never navigates away to open them.
+ *
+ * Pasting files (Ctrl/Cmd+V) anywhere on the page hands them to the same handler, for example a screenshot copied
+ * to the clipboard. A paste into a text field that also carries text stays a normal text paste.
  */
 export type PageDropOptions = {
   /** The visible dropzone, highlighted while files are dragged over the page. */
@@ -18,6 +21,21 @@ export type PageDropOptions = {
 const highlightClasses = ['ring-2', 'ring-terra/40'];
 
 const carriesFiles = (event: DragEvent): boolean => Array.from(event.dataTransfer?.types ?? []).includes('Files');
+
+const isTextField = (target: EventTarget | null): boolean =>
+  target instanceof HTMLElement &&
+  (target.isContentEditable || target instanceof HTMLTextAreaElement ||
+    (target instanceof HTMLInputElement && !['button', 'checkbox', 'color', 'file', 'radio', 'range', 'reset', 'submit'].includes(target.type)));
+
+const pad = (value: number): string => String(value).padStart(2, '0');
+
+/** Clipboard images arrive as "image.png" (or nameless); give them a distinct, sortable name. */
+export const namePastedFile = (file: File, now: Date = new Date()): File => {
+  if (file.name && !/^image\.[a-z0-9]+$/i.test(file.name)) return file;
+  const extension = (file.name.split('.').pop() || file.type.split('/')[1] || 'png').toLowerCase().replace('jpeg', 'jpg');
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return new File([file], `pasted-${stamp}.${extension}`, { type: file.type, lastModified: file.lastModified });
+};
 
 const createOverlay = (label: string): HTMLDivElement => {
   const overlay = document.createElement('div');
@@ -85,4 +103,14 @@ export function enablePageDrop(options: PageDropOptions): void {
   });
 
   window.addEventListener('dragend', reset);
+
+  document.addEventListener('paste', (event) => {
+    const clipboard = event.clipboardData;
+    const files = Array.from(clipboard?.files ?? []);
+    if (files.length === 0) return;
+    // Office apps put a picture of the copied text next to the text: in a text field, the text wins.
+    if (isTextField(event.target) && (clipboard?.types ?? []).includes('text/plain')) return;
+    event.preventDefault();
+    if (isEnabled()) onFiles(files.map((file) => namePastedFile(file)));
+  });
 }

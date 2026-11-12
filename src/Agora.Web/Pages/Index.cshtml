@@ -19,7 +19,7 @@
   <input type="file" multiple accept="*/*" class="sr-only" data-quick-share-input />
   <div class="mt-6 rounded-lg border border-dashed border-border bg-cream p-4 cursor-pointer" data-quick-share-dropzone data-max-files-per-share="@Model.MaxFilesPerShare" data-max-file-size-bytes="@Model.MaxFileSizeBytes" data-max-total-upload-bytes="@Model.MaxTotalUploadBytes" tabindex="0" role="button">
     <div class="flex items-center justify-between gap-3">
-      <p class="text-sm text-ink-light">Drop files here or click to select — max @Model.MaxFilesPerShare files, @FormatFileSize(Model.MaxFileSizeBytes) per file, @FormatFileSize(Model.MaxTotalUploadBytes) total</p>
+      <p class="text-sm text-ink-light">Drop, paste or click to select files — max @Model.MaxFilesPerShare files, @FormatFileSize(Model.MaxFileSizeBytes) per file, @FormatFileSize(Model.MaxTotalUploadBytes) total</p>
       <div class="flex items-center gap-2">
         <button type="button" class="hidden px-3 py-1.5 border border-border bg-cream-dark/70 text-ink text-xs font-medium rounded-md hover:bg-cream-dark transition-colors disabled:opacity-60 disabled:cursor-not-allowed" data-quick-share-cancel disabled title="No upload is currently running.">Cancel upload</button>
         <button type="button" class="px-3 py-1.5 bg-terra text-white text-xs font-medium rounded-md hover:bg-terra/90 transition-colors" data-quick-share-pick>Choose files</button>

@@ -24,7 +24,7 @@
         <div class="rounded-lg border border-dashed border-border bg-cream p-5" data-dropzone>
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p class="text-sm text-ink-light">Select files and they upload immediately in the background.</p>
+              <p class="text-sm text-ink-light">Select, drop or paste files and they upload immediately in the background.</p>
               <p class="text-xs text-ink-muted mt-1">You can keep filling in form details while upload progresses. Max @Model.MaxFilesPerShare files, @FormatFileSize(Model.MaxFileSizeBytes) per file, @FormatFileSize(Model.MaxTotalUploadBytes) total.</p>
             </div>
             <button type="button" class="@(Model.StagedUploads.Count > 0 ? "px-4 py-2 bg-cream text-ink text-sm font-medium rounded-lg border border-border hover:bg-cream-dark/70 transition-colors" : "px-4 py-2 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors")" data-pick-files>@(Model.StagedUploads.Count > 0 ? "Add more files" : "Select files")</button>
