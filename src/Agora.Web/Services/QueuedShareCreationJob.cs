@@ -83,6 +83,9 @@ public sealed class QueuedShareCreationJob(
             return;
         }
 
+        // Set as soon as the share row is committed. From then on a re-run would collide with its own token and mint a
+        // second share, so a shutdown must finish the job instead of requeueing it.
+        var shareCreated = false;
         try
         {
             var validateActive = statusStore.UpdateStep(token, "validate", "active", "Validating queued request...");
@@ -185,6 +188,7 @@ public sealed class QueuedShareCreationJob(
                 templateMode,
                 performContext,
                 ct);
+            shareCreated = true;
 
             await manager.RenewProcessingLeaseAsync(ownerUserId, payload.DraftShareId, ct);
             var createDone = statusStore.UpdateStep(token, "create_share", "completed");
@@ -255,6 +259,23 @@ public sealed class QueuedShareCreationJob(
                 LogSafe.Token(payload.ShareToken),
                 result.ShareId,
                 payload.UploaderEmail);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested && shareCreated)
+        {
+            // Shutdown after the share was committed: finish best-effort without the stop token instead of requeueing.
+            // The ready-link email may be skipped; the owner still sees the ready share and the draft scratch goes.
+            logger.LogWarning("Shutdown interrupted queued share creation for share {TokenRef} after it was created; completing it", LogSafe.Token(token));
+            performContext?.WriteLine("Interrupted by server shutdown after the share was created; completing.");
+            await CleanupDraftScratchAsync(ownerUserId, payload, CancellationToken.None);
+            var completed = statusStore.MarkCompleted(token);
+            try
+            {
+                await broadcaster.BroadcastAsync(completed, CancellationToken.None);
+            }
+            catch (Exception broadcastEx)
+            {
+                logger.LogWarning(broadcastEx, "Unable to broadcast completion for share {TokenRef}", LogSafe.Token(token));
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

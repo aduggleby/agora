@@ -1,6 +1,8 @@
 using Agora.Application.Abstractions;
 using Agora.Application.Models;
 using Agora.Application.Utilities;
+using Agora.Domain.Entities;
+using Agora.Infrastructure.Auth;
 using Agora.Infrastructure.Persistence;
 using Agora.Infrastructure.Services;
 using Agora.Infrastructure.Storage;
@@ -29,10 +31,13 @@ public sealed class QueuedShareCreationJobShutdownTests
     public async Task Shutdown_cancellation_is_rethrown_and_does_not_mark_the_creation_failed()
     {
         using var cts = new CancellationTokenSource();
-        await using var fixture = await Fixture.CreateAsync(onSecondBroadcast: () =>
+        await using var fixture = await Fixture.CreateAsync(onBroadcast: n =>
         {
-            cts.Cancel();
-            throw new OperationCanceledException(cts.Token);
+            if (n == 2)
+            {
+                cts.Cancel();
+                throw new OperationCanceledException(cts.Token);
+            }
         });
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => fixture.Job.ProcessAsync(Fixture.Payload(), cts.Token));
@@ -43,9 +48,45 @@ public sealed class QueuedShareCreationJobShutdownTests
     }
 
     [Fact]
+    public async Task Shutdown_after_the_share_was_created_completes_instead_of_requeueing()
+    {
+        using var cts = new CancellationTokenSource();
+        await using var fixture = await Fixture.CreateAsync(onBroadcast: n =>
+        {
+            // Broadcast 5 reports "create_share" completed, right after the share row is committed.
+            if (n == 5)
+            {
+                cts.Cancel();
+                throw new OperationCanceledException(cts.Token);
+            }
+        });
+        fixture.Db.Users.Add(new UserAccount
+        {
+            Id = fixture.OwnerId,
+            Email = "owner@example.com",
+            EmailConfirmed = true,
+            PasswordHash = "x:y",
+            SecurityStamp = SecurityStamps.New(),
+            UploadToken = "uploadtk",
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        await fixture.Db.SaveChangesAsync();
+        var draftId = await fixture.Manager.EnsureDraftShareAsync(fixture.OwnerId, null, CancellationToken.None);
+        using var content = new MemoryStream([1, 2, 3]);
+        var staged = await fixture.Manager.StageUploadAsync(fixture.OwnerId, draftId, "f.bin", content.Length, content, CancellationToken.None);
+        await fixture.Manager.SealDraftAsync(fixture.OwnerId, draftId, CancellationToken.None);
+
+        await fixture.Job.ProcessAsync(Fixture.Payload(fixture.OwnerId, draftId, staged.UploadId), cts.Token);
+
+        Assert.Equal("completed", fixture.Status.Read(ShareToken)!.State);
+        Assert.Single(await fixture.Db.Shares.ToListAsync());
+        Assert.False(Directory.Exists(staged.DirectoryPath));
+    }
+
+    [Fact]
     public async Task Other_errors_still_mark_the_creation_failed()
     {
-        await using var fixture = await Fixture.CreateAsync(onSecondBroadcast: () => throw new InvalidOperationException("boom"));
+        await using var fixture = await Fixture.CreateAsync(onBroadcast: n => { if (n == 2) { throw new InvalidOperationException("boom"); } });
 
         // The first broadcast is outside the try block, so the failure is raised from the second one.
         await fixture.Job.ProcessAsync(Fixture.Payload(), CancellationToken.None);
@@ -60,21 +101,26 @@ public sealed class QueuedShareCreationJobShutdownTests
 
         public QueuedShareCreationJob Job { get; }
         public ShareCreationStatusStore Status { get; }
+        public ShareManager Manager { get; }
+        public Guid OwnerId { get; } = Guid.NewGuid();
+        public AgoraDbContext Db { get; }
 
-        private Fixture(SqliteConnection connection, string root, QueuedShareCreationJob job, ShareCreationStatusStore status)
+        private Fixture(SqliteConnection connection, string root, QueuedShareCreationJob job, ShareCreationStatusStore status, ShareManager manager, AgoraDbContext db)
         {
+            Manager = manager;
+            Db = db;
             _connection = connection;
             _root = root;
             Job = job;
             Status = status;
         }
 
-        public static QueuedShareCreationJob.Payload Payload() => new(
-            "owner@example.com", Guid.NewGuid().ToString("N"), ShareToken, null, null, null, null, null, false, null,
+        public static QueuedShareCreationJob.Payload Payload(Guid? ownerId = null, string? draftId = null, string? uploadId = null) => new(
+            "owner@example.com", draftId ?? Guid.NewGuid().ToString("N"), ShareToken, null, null, null, null, null, false, null,
             "none", "date", DateTime.UtcNow.AddDays(1), "account_default", null, null, null, null, null, null,
-            [Guid.NewGuid().ToString("N")], Guid.NewGuid());
+            [uploadId ?? Guid.NewGuid().ToString("N")], ownerId ?? Guid.NewGuid());
 
-        public static async Task<Fixture> CreateAsync(Action onSecondBroadcast)
+        public static async Task<Fixture> CreateAsync(Action<int> onBroadcast)
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
@@ -97,11 +143,11 @@ public sealed class QueuedShareCreationJobShutdownTests
                 NullLogger<ShareManager>.Instance);
 
             var status = new ShareCreationStatusStore(options);
-            var broadcaster = new ShareProgressBroadcaster(new FakeHub(onSecondBroadcast));
+            var broadcaster = new ShareProgressBroadcaster(new FakeHub(onBroadcast));
             var job = new QueuedShareCreationJob(
                 manager, db, jobs, new NoopEmailSender(), status, broadcaster, new FixedOrigin(),
                 options, Options.Create(new EmailSenderOptions()), NullLogger<QueuedShareCreationJob>.Instance);
-            return new Fixture(connection, root, job, status);
+            return new Fixture(connection, root, job, status, manager, db);
         }
 
         public async ValueTask DisposeAsync()
@@ -131,14 +177,14 @@ public sealed class QueuedShareCreationJobShutdownTests
         public string? ConfiguredOrigin => "https://files.example.com";
     }
 
-    // Runs the callback on the second broadcast (the first, "processing", happens outside the job's try block).
-    private sealed class FakeHub(Action onSecondBroadcast) : IHubContext<ShareProgressHub>
+    // Reports each broadcast by number (the first, "processing", happens outside the job's try block).
+    private sealed class FakeHub(Action<int> onBroadcast) : IHubContext<ShareProgressHub>
     {
-        public IHubClients Clients { get; } = new FakeClients(onSecondBroadcast);
+        public IHubClients Clients { get; } = new FakeClients(onBroadcast);
         public IGroupManager Groups => throw new NotSupportedException();
     }
 
-    private sealed class FakeClients(Action onSecondBroadcast) : IHubClients, IClientProxy
+    private sealed class FakeClients(Action<int> onBroadcast) : IHubClients, IClientProxy
     {
         private int _calls;
 
@@ -146,10 +192,7 @@ public sealed class QueuedShareCreationJobShutdownTests
 
         public Task SendCoreAsync(string method, object?[] args, CancellationToken cancellationToken = default)
         {
-            if (Interlocked.Increment(ref _calls) == 2)
-            {
-                onSecondBroadcast();
-            }
+            onBroadcast(Interlocked.Increment(ref _calls));
 
             return Task.CompletedTask;
         }
