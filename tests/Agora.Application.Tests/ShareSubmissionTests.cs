@@ -38,16 +38,30 @@ public sealed class ShareSubmissionTests
     }
 
     [Fact]
-    public async Task A_409_after_this_request_inserted_the_claim_still_keeps_it()
+    public async Task A_409_for_the_same_link_keeps_the_claim()
     {
         await using var f = await Fixture.CreateAsync();
         var draft = await f.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
-        await f.Manager.SealDraftAsync(OwnerId, draft, CancellationToken.None);
+        await f.Manager.SealDraftAsync(OwnerId, draft, CancellationToken.None, Token);
 
         var result = await ShareSubmission.ClaimAndSealAsync(f.Manager, Token, OwnerId, draft, () => Task.CompletedTask, CancellationToken.None);
 
         Assert.False(result.Sealed);
         Assert.Single(await f.Db.ShareTokenReservations.ToListAsync());
+    }
+
+    [Fact]
+    public async Task A_409_for_a_different_link_releases_the_claim_this_request_made()
+    {
+        await using var f = await Fixture.CreateAsync();
+        var draft = await f.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
+        await f.Manager.ReserveShareTokenAsync("sealing_link", OwnerId, draft, CancellationToken.None);
+        await f.Manager.SealDraftAsync(OwnerId, draft, CancellationToken.None, "sealing_link");
+
+        var result = await ShareSubmission.ClaimAndSealAsync(f.Manager, Token, OwnerId, draft, () => Task.CompletedTask, CancellationToken.None);
+
+        Assert.False(result.Sealed);
+        Assert.Equal("sealing_link", Assert.Single(await f.Db.ShareTokenReservations.ToListAsync()).Token);
     }
 
     [Fact]

@@ -1896,7 +1896,7 @@ public sealed partial class ShareManager(
     /// Marks the draft as submitted: nothing can be staged into it afterwards and a second submission is refused.
     /// Returns false when it was already sealed.
     /// </summary>
-    public async Task<bool> SealDraftAsync(Guid ownerUserId, string draftShareId, CancellationToken cancellationToken)
+    public async Task<bool> SealDraftAsync(Guid ownerUserId, string draftShareId, CancellationToken cancellationToken, string? submittedShareToken = null)
     {
         if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId))
         {
@@ -1920,8 +1920,32 @@ public sealed partial class ShareManager(
             // queued job renews it at every stage.
             var sealedAt = DateTime.UtcNow;
             await WriteDraftMetadataAsync(metadata with { LastActivityUtc = sealedAt, ProcessingLeaseUtc = sealedAt }, cancellationToken);
-            await File.WriteAllTextAsync(GetDraftSealPath(normalizedId), DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture), cancellationToken);
+            // Line 1: when it was sealed. Line 2 (optional): the share link the sealing submission asked for.
+            var sealText = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture) + (submittedShareToken is null ? string.Empty : "\n" + submittedShareToken);
+            await File.WriteAllTextAsync(GetDraftSealPath(normalizedId), sealText, cancellationToken);
             return true;
+        }
+    }
+
+    /// <summary>The share link the submission that sealed the draft asked for, or null when unknown.</summary>
+    public async Task<string?> ReadDraftSealedShareTokenAsync(string draftShareId, CancellationToken cancellationToken)
+    {
+        if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId))
+        {
+            return null;
+        }
+
+        using (await draftLocks.LockAsync(DraftLockKey(normalizedId), cancellationToken))
+        {
+            try
+            {
+                var lines = await File.ReadAllLinesAsync(GetDraftSealPath(normalizedId), cancellationToken);
+                return lines.Length > 1 && lines[1].Length > 0 ? lines[1] : null;
+            }
+            catch (IOException)
+            {
+                return null;
+            }
         }
     }
 
@@ -1930,9 +1954,9 @@ public sealed partial class ShareManager(
     /// already submitted. If enqueueing throws the seal is removed again so the sender can retry, and the failure is
     /// reported as a retryable 503.
     /// </summary>
-    public async Task<bool> SealDraftForSubmissionAsync(Guid ownerUserId, string draftShareId, Func<Task> enqueue, CancellationToken cancellationToken)
+    public async Task<bool> SealDraftForSubmissionAsync(Guid ownerUserId, string draftShareId, Func<Task> enqueue, CancellationToken cancellationToken, string? submittedShareToken = null)
     {
-        if (!await SealDraftAsync(ownerUserId, draftShareId, cancellationToken))
+        if (!await SealDraftAsync(ownerUserId, draftShareId, cancellationToken, submittedShareToken))
         {
             return false;
         }

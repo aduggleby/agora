@@ -1,3 +1,4 @@
+using Agora.Application.Models;
 using Agora.Application.Utilities;
 using Agora.Infrastructure.Services;
 
@@ -26,12 +27,24 @@ public static class ShareSubmission
     /// <summary>
     /// Claims the link, then seals the draft and enqueues the job. Returns null when queued, or the refusal text when
     /// the link is taken. The draft already being sealed returns false (409): a queued job of a concurrent submission
-    /// holds the claim, so it stays. A claim this call made is released when the seal or enqueue throws (503).
+    /// holds the claim when it asked for the same link, so it stays; a claim this call made for a different link is
+    /// released. A claim this call made is also released when the seal or enqueue throws (503).
     /// </summary>
     public static async Task<(bool Refused, string? Text, bool Sealed)> ClaimAndSealAsync(
         ShareManager manager, string token, Guid ownerUserId, string draftShareId, Func<Task> enqueue, CancellationToken ct)
     {
-        var claim = await manager.ReserveShareTokenAsync(token, ownerUserId, draftShareId, ct);
+        ShareManager.TokenReservationOutcome claim;
+        try
+        {
+            claim = await manager.ReserveShareTokenAsync(token, ownerUserId, draftShareId, ct);
+        }
+        catch (InvalidOperationException)
+        {
+            // The claim could not be taken or confirmed (nothing detailed is kept: provider errors quote the link).
+            throw new UploadLimitException(
+                UploadLimitKind.QueueUnavailable,
+                "The upload could not be queued for processing right now. Please try again in a moment.");
+        }
         if (claim == ShareManager.TokenReservationOutcome.Taken)
         {
             return (true, await manager.CheckRequestedShareTokenAsync(token, ct) ?? "That share link is already in use. Choose another.", false);
@@ -40,8 +53,18 @@ public static class ShareSubmission
         var sealReturned = false;
         try
         {
-            var sealedNow = await manager.SealDraftForSubmissionAsync(ownerUserId, draftShareId, enqueue, ct);
+            var sealedNow = await manager.SealDraftForSubmissionAsync(ownerUserId, draftShareId, enqueue, ct, token);
             sealReturned = true;
+            if (!sealedNow && claim == ShareManager.TokenReservationOutcome.Reserved)
+            {
+                // The queued job uses the sealing submission's link; a claim for another link would only block it.
+                var sealingToken = await manager.ReadDraftSealedShareTokenAsync(draftShareId, ct);
+                if (sealingToken is not null && !string.Equals(sealingToken, token, StringComparison.Ordinal))
+                {
+                    await manager.ReleaseShareTokenReservationAsync(token, ownerUserId, draftShareId, CancellationToken.None);
+                }
+            }
+
             return (false, null, sealedNow);
         }
         finally
