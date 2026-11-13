@@ -32,12 +32,13 @@ public static partial class TokenRedaction
     [GeneratedRegex(@"(?<key>""(?:code|code_verifier|access_token)""\s*:\s*"")(?!tok:)(?<value>[^""]+)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex JsonSecrets();
 
-    // token=, uploadToken=, shareToken=, t=, code=, code_verifier=, access_token= (any case) followed by the value, up
+    // token=, uploadToken=, shareToken=, t=, gate=, code=, code_verifier=, access_token= (any case) followed by the value, up
     // to the next separator.
-    [GeneratedRegex(@"(?<key>\b(?:token|uploadToken|shareToken|t|code|code_verifier|access_token))=(?!tok:)(?<value>[^&\s""'<>]+)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(?<key>\b(?:token|uploadToken|shareToken|t|gate|code|code_verifier|access_token))=(?!tok:)(?<value>[^&\s""'<>]+)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex QueryTokens();
 
-    // /s/{token}, /u/{token}, /shares/created/{token} path segments.
-    [GeneratedRegex(@"(?<prefix>/(?:s|u|shares/created)/)(?!tok:)(?<value>[^/?#&\s""'<>]+)", RegexOptions.CultureInvariant)]
+    // /s/{token}, /u/{token}, /shares/created/{token}, /api/shares/{token}[/status] and /api/v1/shares/{token} path
+    // segments (any case). The literal /api/shares/direct-link route is not a token.
+    [GeneratedRegex(@"(?<prefix>/(?:s|u|shares/created|api/shares|api/v1/shares)/)(?!tok:)(?!direct-link(?:[/?#&\s""'<>]|$))(?<value>[^/?#&\s""'<>]+)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PathTokens();
 }

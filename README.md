@@ -464,10 +464,11 @@ downloader's public IP address is sent to the third-party service `https://ipwho
 notification emails; set it to `false` to keep downloader addresses in-house.
 
 Share, upload and confirmation tokens never appear in Agora's own log lines (they are referenced by a short hash), and
-a Serilog enricher rewrites `/s/{token}`, `/u/{token}`, `/shares/created/{token}` and `token=` values in every string
+a Serilog enricher rewrites `/s/{token}`, `/u/{token}`, `/shares/created/{token}`, `/api/shares/{token}`, `/api/v1/shares/{token}` and `token=`/`gate=` values in every string
 property of a log event (request paths, redirect targets) to that reference. The framework's per-request "Request
 starting/finished" lines would print full URLs including such tokens, so they are off by default
-(`Serilog__MinimumLevel__Override__Microsoft.AspNetCore.Hosting.Diagnostics=Warning` in `appsettings.json`); re-enable
+(`Serilog__MinimumLevel__Override__Microsoft.AspNetCore.Hosting.Diagnostics=Warning` in `appsettings.json`, as are the
+routing and EF Core command logs); re-enable
 them only with a sink you treat as sensitive. Passwords, the email API token, S3 keys and the connection string are
 not written to the log.
 

@@ -13,6 +13,13 @@ public sealed class TokenRedactionTests
     [InlineData("/s/Ab12cd34/download", "/s/")]
     [InlineData("/u/Ab12cd34Ef", "/u/")]
     [InlineData("/shares/created/Ab12cd34", "/shares/created/")]
+    [InlineData("/S/Ab12cd34", "/S/")]
+    [InlineData("/U/Ab12cd34Ef", "/U/")]
+    [InlineData("/api/shares/Ab12cd34", "/api/shares/")]
+    [InlineData("/api/shares/Ab12cd34/status", "/api/shares/")]
+    [InlineData("/API/Shares/Ab12cd34/status", "/API/Shares/")]
+    [InlineData("/api/v1/shares/Ab12cd34", "/api/v1/shares/")]
+    [InlineData("/confirm-email-required?email=a%40b.c&gate=Ab12cd34", "gate=")]
     [InlineData("?token=Ab12cd34&x=1", "token=")]
     [InlineData("/auth/confirm-email?email=a%40b.c&token=Zz9-yy_8", "token=")]
     [InlineData("https://files.example.com/reset-password?email=a&t=abcdefgh", "t=")]
@@ -60,6 +67,9 @@ public sealed class TokenRedactionTests
     [InlineData("/account/settings?msg=Template%20saved")]
     [InlineData("limit=5&count=2")]
     [InlineData("/api/shares")]
+    [InlineData("/api/shares/direct-link")]
+    [InlineData("/api/shares/direct-link?x=1")]
+    [InlineData("/api/shares/tok:abc")]
     [InlineData("")]
     public void Redact_LeavesOtherTextAlone(string input)
     {
