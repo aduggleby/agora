@@ -1133,7 +1133,8 @@ app.MapPost("/api/public-uploads/create-share", async (
 
     try
     {
-        draftShareId = await manager.EnsurePublicUploadDraftAsync(user.Id, draftShareId, user.UploadToken, ClientAddress(context), ct);
+        // Lookup only: submitting never opens a draft (and never counts against the open-draft caps).
+        draftShareId = await manager.FindPublicUploadDraftAsync(user.Id, draftShareId, ct);
     }
     catch (InvalidOperationException ex)
     {

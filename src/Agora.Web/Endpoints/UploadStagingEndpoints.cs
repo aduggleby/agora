@@ -113,7 +113,7 @@ public static class UploadStagingEndpoints
                 return UploadConcurrency.TooManyJson();
             }
 
-            bodyCap = ReserveRequestBuffer(context, scratchSpace, await BudgetedAllowanceAsync(manager, draftShareId, ShareFileAllowance(manager, cfg, draftShareId), ct));
+            bodyCap = await ReserveBudgetedAsync(context, scratchSpace, manager, draftShareId, ShareFileAllowance(manager, cfg, draftShareId), ct);
         }
         catch (InvalidOperationException ex)
         {
@@ -164,7 +164,7 @@ public static class UploadStagingEndpoints
 
             // A background is not counted against the share's file total, only against the per-file limit and the
             // account's staged-bytes budget.
-            bodyCap = ReserveRequestBuffer(context, scratchSpace, await BudgetedAllowanceAsync(manager, draftShareId, cfg.MaxFileSizeBytes, ct));
+            bodyCap = await ReserveBudgetedAsync(context, scratchSpace, manager, draftShareId, cfg.MaxFileSizeBytes, ct);
         }
         catch (InvalidOperationException ex)
         {
@@ -241,17 +241,19 @@ public static class UploadStagingEndpoints
         long bodyCap;
         try
         {
-            // Scratch is checked first, so a 507 normally leaves no empty draft behind; a new draft then counts
-            // against the open-draft caps of this upload code and of the client address. The reservation itself is
-            // sized from the draft's remaining allowance, which is only read once the draft is known to be ours.
+            // Scratch and the link's budget (413 or 507) are checked first, so a refusal leaves no empty draft behind; a
+            // new draft then counts against the open-draft caps of this upload code and of the client address. The
+            // reservation itself is sized from the draft's remaining allowance, which is only read once the draft is
+            // known to be ours.
             scratchSpace.EnsureCanAdmit(RequestBufferDemand(context, cfg.MaxFileSizeBytes));
+            manager.GetPublicStageBudget(user.Id);
             draftShareId = await manager.EnsurePublicUploadDraftAsync(user.Id, draftShareId, user.UploadToken, ClientAddress(context), ct);
             if (!concurrency.TryAdmit(context, UploadConcurrency.DraftKey(draftShareId)))
             {
                 return UploadConcurrency.TooManyJson();
             }
 
-            bodyCap = ReserveRequestBuffer(context, scratchSpace, await BudgetedAllowanceAsync(manager, draftShareId, ShareFileAllowance(manager, cfg, draftShareId), ct));
+            bodyCap = await ReserveBudgetedAsync(context, scratchSpace, manager, draftShareId, ShareFileAllowance(manager, cfg, draftShareId), ct);
         }
         catch (InvalidOperationException ex)
         {
@@ -281,11 +283,23 @@ public static class UploadStagingEndpoints
     }
 
     /// <summary>
-    /// The allowance cut down to what the account's (or the upload link's) staging budget still admits; throws 413 or
-    /// 507 when nothing is left, before any body is buffered.
+    /// <see cref="ReserveRequestBuffer"/> with the allowance cut down to what the account's (or the upload link's)
+    /// staging budget still admits. Throws 413 or 507 when nothing is left, before any body is buffered; a body that
+    /// only exceeds the budget is refused with the budget's own status (507 for the server-wide anonymous cap).
     /// </summary>
-    private static async Task<long> BudgetedAllowanceAsync(ShareManager manager, string draftShareId, long allowanceBytes, CancellationToken ct) =>
-        Math.Min(allowanceBytes, await manager.GetStageBudgetRemainingAsync(draftShareId, ct));
+    private static async Task<long> ReserveBudgetedAsync(
+        HttpContext context, ScratchSpaceMonitor scratchSpace, ShareManager manager, string draftShareId, long allowanceBytes, CancellationToken ct)
+    {
+        var budget = await manager.GetStageBudgetAsync(draftShareId, ct);
+        try
+        {
+            return ReserveRequestBuffer(context, scratchSpace, Math.Min(allowanceBytes, budget.Remaining));
+        }
+        catch (UploadLimitException ex) when (budget.Refusal is not null && budget.Remaining < allowanceBytes && ex.Kind == UploadLimitKind.TooManyBytes)
+        {
+            throw budget.Refusal;
+        }
+    }
 
     /// <summary>
     /// Holds scratch for the multipart buffer ASP.NET writes under tmp/aspnet until the request (and with it the

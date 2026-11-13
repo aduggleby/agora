@@ -1527,18 +1527,17 @@ public sealed partial class ShareManager(
         }
 
         var limits = _options.PublicUploads;
-        var linkRemaining = long.MaxValue;
-        if (limits.MaxOpenDraftBytesPerToken > 0)
-        {
-            linkRemaining = Math.Max(0, limits.MaxOpenDraftBytesPerToken - SumStagedIndex(kind, ownerUserId));
-        }
-
-        var globalRemaining = long.MaxValue;
         var budget = scratchSpace.ScratchBudgetBytes;
-        if (limits.MaxOpenDraftScratchFraction > 0 && budget > 0)
+        var linkCapped = limits.MaxOpenDraftBytesPerToken > 0;
+        var globalCapped = limits.MaxOpenDraftScratchFraction > 0 && budget > 0;
+        var (linkUsed, globalUsed) = linkCapped || globalCapped ? SumPublicStagedIndex(ownerUserId) : (0L, 0L);
+
+        var linkRemaining = linkCapped ? Math.Max(0, limits.MaxOpenDraftBytesPerToken - linkUsed) : long.MaxValue;
+        var globalRemaining = long.MaxValue;
+        if (globalCapped)
         {
             var globalCap = (long)(Math.Min(1.0, limits.MaxOpenDraftScratchFraction) * budget);
-            globalRemaining = Math.Max(0, globalCap - SumStagedIndex(kind, null));
+            globalRemaining = Math.Max(0, globalCap - globalUsed);
         }
 
         // The global cap is a server-wide condition (507); the per-link cap is about this link's own uploads (413).
@@ -1552,42 +1551,70 @@ public sealed partial class ShareManager(
     }
 
     /// <summary>
-    /// Bytes still staged in one index (<paramref name="ownerUserId"/>, or every owner when null). Markers whose
-    /// staging directory is gone are dropped; for the anonymous index, submitted (sealed) drafts are not counted.
-    /// Cost is one small file read and one directory check per staged upload.
+    /// Bytes still staged by one account. Markers whose staging directory is gone are dropped. Cost is one small
+    /// file read and one directory check per staged upload of that account.
     /// </summary>
-    private long SumStagedIndex(StageBudgetKind kind, Guid? ownerUserId)
+    private long SumStagedIndex(StageBudgetKind kind, Guid ownerUserId)
     {
-        var root = GetStagedIndexRoot(kind);
-        var directories = ownerUserId is { } id
-            ? [Path.Combine(root, id.ToString("N"))]
-            : Directory.Exists(root) ? Directory.EnumerateDirectories(root).ToArray() : [];
-
         long total = 0;
-        foreach (var directory in directories)
+        foreach (var (_, size) in EnumerateStagedMarkers(Path.Combine(GetStagedIndexRoot(kind), ownerUserId.ToString("N"))))
         {
-            if (!Directory.Exists(directory))
-            {
-                continue;
-            }
-
-            foreach (var markerPath in Directory.EnumerateFiles(directory))
-            {
-                if (!TryReadStagedMarker(markerPath, out var draftShareId, out var size))
-                {
-                    continue;
-                }
-
-                if (kind == StageBudgetKind.Public && IsDraftSealed(draftShareId))
-                {
-                    continue;
-                }
-
-                total += size;
-            }
+            total += size;
         }
 
         return total;
+    }
+
+    /// <summary>
+    /// Bytes held in open anonymous drafts by one upload link and by all links, in a single pass over the index
+    /// (submitted, sealed drafts are not counted). Cost is one small file read, one directory check and one file
+    /// check per open anonymous upload, taken under the global anonymous budget lock.
+    /// </summary>
+    private (long Link, long Global) SumPublicStagedIndex(Guid ownerUserId)
+    {
+        var root = GetStagedIndexRoot(StageBudgetKind.Public);
+        if (!Directory.Exists(root))
+        {
+            return (0, 0);
+        }
+
+        var ownerDirectory = ownerUserId.ToString("N");
+        long link = 0, global = 0;
+        foreach (var directory in Directory.EnumerateDirectories(root))
+        {
+            var isLink = string.Equals(Path.GetFileName(directory), ownerDirectory, StringComparison.Ordinal);
+            foreach (var (draftShareId, size) in EnumerateStagedMarkers(directory))
+            {
+                if (IsDraftSealed(draftShareId))
+                {
+                    continue;
+                }
+
+                global += size;
+                if (isLink)
+                {
+                    link += size;
+                }
+            }
+        }
+
+        return (link, global);
+    }
+
+    private IEnumerable<(string DraftShareId, long Size)> EnumerateStagedMarkers(string directory)
+    {
+        if (!Directory.Exists(directory))
+        {
+            yield break;
+        }
+
+        foreach (var markerPath in Directory.EnumerateFiles(directory))
+        {
+            if (TryReadStagedMarker(markerPath, out var draftShareId, out var size))
+            {
+                yield return (draftShareId, size);
+            }
+        }
     }
 
     /// <summary>Parses a staged-index marker; a malformed one or one whose staging directory is gone is deleted.</summary>
@@ -1657,28 +1684,62 @@ public sealed partial class ShareManager(
         return removed;
     }
 
+    /// <summary>What a staging budget still admits; <see cref="Refusal"/> is what to answer when a body does not fit.</summary>
+    public sealed record StageBudget(long Remaining, UploadLimitException? Refusal)
+    {
+        public static StageBudget Unlimited { get; } = new(long.MaxValue, null);
+    }
+
     /// <summary>
-    /// Bytes the draft's owner (or, for an anonymous draft, its upload link and the server) may still stage, or
-    /// <see cref="long.MaxValue"/> when no budget applies. Throws when it is exhausted: 413 for an account or link,
-    /// 507 for the server-wide anonymous cap. Advisory, for sizing the request buffer; <see cref="StageUploadAsync"/>
-    /// enforces it again under a lock. Call after the caller's ownership of the draft was checked.
+    /// The budget of the draft's owner (or, for an anonymous draft, its upload link and the server). Throws when it
+    /// is exhausted: 413 for an account or link, 507 for the server-wide anonymous cap. Advisory, for sizing the
+    /// request buffer; <see cref="StageUploadAsync"/> enforces it again under a lock. Call after the caller's
+    /// ownership of the draft was checked.
     /// </summary>
-    public async Task<long> GetStageBudgetRemainingAsync(string draftShareId, CancellationToken cancellationToken)
+    public async Task<StageBudget> GetStageBudgetAsync(string draftShareId, CancellationToken cancellationToken)
     {
         if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId) ||
             await ReadDraftMetadataAsync(normalizedId, cancellationToken) is not { OwnerUserId: { } ownerUserId } draft)
         {
-            return long.MaxValue;
+            return StageBudget.Unlimited;
         }
 
         var kind = await ResolveStageBudgetKindAsync(draft, cancellationToken);
-        if (kind == StageBudgetKind.Unlimited)
+        return kind == StageBudgetKind.Unlimited ? StageBudget.Unlimited : ReadBudgetOrThrow(kind, ownerUserId);
+    }
+
+    /// <summary>
+    /// The anonymous budget of an upload link, before any draft is opened, so that an exhausted budget refuses a stage
+    /// without creating an empty draft that would count against the open-draft caps. Throws like
+    /// <see cref="GetStageBudgetAsync"/>.
+    /// </summary>
+    public StageBudget GetPublicStageBudget(Guid linkOwnerUserId) => ReadBudgetOrThrow(StageBudgetKind.Public, linkOwnerUserId);
+
+    private StageBudget ReadBudgetOrThrow(StageBudgetKind kind, Guid ownerUserId)
+    {
+        var limit = ReadStageBudget(kind, ownerUserId);
+        return limit.Remaining > 0 ? new StageBudget(limit.Remaining, limit.Refusal) : throw limit.Refusal;
+    }
+
+    /// <summary>
+    /// Looks up (never creates, never touches) the open anonymous draft of an upload link. Throws when it does not
+    /// exist or belongs to someone else, and when it was already submitted.
+    /// </summary>
+    public async Task<string> FindPublicUploadDraftAsync(Guid ownerUserId, string? draftShareId, CancellationToken cancellationToken)
+    {
+        if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId) ||
+            await ReadDraftMetadataAsync(normalizedId, cancellationToken) is not { PublicUpload: true } draft ||
+            draft.OwnerUserId != ownerUserId)
         {
-            return long.MaxValue;
+            throw new UploadLimitException(UploadLimitKind.DraftClosed, "This upload is no longer open; reload the page to start a new one.");
         }
 
-        var limit = ReadStageBudget(kind, ownerUserId);
-        return limit.Remaining > 0 ? limit.Remaining : throw limit.Refusal;
+        if (IsDraftSealed(normalizedId))
+        {
+            throw new UploadLimitException(UploadLimitKind.DraftSealed, "This upload was already submitted; start a new one to send more files.");
+        }
+
+        return normalizedId;
     }
 
     /// <summary>

@@ -610,7 +610,7 @@ public sealed class UploadQuotaTests
         Assert.Equal(UploadLimitKind.TooManyBytes, ex.Kind);
         Assert.Equal(413, ex.StatusCode);
         Assert.Equal(1, harness.StagedDirectoryCount());
-        var remaining = await harness.Manager.GetStageBudgetRemainingAsync(second, CancellationToken.None);
+        var remaining = (await harness.Manager.GetStageBudgetAsync(second, CancellationToken.None)).Remaining;
         Assert.Equal(4, remaining);
 
         // Another link and the owner's own signed-in drafts have their own budgets.
@@ -666,7 +666,7 @@ public sealed class UploadQuotaTests
         Assert.Equal(UploadLimitKind.TooManyBytes, ex.Kind);
         Assert.Equal(413, ex.StatusCode);
         await Assert.ThrowsAsync<UploadLimitException>(() => harness.StageAsync(one, "b.bin", 4));
-        Assert.Equal(2L, await harness.Manager.GetStageBudgetRemainingAsync(one, CancellationToken.None));
+        Assert.Equal(2L, (await harness.Manager.GetStageBudgetAsync(one, CancellationToken.None)).Remaining);
 
         // Removing a staged file frees its bytes again.
         var listed = await harness.Manager.ListStagedUploadsForDraftAsync(OwnerId, one, CancellationToken.None);
@@ -675,14 +675,14 @@ public sealed class UploadQuotaTests
 
         var adminDraft = await harness.Manager.EnsureDraftShareAsync(adminId, null, CancellationToken.None);
         await harness.StageAsync(adminDraft, "big.bin", 50, ownerUserId: adminId);
-        Assert.Equal(long.MaxValue, await harness.Manager.GetStageBudgetRemainingAsync(adminDraft, CancellationToken.None));
+        Assert.Equal(long.MaxValue, (await harness.Manager.GetStageBudgetAsync(adminDraft, CancellationToken.None)).Remaining);
 
         // The sweep reclaims a stale draft's files and with them the budget.
         harness.BackdateDraft(one, TimeSpan.FromHours(30));
         harness.BackdateDraft(two, TimeSpan.FromHours(30));
         await harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
-        Assert.Equal(10L, await harness.Manager.GetStageBudgetRemainingAsync(
-            await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None), CancellationToken.None));
+        Assert.Equal(10L, (await harness.Manager.GetStageBudgetAsync(
+            await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None), CancellationToken.None)).Remaining);
     }
 
     [Fact]
@@ -711,6 +711,30 @@ public sealed class UploadQuotaTests
         }));
 
         Assert.Equal(2, results.Count(x => x));
+    }
+
+    [Fact]
+    public async Task FindPublicUploadDraftAsync_RefusesUnknownForeignAndSubmittedDrafts_WithoutCreatingOne()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var unknown = NewId();
+
+        var missing = await Assert.ThrowsAsync<UploadLimitException>(() =>
+            harness.Manager.FindPublicUploadDraftAsync(OwnerId, unknown, CancellationToken.None));
+        Assert.Equal(UploadLimitKind.DraftClosed, missing.Kind);
+        await Assert.ThrowsAsync<UploadLimitException>(() => harness.Manager.FindPublicUploadDraftAsync(OwnerId, "not-a-draft", CancellationToken.None));
+        Assert.False(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "drafts", unknown)));
+        Assert.False(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "draft-index")));
+
+        var open = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        Assert.Equal(open, await harness.Manager.FindPublicUploadDraftAsync(OwnerId, open, CancellationToken.None));
+        await Assert.ThrowsAsync<UploadLimitException>(() => harness.Manager.FindPublicUploadDraftAsync(Guid.NewGuid(), open, CancellationToken.None));
+        var signedIn = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
+        await Assert.ThrowsAsync<UploadLimitException>(() => harness.Manager.FindPublicUploadDraftAsync(OwnerId, signedIn, CancellationToken.None));
+
+        await harness.Manager.SealDraftAsync(OwnerId, open, CancellationToken.None);
+        var sealedDraft = await Assert.ThrowsAsync<UploadLimitException>(() => harness.Manager.FindPublicUploadDraftAsync(OwnerId, open, CancellationToken.None));
+        Assert.Equal(UploadLimitKind.DraftSealed, sealedDraft.Kind);
     }
 
     [Fact]

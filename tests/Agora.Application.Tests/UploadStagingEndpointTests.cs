@@ -230,6 +230,42 @@ public sealed class UploadStagingEndpointTests
     }
 
     [Fact]
+    public async Task Public_stage_over_the_link_budget_is_413_and_opens_no_draft()
+    {
+        await using var host = await Host.StartAsync(scratchMaxBytes: 0, configure: o => o.PublicUploads.MaxOpenDraftBytesPerToken = 10);
+        var held = await host.WithManagerAsync(async m =>
+        {
+            var draft = await m.EnsurePublicUploadDraftAsync(host.OwnerId, null, UploadCode, "203.0.113.9", CancellationToken.None);
+            await m.StageUploadAsync(host.OwnerId, draft, "a.bin", 10, new MemoryStream(new byte[10]), CancellationToken.None);
+            return draft;
+        });
+        var newDraft = Guid.NewGuid().ToString("N");
+        var body = new ThrowingStream();
+
+        var context = await host.PostStageAsync("/api/public-uploads/stage", body, 100, host.Csrf, newDraft);
+
+        Assert.Equal(StatusCodes.Status413PayloadTooLarge, context.Response.StatusCode);
+        Assert.False(body.ReadAttempted);
+        var drafts = Path.Combine(host.StorageRoot, "uploads", "drafts");
+        Assert.False(Directory.Exists(Path.Combine(drafts, newDraft)));
+        Assert.Equal([held], Directory.EnumerateDirectories(drafts).Select(Path.GetFileName));
+    }
+
+    [Fact]
+    public async Task Public_stage_declaring_more_than_the_global_cap_admits_is_507_not_413()
+    {
+        // Budget 10,000,000 (capacity, no floor); 0.1% of it = 10,000 bytes for all open anonymous drafts.
+        await using var host = await Host.StartAsync(
+            scratchMaxBytes: 0, configure: o => o.PublicUploads.MaxOpenDraftScratchFraction = 0.001, totalCapacity: _ => 10_000_000);
+        var body = new ThrowingStream();
+
+        var context = await host.PostStageAsync("/api/public-uploads/stage", body, 2L * 1024 * 1024, host.Csrf);
+
+        Assert.Equal(StatusCodes.Status507InsufficientStorage, context.Response.StatusCode);
+        Assert.False(body.ReadAttempted);
+    }
+
+    [Fact]
     public async Task Public_stage_refuses_a_signed_in_draft_like_someone_elses()
     {
         await using var host = await Host.StartAsync(scratchMaxBytes: 0);
@@ -321,12 +357,14 @@ public sealed class UploadStagingEndpointTests
             Scratch = scratch;
         }
 
-        public static async Task<Host> StartAsync(long scratchMaxBytes, long? maxTotalUploadBytes = null)
+        public static async Task<Host> StartAsync(
+            long scratchMaxBytes, long? maxTotalUploadBytes = null, Action<AgoraOptions>? configure = null, Func<string, long>? totalCapacity = null)
         {
             var storageRoot = Path.Combine(Path.GetTempPath(), "agora-stage-endpoint-tests", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(storageRoot);
             var options = new AgoraOptions { StorageRoot = storageRoot, Scratch = { MaxBytes = scratchMaxBytes, MinFreeBytes = 0 } };
-            var scratch = new ScratchSpaceMonitor(options, StorageProvider.FileSystem, _ => long.MaxValue, _ => 0, TimeProvider.System);
+            configure?.Invoke(options);
+            var scratch = new ScratchSpaceMonitor(options, StorageProvider.FileSystem, _ => long.MaxValue, _ => 0, TimeProvider.System, totalCapacityBytes: totalCapacity);
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
 
@@ -337,6 +375,7 @@ public sealed class UploadStagingEndpointTests
                 o.StorageRoot = storageRoot;
                 o.Scratch = options.Scratch;
                 o.MaxTotalUploadBytes = maxTotalUploadBytes ?? o.MaxTotalUploadBytes;
+                configure?.Invoke(o);
             });
             // As in Program.cs: small app-wide form limits; the stage endpoints pass their own per call.
             builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(FormLimits.Configure);
