@@ -265,7 +265,9 @@ public sealed class ShareManager(
                 attemptedShareIds.Add(share.Id);
                 try
                 {
-                    await db.SaveChangesAsync(cancellationToken);
+                    // The commit is the point of no return: never let a shutdown cancel it halfway, or the job could
+                    // be requeued for a share that was in fact created and the re-run would create a second one.
+                    await db.SaveChangesAsync(CancellationToken.None);
                     return new CreateShareResult(share.Id, token, share.ZipDisplayName, share.ExpiresAtUtc);
                 }
                 catch (DbUpdateException ex) when (IsShareTokenConflict(ex))
@@ -424,7 +426,9 @@ public sealed class ShareManager(
                 attemptedShareIds.Add(share.Id);
                 try
                 {
-                    await db.SaveChangesAsync(cancellationToken);
+                    // The commit is the point of no return: never let a shutdown cancel it halfway, or the job could
+                    // be requeued for a share that was in fact created and the re-run would create a second one.
+                    await db.SaveChangesAsync(CancellationToken.None);
                     return new CreateShareResult(share.Id, token, share.ZipDisplayName, share.ExpiresAtUtc);
                 }
                 catch (DbUpdateException ex) when (IsShareTokenConflict(ex))
