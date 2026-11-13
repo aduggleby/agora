@@ -756,6 +756,26 @@ public sealed class ShareManager(
         return !await db.Shares.AsNoTracking().AnyAsync(x => x.ShareToken == token, cancellationToken);
     }
 
+    /// <summary>
+    /// The refusal shown to the owner for a share token they typed when creating a share, or null when it can be used.
+    /// The in-use refusal suggests a freshly generated token instead.
+    /// </summary>
+    public async Task<string?> CheckRequestedShareTokenAsync(string token, CancellationToken cancellationToken)
+    {
+        if (!ShareTokens.IsValid(token))
+        {
+            return "Share link must be 8-64 letters, numbers, hyphens, or underscores.";
+        }
+
+        if (!await IsShareTokenAvailableAsync(token, cancellationToken))
+        {
+            var suggested = await GenerateUniqueShareTokenAsync(8, cancellationToken);
+            return $"That share link is already in use. Try {suggested} or choose another.";
+        }
+
+        return null;
+    }
+
     public async Task<string> GenerateUniqueShareTokenAsync(int length, CancellationToken cancellationToken)
     {
         for (var attempt = 0; attempt < 32; attempt += 1)

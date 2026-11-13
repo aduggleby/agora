@@ -1378,16 +1378,11 @@ app.MapPost("/api/shares", async (
         shareToken = await manager.GenerateUniqueShareTokenAsync(8, ct);
     }
 
-    if (!IsValidShareToken(shareToken))
+    // Refused as plain text, not a redirect: the page keeps the typed token, and no URL can preset a share's token.
+    var shareTokenRefusal = await manager.CheckRequestedShareTokenAsync(shareToken, ct);
+    if (shareTokenRefusal is not null)
     {
-        return Results.Redirect($"/shares/new?draftShareId={Uri.EscapeDataString(draftShareId)}&shareToken={Uri.EscapeDataString(shareToken)}&msg=Share%20link%20must%20be%208-64%20letters%2C%20numbers%2C%20hyphens%2C%20or%20underscores");
-    }
-
-    var isShareTokenAvailable = await manager.IsShareTokenAvailableAsync(shareToken, ct);
-    if (!isShareTokenAvailable)
-    {
-        var suggestedShareToken = await manager.GenerateUniqueShareTokenAsync(8, ct);
-        return Results.Redirect($"/shares/new?draftShareId={Uri.EscapeDataString(draftShareId)}&shareToken={Uri.EscapeDataString(shareToken)}&suggestedShareToken={Uri.EscapeDataString(suggestedShareToken)}&msg=That%20share%20link%20is%20already%20in%20use");
+        return Results.Text(shareTokenRefusal, statusCode: StatusCodes.Status400BadRequest);
     }
 
     var files = form.Files;

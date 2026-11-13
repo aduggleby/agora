@@ -213,6 +213,24 @@ public sealed class PublicSharePageTests
         Assert.Equal(StatusCodes.Status429TooManyRequests, (await host.SendAsync(HttpMethods.Get, "/s/limited1/background")).Status);
     }
 
+    [Fact]
+    public async Task The_new_share_page_never_takes_its_share_token_from_the_query()
+    {
+        await using var host = await Host.StartAsync();
+
+        var page = await host.SendAsync(HttpMethods.Get, "/shares/new?shareToken=attacker1&suggestedShareToken=attacker2&msg=Share%20design%20saved", user: OwnerId);
+
+        Assert.Equal(StatusCodes.Status200OK, page.Status);
+        var token = System.Text.RegularExpressions.Regex.Match(page.Body, "name=\"shareToken\" value=\"([^\"]*)\"").Groups[1].Value;
+        Assert.True(ShareTokens.IsValid(token));
+        Assert.NotEqual("attacker1", token);
+        Assert.DoesNotContain("attacker1", page.Body);
+        Assert.DoesNotContain("attacker2", page.Body);
+        Assert.DoesNotContain("data-suggested-share-token", page.Body);
+        // The designer redirects still reach the page with their message.
+        Assert.Contains("Share design saved", page.Body);
+    }
+
     private sealed record Response(int Status, string Body, IHeaderDictionary Headers);
 
     private sealed class Host : IAsyncDisposable
@@ -254,6 +272,9 @@ public sealed class PublicSharePageTests
             builder.Services.AddSingleton(new Agora.Infrastructure.Auth.PasswordHashingGate());
             builder.Services.AddSingleton(new ScratchSpaceMonitor(new AgoraOptions { StorageRoot = storageRoot }, StorageProvider.FileSystem, _ => long.MaxValue, _ => 0, TimeProvider.System));
             builder.Services.AddScoped<ShareManager>();
+            builder.Services.AddScoped<Agora.Infrastructure.Auth.AuthService>();
+            builder.Services.AddSingleton<IEmailSender, NoopEmailSender>();
+            builder.Services.AddAuthorization();
             builder.Services.AddScoped<IShareExperienceRenderer, ArchiveShareExperienceRenderer>();
             builder.Services.AddScoped<IShareExperienceRenderer, GalleryShareExperienceRenderer>();
             builder.Services.AddScoped<ShareExperienceRendererResolver>();
@@ -283,6 +304,7 @@ public sealed class PublicSharePageTests
                 await next();
             });
             app.UseRouting();
+            app.UseAuthorization();
             app.UseAgoraCsrf(isE2E: false, CookieSecurePolicy.None, NullLogger.Instance);
             app.UseRateLimiter();
             app.MapGet("/", () => Results.Ok());
@@ -292,7 +314,10 @@ public sealed class PublicSharePageTests
 
             using (var scope = app.Services.CreateScope())
             {
-                await scope.ServiceProvider.GetRequiredService<AgoraDbContext>().Database.EnsureCreatedAsync();
+                var db = scope.ServiceProvider.GetRequiredService<AgoraDbContext>();
+                await db.Database.EnsureCreatedAsync();
+                db.Users.Add(TestUsers.Seed(OwnerId, "owner@example.com"));
+                await db.SaveChangesAsync();
             }
 
             await objectStore.PutBytesAsync(BackgroundKey, "png"u8.ToArray(), "image/png", CancellationToken.None);
@@ -430,6 +455,17 @@ public sealed class PublicSharePageTests
                 Directory.Delete(StorageRoot, recursive: true);
             }
         }
+    }
+
+    private sealed class NoopEmailSender : IEmailSender
+    {
+        public Task SendDownloadNotificationAsync(DownloadNotification notification, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task SendAuthEmailAsync(AuthEmailMessage message, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<string> RenderDownloadNotificationHtmlAsync(DownloadNotification notification, CancellationToken cancellationToken) => Task.FromResult(string.Empty);
+
+        public Task<string> RenderAuthEmailHtmlAsync(AuthEmailMessage message, CancellationToken cancellationToken) => Task.FromResult(string.Empty);
     }
 
     private sealed class CountingJobClient : IBackgroundJobClient

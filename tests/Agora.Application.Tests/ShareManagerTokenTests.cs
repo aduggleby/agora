@@ -78,6 +78,38 @@ public sealed class ShareManagerTokenTests
     }
 
     [Fact]
+    public async Task CheckRequestedShareTokenAsync_RefusesInvalidAndTakenTokensWithASuggestion()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        harness.Db.Shares.Add(new Share
+        {
+            Id = Guid.NewGuid(),
+            OwnerUserId = UploaderId,
+            UploaderEmail = "uploader@example.com",
+            ShareToken = "taken_token",
+            ZipDisplayName = "files.zip",
+            ZipDiskPath = "zips/2026/02/test.zip",
+            ZipSizeBytes = 123,
+            NotifyMode = "none",
+            ShareExperienceType = "archive",
+            AccessMode = "download_only",
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        await harness.Db.SaveChangesAsync();
+
+        Assert.Null(await harness.Manager.CheckRequestedShareTokenAsync("fresh_token", CancellationToken.None));
+        Assert.Equal(
+            "Share link must be 8-64 letters, numbers, hyphens, or underscores.",
+            await harness.Manager.CheckRequestedShareTokenAsync("short", CancellationToken.None));
+
+        var taken = await harness.Manager.CheckRequestedShareTokenAsync("taken_token", CancellationToken.None);
+        Assert.NotNull(taken);
+        var match = System.Text.RegularExpressions.Regex.Match(taken, "^That share link is already in use\\. Try ([A-Za-z0-9]{8}) or choose another\\.$");
+        Assert.True(match.Success, taken);
+        Assert.True(await harness.Manager.IsShareTokenAvailableAsync(match.Groups[1].Value, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task CreateShareAsync_TokenCollisionNeverReachesTheLogAtErrorLevel()
     {
         var logs = new RecordingLoggerProvider();

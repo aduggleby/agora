@@ -30,7 +30,6 @@ public class NewModel(AuthService authService, ShareManager manager, IOptions<Ag
     public string AccountDefaultExpiryModeLabel { get; private set; } = "7 days";
     public string AccountDefaultExpiryMode { get; private set; } = "7_days";
     public string ShareToken { get; private set; } = string.Empty;
-    public string SuggestedShareToken { get; private set; } = string.Empty;
     public string ShareLinkPrefix { get; private set; } = string.Empty;
     public long MaxFileSizeBytes => _options.MaxFileSizeBytes;
     public long MaxTotalUploadBytes => _options.MaxTotalUploadBytes;
@@ -80,16 +79,10 @@ public class NewModel(AuthService authService, ShareManager manager, IOptions<Ag
             _ => "7 days"
         };
 
-        var requestedShareToken = Request.Query["shareToken"].ToString().Trim();
-        ShareToken = IsValidShareToken(requestedShareToken)
-            ? requestedShareToken
-            : await manager.GenerateUniqueShareTokenAsync(8, ct);
+        // Never prefilled from the query: a crafted link could otherwise choose the public link of a share
+        // the owner is about to create. The token is generated here or typed by the owner on the page.
+        ShareToken = await manager.GenerateUniqueShareTokenAsync(8, ct);
         ShareLinkPrefix = $"{publicBaseUrls.Resolve(Request)}/s/";
-
-        var suggestedShareToken = Request.Query["suggestedShareToken"].ToString().Trim();
-        SuggestedShareToken = IsValidShareToken(suggestedShareToken)
-            ? suggestedShareToken
-            : string.Empty;
 
         ViewData["Title"] = "Share files";
         ViewData["Message"] = Request.Query["msg"].ToString();
@@ -103,22 +96,4 @@ public class NewModel(AuthService authService, ShareManager manager, IOptions<Ag
         DirectLinkDuration.SevenDays => "7 days",
         _ => "1 day"
     };
-
-    private static bool IsValidShareToken(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value) || value.Length < 3 || value.Length > 64)
-        {
-            return false;
-        }
-
-        foreach (var ch in value)
-        {
-            if (!char.IsLetterOrDigit(ch) && ch is not '-' and not '_')
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
 }

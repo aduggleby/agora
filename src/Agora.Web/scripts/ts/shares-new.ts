@@ -64,7 +64,6 @@ type SavedShareOptionsState = {
   const optionsPanel = form.querySelector<HTMLElement>('[data-options-panel]');
   const shareTokenInput = form.querySelector<HTMLInputElement>('[data-share-token]');
   const downloadPasswordInput = form.querySelector<HTMLInputElement>('[name="downloadPassword"]');
-  const suggestedShareTokenButton = form.querySelector<HTMLButtonElement>('[data-suggested-share-token]');
   const draftShareIdInput = form.querySelector<HTMLInputElement>('[data-draft-share-id]');
   const removeDialog = form.querySelector<HTMLDialogElement>('[data-upload-remove-dialog]');
   const removeNameNode = form.querySelector<HTMLElement>('[data-upload-remove-file-name]');
@@ -703,14 +702,6 @@ type SavedShareOptionsState = {
   showPreviewsInput?.addEventListener('change', saveOptionsState);
   shareTokenInput?.addEventListener('input', refreshState);
   downloadPasswordInput?.addEventListener('input', refreshState);
-
-  suggestedShareTokenButton?.addEventListener('click', () => {
-    if (!shareTokenInput) return;
-    shareTokenInput.value = suggestedShareTokenButton.getAttribute('data-suggested-share-token') || shareTokenInput.value;
-    shareTokenInput.focus();
-    shareTokenInput.select();
-    refreshState();
-  });
 
   if (optionsPanel && optionsToggle) {
     let isCollapsed = true;

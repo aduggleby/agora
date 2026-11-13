@@ -74,13 +74,6 @@
                 <input name="shareToken" value="@Model.ShareToken" class="flex-1 px-3 py-2 text-sm bg-cream focus:outline-none focus:ring-1 focus:ring-terra/20 transition-all font-mono" maxlength="64" minlength="8" pattern="[A-Za-z0-9_-]+" autocomplete="off" spellcheck="false" data-share-token />
               </div>
               <p class="text-[11px] text-ink-muted mt-1">8-64 letters, numbers, hyphens, or underscores. Default links use 8 characters.</p>
-              @if (!string.IsNullOrWhiteSpace(Model.SuggestedShareToken))
-              {
-                <p class="text-[11px] text-danger mt-1.5">
-                  That link is already in use.
-                  <button type="button" class="underline hover:no-underline ml-1" data-suggested-share-token="@Model.SuggestedShareToken">Use @Model.SuggestedShareToken</button>
-                </p>
-              }
             </div>
             <div>
               <label class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Zip filename</label>
