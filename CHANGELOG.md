@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- A custom share link is claimed when the share is submitted, not when its background job commits. While it is pending, another account can no longer submit the same link or reach its progress page, and a smaller share can no longer take the link first. The claim is released when the share is created, when creation fails, or after the upload retention (24 hours by default) if it is stranded.
+
 ## [0.10.3] - 2026-11-13
 
 ### Changed

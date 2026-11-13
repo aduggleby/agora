@@ -94,6 +94,67 @@ public sealed class QueuedShareCreationJobShutdownTests
         Assert.Equal("failed", fixture.Status.Read(ShareToken)!.State);
     }
 
+    [Fact]
+    public async Task A_terminal_failure_releases_the_reserved_link()
+    {
+        await using var fixture = await Fixture.CreateAsync(onBroadcast: n => { if (n == 2) { throw new InvalidOperationException("boom"); } });
+        var payload = Fixture.Payload(fixture.OwnerId);
+        await fixture.Manager.ReserveShareTokenAsync(ShareToken, fixture.OwnerId, payload.DraftShareId, CancellationToken.None);
+
+        await fixture.Job.ProcessAsync(payload, CancellationToken.None);
+
+        Assert.Equal("failed", fixture.Status.Read(ShareToken)!.State);
+        Assert.Empty(await fixture.Db.ShareTokenReservations.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Shutdown_before_the_commit_keeps_the_reserved_link_for_the_retry()
+    {
+        using var cts = new CancellationTokenSource();
+        await using var fixture = await Fixture.CreateAsync(onBroadcast: n =>
+        {
+            if (n == 2)
+            {
+                cts.Cancel();
+                throw new OperationCanceledException(cts.Token);
+            }
+        });
+        var payload = Fixture.Payload(fixture.OwnerId);
+        await fixture.Manager.ReserveShareTokenAsync(ShareToken, fixture.OwnerId, payload.DraftShareId, CancellationToken.None);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => fixture.Job.ProcessAsync(payload, cts.Token));
+
+        Assert.Single(await fixture.Db.ShareTokenReservations.ToListAsync());
+    }
+
+    [Fact]
+    public async Task The_commit_consumes_the_reservation_and_the_owner_gets_the_requested_link()
+    {
+        await using var fixture = await Fixture.CreateAsync(onBroadcast: _ => { });
+        fixture.Db.Users.Add(new UserAccount
+        {
+            Id = fixture.OwnerId,
+            Email = "owner@example.com",
+            EmailConfirmed = true,
+            PasswordHash = "x:y",
+            SecurityStamp = SecurityStamps.New(),
+            UploadToken = "uploadtk",
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        await fixture.Db.SaveChangesAsync();
+        var draftId = await fixture.Manager.EnsureDraftShareAsync(fixture.OwnerId, null, CancellationToken.None);
+        using var content = new MemoryStream([1, 2, 3]);
+        var staged = await fixture.Manager.StageUploadAsync(fixture.OwnerId, draftId, "f.bin", content.Length, content, CancellationToken.None);
+        await fixture.Manager.SealDraftAsync(fixture.OwnerId, draftId, CancellationToken.None);
+        await fixture.Manager.ReserveShareTokenAsync(ShareToken, fixture.OwnerId, draftId, CancellationToken.None);
+
+        await fixture.Job.ProcessAsync(Fixture.Payload(fixture.OwnerId, draftId, staged.UploadId), CancellationToken.None);
+
+        Assert.Equal("completed", fixture.Status.Read(ShareToken)!.State);
+        Assert.Equal(ShareToken, Assert.Single(await fixture.Db.Shares.ToListAsync()).ShareToken);
+        Assert.Empty(await fixture.Db.ShareTokenReservations.ToListAsync());
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private readonly SqliteConnection _connection;

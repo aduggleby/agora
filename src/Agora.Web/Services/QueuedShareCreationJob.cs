@@ -302,8 +302,27 @@ public sealed class QueuedShareCreationJob(
                 await CleanupDraftScratchAsync(ownerUserId, payload, CancellationToken.None);
             }
 
+            // Failed for good (cancellation by shutdown is handled above and keeps the claim for the retry). Once the
+            // share row is committed its claim was already removed with it, so a later failure touches nothing.
+            if (!shareCreated)
+            {
+                await ReleaseTokenClaimAsync(ownerUserId, token);
+            }
+
             var failed = statusStore.MarkFailed(token, ex.Message);
             await broadcaster.BroadcastAsync(failed, ct);
+        }
+    }
+
+    private async Task ReleaseTokenClaimAsync(Guid ownerUserId, string token)
+    {
+        try
+        {
+            await manager.ReleaseShareTokenReservationAsync(token, ownerUserId, CancellationToken.None);
+        }
+        catch (Exception releaseEx)
+        {
+            logger.LogWarning(releaseEx, "Unable to release the share link claim for share {TokenRef}; the zombie sweep will", LogSafe.Token(token));
         }
     }
 
@@ -479,6 +498,8 @@ public sealed class QueuedShareCreationJob(
             catch (ShareTokenCollisionException ex) when (requestedToken is not null && attempt < 3)
             {
                 var collidedToken = requestedToken;
+                // Unexpected with a claim held (it is removed with the row); the owner proceeds with a random link.
+                await ReleaseTokenClaimAsync(payload.OwnerUserId ?? Guid.Empty, collidedToken);
                 var conflict = await manager.GetShareTokenDiagnosticsAsync(collidedToken, ct);
                 requestedToken = await manager.GenerateUniqueShareTokenAsync(8, ct);
                 var replacement = await manager.GetShareTokenDiagnosticsAsync(requestedToken, ct);

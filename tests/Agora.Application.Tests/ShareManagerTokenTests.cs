@@ -145,6 +145,107 @@ public sealed class ShareManagerTokenTests
         Assert.DoesNotContain("dup_token", ex.ToString());
     }
 
+    private static readonly Guid OtherOwnerId = Guid.NewGuid();
+    private const string DraftA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    private const string DraftB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    [Fact]
+    public async Task ReserveShareTokenAsync_RefusesAnotherOwnerWhileTheFirstIsPending()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+
+        Assert.Equal(ShareManager.TokenReservationOutcome.Reserved, await harness.Manager.ReserveShareTokenAsync("pending_token", UploaderId, DraftA, CancellationToken.None));
+        Assert.Equal(ShareManager.TokenReservationOutcome.Taken, await harness.Manager.ReserveShareTokenAsync("pending_token", OtherOwnerId, DraftB, CancellationToken.None));
+
+        Assert.False(await harness.Manager.IsShareTokenAvailableAsync("pending_token", CancellationToken.None));
+        var refusal = await harness.Manager.CheckRequestedShareTokenAsync("pending_token", CancellationToken.None, OtherOwnerId, DraftB);
+        Assert.StartsWith("That share link is already in use.", refusal);
+        Assert.Null(await harness.Manager.CheckRequestedShareTokenAsync("pending_token", CancellationToken.None, UploaderId, DraftA));
+    }
+
+    [Fact]
+    public async Task ReserveShareTokenAsync_SameOwnerSameDraftIsNotRefusedButAnotherDraftIs()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+
+        Assert.Equal(ShareManager.TokenReservationOutcome.Reserved, await harness.Manager.ReserveShareTokenAsync("pending_token", UploaderId, DraftA, CancellationToken.None));
+        Assert.Equal(ShareManager.TokenReservationOutcome.AlreadyHeld, await harness.Manager.ReserveShareTokenAsync("pending_token", UploaderId, DraftA, CancellationToken.None));
+        Assert.Equal(ShareManager.TokenReservationOutcome.Taken, await harness.Manager.ReserveShareTokenAsync("pending_token", UploaderId, DraftB, CancellationToken.None));
+        Assert.Equal(1, await harness.Db.ShareTokenReservations.CountAsync());
+    }
+
+    [Fact]
+    public async Task ReserveShareTokenAsync_RefusesACommittedShareToken()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        var file = await harness.CreateUploadFileAsync("a.txt", "one");
+        await harness.Manager.CreateShareAsync(CreateCommand("committed_token", file), CancellationToken.None);
+
+        Assert.Equal(ShareManager.TokenReservationOutcome.Taken, await harness.Manager.ReserveShareTokenAsync("committed_token", UploaderId, DraftA, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ReserveShareTokenAsync_LosingTheInsertRaceIsReportedAsTaken()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        // The winner's row lands between the loser's read and its insert: simulate it with a second context.
+        await using var rival = harness.NewContext();
+        rival.ShareTokenReservations.Add(new ShareTokenReservation { Id = Guid.NewGuid(), Token = "race_token", OwnerUserId = OtherOwnerId, DraftShareId = DraftB, CreatedAtUtc = DateTime.UtcNow });
+        harness.Db.ShareTokenReservations.Add(new ShareTokenReservation { Id = Guid.NewGuid(), Token = "race_token", OwnerUserId = UploaderId, DraftShareId = DraftA, CreatedAtUtc = DateTime.UtcNow });
+        await rival.SaveChangesAsync();
+        await Assert.ThrowsAsync<DbUpdateException>(() => harness.Db.SaveChangesAsync());
+        harness.Db.ChangeTracker.Clear();
+
+        Assert.Equal(ShareManager.TokenReservationOutcome.Taken, await harness.Manager.ReserveShareTokenAsync("race_token", UploaderId, DraftA, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CreateShareAsync_RemovesTheReservationWithTheShareAndKeepsTheRequestedToken()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        var file = await harness.CreateUploadFileAsync("a.txt", "one");
+        await harness.Manager.ReserveShareTokenAsync("kept_token1", UploaderId, DraftA, CancellationToken.None);
+
+        var result = await harness.Manager.CreateShareAsync(CreateCommand("kept_token1", file), CancellationToken.None);
+
+        Assert.Equal("kept_token1", result.Token);
+        Assert.Empty(await harness.Db.ShareTokenReservations.ToListAsync());
+        Assert.Single(await harness.Db.Shares.ToListAsync());
+        // The link is now taken by the committed share, not by a claim.
+        Assert.Equal(ShareManager.TokenReservationOutcome.Taken, await harness.Manager.ReserveShareTokenAsync("kept_token1", OtherOwnerId, DraftB, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ReleaseShareTokenReservationAsync_OnlyRemovesTheOwnersClaim()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        await harness.Manager.ReserveShareTokenAsync("release_token", UploaderId, DraftA, CancellationToken.None);
+
+        await harness.Manager.ReleaseShareTokenReservationAsync("release_token", OtherOwnerId, CancellationToken.None);
+        Assert.Single(await harness.Db.ShareTokenReservations.ToListAsync());
+        await harness.Manager.ReleaseShareTokenReservationAsync("release_token", UploaderId, DraftB, CancellationToken.None);
+        Assert.Single(await harness.Db.ShareTokenReservations.ToListAsync());
+
+        await harness.Manager.ReleaseShareTokenReservationAsync("release_token", UploaderId, DraftA, CancellationToken.None);
+        Assert.Empty(await harness.Db.ShareTokenReservations.ToListAsync());
+        Assert.True(await harness.Manager.IsShareTokenAvailableAsync("release_token", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CleanupZombieUploadsAsync_RemovesOnlyStaleReservations()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        harness.Db.ShareTokenReservations.AddRange(
+            new ShareTokenReservation { Id = Guid.NewGuid(), Token = "stale_token", OwnerUserId = UploaderId, DraftShareId = DraftA, CreatedAtUtc = DateTime.UtcNow.AddHours(-25) },
+            new ShareTokenReservation { Id = Guid.NewGuid(), Token = "fresh_token", OwnerUserId = UploaderId, DraftShareId = DraftB, CreatedAtUtc = DateTime.UtcNow.AddHours(-1) });
+        await harness.Db.SaveChangesAsync();
+
+        await harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
+
+        var left = await harness.Db.ShareTokenReservations.ToListAsync();
+        Assert.Equal("fresh_token", Assert.Single(left).Token);
+    }
+
     [Fact]
     public async Task ListStagedUploadsForDraftAsync_ExcludesTemplateBackgroundUploads()
     {
@@ -293,6 +394,9 @@ public sealed class ShareManagerTokenTests
 
         public AgoraDbContext Db { get; }
         public ShareManager Manager { get; }
+
+        /// <summary>A second context on the same in-memory database (another request's connection).</summary>
+        public AgoraDbContext NewContext() => new(new DbContextOptionsBuilder<AgoraDbContext>().UseSqlite(_connection).Options);
 
         private TestHarness(SqliteConnection connection, string storageRoot, AgoraDbContext db, ShareManager manager)
         {

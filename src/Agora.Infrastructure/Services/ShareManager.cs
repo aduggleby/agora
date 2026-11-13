@@ -21,7 +21,7 @@ namespace Agora.Infrastructure.Services;
 /// <summary>
 /// Orchestrates share lifecycle operations: staging files, creating share archives, resolving templates, and cleanup.
 /// </summary>
-public sealed class ShareManager(
+public sealed partial class ShareManager(
     AgoraDbContext db,
     IOptions<AgoraOptions> options,
     IShareContentStore contentStore,
@@ -263,6 +263,15 @@ public sealed class ShareManager(
 
                 db.Shares.Add(share);
                 attemptedShareIds.Add(share.Id);
+                // The claim on a requested link goes in the same transaction as the share row.
+                var claim = hasRequestedToken
+                    ? await db.ShareTokenReservations.FirstOrDefaultAsync(x => x.Token == token && x.OwnerUserId == owner.UserId, cancellationToken)
+                    : null;
+                if (claim is not null)
+                {
+                    db.ShareTokenReservations.Remove(claim);
+                }
+
                 try
                 {
                     // The commit is the point of no return: never let a shutdown cancel it halfway, or the job could
@@ -284,6 +293,11 @@ public sealed class ShareManager(
                         db.Database.ProviderName ?? "<unknown>",
                         constraintName);
                     db.Entry(share).State = EntityState.Detached;
+                    if (claim is not null)
+                    {
+                        db.Entry(claim).State = EntityState.Unchanged;
+                    }
+
                     if (hasRequestedToken)
                     {
                         throw new ShareTokenCollisionException(constraintName);
@@ -294,6 +308,11 @@ public sealed class ShareManager(
                 catch
                 {
                     db.Entry(share).State = EntityState.Detached;
+                    if (claim is not null)
+                    {
+                        db.Entry(claim).State = EntityState.Unchanged;
+                    }
+
                     throw;
                 }
             }
@@ -784,21 +803,27 @@ public sealed class ShareManager(
 
     public async Task<bool> IsShareTokenAvailableAsync(string token, CancellationToken cancellationToken)
     {
-        return !await db.Shares.AsNoTracking().AnyAsync(x => x.ShareToken == token, cancellationToken);
+        // A link claimed by a pending creation is not free either.
+        return !await db.Shares.AsNoTracking().AnyAsync(x => x.ShareToken == token, cancellationToken) &&
+               !await db.ShareTokenReservations.AsNoTracking().AnyAsync(x => x.Token == token, cancellationToken);
     }
 
     /// <summary>
     /// The refusal shown to the owner for a share token they typed when creating a share, or null when it can be used.
     /// The in-use refusal suggests a freshly generated token instead.
     /// </summary>
-    public async Task<string?> CheckRequestedShareTokenAsync(string token, CancellationToken cancellationToken)
+    public async Task<string?> CheckRequestedShareTokenAsync(string token, CancellationToken cancellationToken, Guid? ownerUserId = null, string? draftShareId = null)
     {
         if (!ShareTokens.IsValid(token))
         {
             return "Share link must be 8-64 letters, numbers, hyphens, or underscores.";
         }
 
-        if (!await IsShareTokenAvailableAsync(token, cancellationToken))
+        // The submitting owner's own claim for this draft does not count against it (a repeated submission).
+        var heldByCaller = ownerUserId is { } owner && draftShareId is not null &&
+            await db.ShareTokenReservations.AsNoTracking().AnyAsync(x => x.Token == token && x.OwnerUserId == owner && x.DraftShareId == draftShareId, cancellationToken) &&
+            !await db.Shares.AsNoTracking().AnyAsync(x => x.ShareToken == token, cancellationToken);
+        if (!heldByCaller && !await IsShareTokenAvailableAsync(token, cancellationToken))
         {
             var suggested = await GenerateUniqueShareTokenAsync(8, cancellationToken);
             return $"That share link is already in use. Try {suggested} or choose another.";
@@ -1887,6 +1912,7 @@ public sealed class ShareManager(
     {
         var staleDrafts = await CleanupStaleDraftSharesAsync(cancellationToken);
         var cutoff = DateTime.UtcNow.AddHours(-Math.Abs(_options.ZombieUploadRetentionHours));
+        await SweepStaleShareTokenReservationsAsync(cutoff, cancellationToken);
         var removed = 0;
         foreach (var stagingRoot in GetAllStagingRoots())
         {
