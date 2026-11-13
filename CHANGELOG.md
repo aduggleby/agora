@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Drafts now expire after their idle time even if the page stays open: only uploading a file refreshes a draft. Opening or reloading the new-share page, saving a design or a refused request no longer keeps it (and its staged files) alive. A draft idle for more than 24 hours (6 hours for an upload link) is cleaned up, so a page left open overnight may need a reload before the next upload.
+- Signed-in accounts may hold up to 50 GB of staged uploads (files and template backgrounds together, across all drafts); admins are exempt. Configurable with `Agora__MaxStagedBytesPerAccount`. Over the limit an upload is refused with 413.
+- An upload link may hold up to 20 GB in open drafts (`Agora__PublicUploads__MaxOpenDraftBytesPerToken`), and all open anonymous drafts together up to half of the scratch budget (`Agora__PublicUploads__MaxOpenDraftScratchFraction`, see the README for the formula). Over the first limit an upload is refused with 413, over the second with 507.
+- A share creation job that finds the scratch area full is retried later instead of failing and deleting the staged files.
+- A request to an upload link's create-share route without files is refused before the draft is looked at.
+
 ### Fixed
 - A custom share link is claimed when the share is submitted, not when its background job commits. While it is pending, another account can no longer submit the same link or reach its progress page, and a smaller share can no longer take the link first. The claim is released when the share is created, when creation fails, or after the upload retention (24 hours by default) if it is stranded.
 

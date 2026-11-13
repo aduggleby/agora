@@ -307,6 +307,12 @@ preview lock markers and `tmp/` (archive building, `.agz` encryption and decrypt
 multipart buffers under `tmp/aspnet`, where `ASPNETCORE_TEMP` points unless you set it yourself). Files in scratch are
 swept after `Agora__ZombieUploadRetentionHours`.
 
+A draft (and the files staged into it) expires that long after the last upload into it. Only staging bytes refreshes
+that time: opening the page, saving a design or a refused request does not, so a draft left idle is swept even while
+its page stays open. Submitting a draft is the exception; a submitted draft is kept while its job runs. Staged bytes
+are budgeted per account and, for anonymous uploads, per upload link and server-wide (`Agora__MaxStagedBytesPerAccount`,
+`Agora__PublicUploads__MaxOpenDraftBytesPerToken`, `Agora__PublicUploads__MaxOpenDraftScratchFraction` below).
+
 Before a request body is read, Agora checks that the scratch area stays below `Agora__Scratch__MaxBytes` (when set)
 and that at least `Agora__Scratch__MinFreeBytes` remain free on the volume afterwards; the demand stays reserved while
 the upload is written or the archive is built, and a request that does not fit is refused with `507 Insufficient
@@ -516,6 +522,7 @@ In `Production` it warns when `Agora__TrustedProxies` is empty or `AllowedHosts`
 | `Agora__MaxFilesPerShare` | `20` | | Maximum files per share, enforced while files are staged |
 | `Agora__MaxFileSizeBytes` | `5368709120` (5 GB) | | Per-file upload limit; also caps one stage request (plus 1 MB of form overhead) |
 | `Agora__MaxTotalUploadBytes` | `10737418240` (10 GB) | | Per-share total, enforced per draft while staging (a stage request may carry at most what its draft still accepts) |
+| `Agora__MaxStagedBytesPerAccount` | `53687091200` (50 GB) | | Bytes one signed-in account may hold in staged uploads, share files and template backgrounds together, across all its unsubmitted drafts; admins are exempt, `0` disables. Over it a stage is refused with `413` |
 | `Agora__DownloadEventRetentionDays` | `90` | | How long download-event records are kept |
 | `Agora__ZombieUploadRetentionHours` | `24` | | Age after which abandoned staged uploads, drafts of signed-in users, share-creation status files, `tmp/` files and preview `.lock` markers are swept; also the shortest interval at which a polling download page can re-queue a missing preview |
 
@@ -550,6 +557,8 @@ In `Production` it warns when `Agora__TrustedProxies` is empty or `AllowedHosts`
 | `Agora__PublicUploads__MaxOpenDraftsPerToken` | `20` | Drafts one upload code may have open at once (files staged but not submitted, younger than the draft retention) |
 | `Agora__PublicUploads__MaxOpenDraftsPerIp` | `10` | Open drafts one client IP may have across all upload codes (addresses are indexed as SHA-256 hashes) |
 | `Agora__PublicUploads__DraftRetentionHours` | `6` | How long an anonymous draft and its staged files are kept after the last activity; an idle draft no longer counts as open |
+| `Agora__PublicUploads__MaxOpenDraftBytesPerToken` | `21474836480` (20 GB) | Bytes one upload link may hold in open (unsubmitted) anonymous drafts; `0` disables. Over it a stage is refused with `413` until drafts are submitted or expire |
+| `Agora__PublicUploads__MaxOpenDraftScratchFraction` | `0.5` | Share of the scratch budget that all open anonymous drafts together may hold; `0` disables. Scratch budget = `Agora__Scratch__MaxBytes` when greater than 0, otherwise total capacity of the `StorageRoot` volume minus `Agora__Scratch__MinFreeBytes` (capacity, not current free space). Over it a stage is refused with `507` |
 | `Agora__PublicUploads__MaxSharesPerCodePerDay` | `50` | Received shares one account may get through its upload link in any 24 hour window; `0` disables |
 | `Agora__PublicUploads__MaxBytesPerCodePerDay` | `21474836480` (20 GB) | Bytes of received shares per account in any 24 hour window; `0` disables. Both daily budgets are per account, so rotating the code does not reset them |
 | `Agora__PublicUploads__DefaultExpiryDays` | `30` | Expiry of a received share when the owner's default expiry cannot be resolved (every account has one, 7 days unless changed, so this is a fallback) |
