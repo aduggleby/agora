@@ -2027,12 +2027,18 @@ public sealed partial class ShareManager(
                 throw new UploadLimitException(UploadLimitKind.DraftSealed, "This upload was already submitted; start a new one to send more files.");
             }
 
-            var now = DateTime.UtcNow;
-            var next = metadata is null
-                ? new DraftShareMetadata(
+            if (metadata is not null)
+            {
+                // Opening an existing draft never refreshes it: only staging bytes does (StageUploadAsync), so a page
+                // that stays open or a refused request cannot keep an idle draft and its staged files alive.
+                return draftShareId;
+            }
+
+            await WriteDraftMetadataAsync(
+                new DraftShareMetadata(
                     DraftShareId: draftShareId,
                     OwnerUserId: ownerUserId,
-                    LastActivityUtc: now,
+                    LastActivityUtc: DateTime.UtcNow,
                     TemplateMode: "account_default",
                     Title: string.Empty,
                     H1: string.Empty,
@@ -2041,10 +2047,8 @@ public sealed partial class ShareManager(
                     BackgroundUploadId: null,
                     BackgroundColorHex: null,
                     ContainerPosition: "center",
-                    PublicUpload: publicUpload)
-                : metadata with { LastActivityUtc = now };
-
-            await WriteDraftMetadataAsync(next, cancellationToken);
+                    PublicUpload: publicUpload),
+                cancellationToken);
             return draftShareId;
         }
     }
@@ -2066,12 +2070,8 @@ public sealed partial class ShareManager(
             return new DraftTemplateState(draftShareId, "account_default", string.Empty, string.Empty, string.Empty, null, null, null, "center");
         }
 
-        var updated = metadata with { LastActivityUtc = DateTime.UtcNow };
-        using (await draftLocks.LockAsync(DraftLockKey(updated.DraftShareId), cancellationToken))
-        {
-            await WriteDraftMetadataAsync(updated, cancellationToken);
-        }
-
+        // A read: viewing the draft (new-share page, designer) must not refresh its activity.
+        var updated = metadata;
         return new DraftTemplateState(
             draftShareId,
             string.IsNullOrWhiteSpace(updated.TemplateMode) ? "account_default" : updated.TemplateMode,
@@ -2109,7 +2109,8 @@ public sealed partial class ShareManager(
             var next = new DraftShareMetadata(
                 DraftShareId: normalizedId,
                 OwnerUserId: ownerUserId,
-                LastActivityUtc: DateTime.UtcNow,
+                // Saving the design is not staging: an existing draft keeps its activity time and lease.
+                LastActivityUtc: metadata?.LastActivityUtc ?? DateTime.UtcNow,
                 TemplateMode: string.Equals(templateMode, "per_upload", StringComparison.OrdinalIgnoreCase) ? "per_upload" : "account_default",
                 Title: template.Title,
                 H1: template.H1,
@@ -2118,7 +2119,8 @@ public sealed partial class ShareManager(
                 BackgroundUploadId: string.IsNullOrWhiteSpace(backgroundUploadId) ? null : backgroundUploadId.Trim(),
                 BackgroundColorHex: template.BackgroundColorHex,
                 ContainerPosition: NormalizeContainerPosition(template.ContainerPosition),
-                PublicUpload: metadata?.PublicUpload ?? false);
+                PublicUpload: metadata?.PublicUpload ?? false,
+                ProcessingLeaseUtc: metadata?.ProcessingLeaseUtc);
 
             await WriteDraftMetadataAsync(next, cancellationToken);
         }

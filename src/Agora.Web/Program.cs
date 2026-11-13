@@ -1118,6 +1118,19 @@ app.MapPost("/api/public-uploads/create-share", async (
         return Results.NotFound("Upload link not found.");
     }
 
+    var uploadedFileIds = form["uploadedFileIds"]
+        .Select(x => x?.Trim())
+        .Where(x => !string.IsNullOrWhiteSpace(x))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Cast<string>()
+        .ToArray();
+
+    // Refused before the draft is opened or looked at.
+    if (uploadedFileIds.Length == 0)
+    {
+        return Results.BadRequest("At least one file is required.");
+    }
+
     try
     {
         draftShareId = await manager.EnsurePublicUploadDraftAsync(user.Id, draftShareId, user.UploadToken, ClientAddress(context), ct);
@@ -1130,13 +1143,6 @@ app.MapPost("/api/public-uploads/create-share", async (
     {
         return UploadLimitText(ex);
     }
-
-    var uploadedFileIds = form["uploadedFileIds"]
-        .Select(x => x?.Trim())
-        .Where(x => !string.IsNullOrWhiteSpace(x))
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .Cast<string>()
-        .ToArray();
 
     IReadOnlyList<ShareManager.StagedUploadFile> stagedUploads;
     try

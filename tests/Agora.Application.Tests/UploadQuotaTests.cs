@@ -524,7 +524,8 @@ public sealed class UploadQuotaTests
 
         await harness.Manager.DeleteDraftShareAsync(OwnerId, fresh, CancellationToken.None);
         Assert.Equal(stale, await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, stale, "code1", "10.0.0.1", CancellationToken.None));
-        // Revived: it counts again.
+        // Reviving only passes admission; the draft counts again once bytes are staged into it.
+        await harness.StageAsync(stale, "again.txt", 3);
         await Assert.ThrowsAsync<UploadLimitException>(() =>
             harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None));
     }
@@ -551,6 +552,50 @@ public sealed class UploadQuotaTests
         Assert.True(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "drafts", signedIn)));
         Assert.Empty(await harness.Manager.ListStagedUploadsForDraftAsync(OwnerId, anonymous, CancellationToken.None));
         Assert.Single(await harness.Manager.ListStagedUploadsForDraftAsync(OwnerId, signedIn, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Sweep_ReclaimsAPublicDraftThatOnlyRefusedRequestsKeptTouching()
+    {
+        await using var harness = await Harness.CreateAsync(o => o.PublicUploads.DraftRetentionHours = 1);
+        var draftId = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        await harness.StageAsync(draftId, "big.bin", 8);
+        harness.BackdateDraft(draftId, TimeSpan.FromHours(2));
+
+        // The create-share route with no files opens the draft every time and then refuses.
+        for (var i = 0; i < 3; i++)
+        {
+            await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, draftId, "code1", "10.0.0.1", CancellationToken.None);
+            await harness.Manager.EnsureDraftShareAsync(OwnerId, draftId, CancellationToken.None, publicUpload: true);
+        }
+
+        await harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
+
+        Assert.False(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "drafts", draftId)));
+        Assert.Equal(0, harness.StagedDirectoryCount());
+    }
+
+    [Fact]
+    public async Task ViewingOrSavingADraft_DoesNotRefreshItsActivity_ButStagingDoes()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var draftId = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
+        harness.BackdateDraft(draftId, TimeSpan.FromHours(30));
+        var backdated = harness.DraftActivity(draftId);
+
+        await harness.Manager.EnsureDraftShareAsync(OwnerId, draftId, CancellationToken.None);
+        await harness.Manager.GetDraftTemplateAsync(OwnerId, draftId, CancellationToken.None);
+        await harness.Manager.SaveDraftTemplateAsync(
+            OwnerId, draftId, "per_upload", new ShareTemplateData("t", "h", "d", null, null, "center"), null, CancellationToken.None);
+        Assert.Equal(backdated, harness.DraftActivity(draftId));
+
+        await harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
+        Assert.False(Directory.Exists(Path.Combine(harness.StorageRoot, "uploads", "drafts", draftId)));
+
+        var other = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
+        harness.BackdateDraft(other, TimeSpan.FromHours(30));
+        await harness.StageAsync(other, "a.txt", 3);
+        Assert.True(harness.DraftActivity(other) > DateTime.UtcNow.AddMinutes(-1));
     }
 
     [Fact]
@@ -931,6 +976,12 @@ public sealed class UploadQuotaTests
             var node = JsonNode.Parse(File.ReadAllText(metadataPath))!.AsObject();
             node["CreatedAtUtc"] = (DateTime.UtcNow - age).ToString("O");
             File.WriteAllText(metadataPath, node.ToJsonString());
+        }
+
+        public DateTime DraftActivity(string draftId)
+        {
+            var path = Path.Combine(StorageRoot, "uploads", "drafts", draftId, "draft.json");
+            return JsonNode.Parse(File.ReadAllText(path))!["LastActivityUtc"]!.GetValue<DateTime>();
         }
 
         public void BackdateDraft(string draftId, TimeSpan age)
