@@ -61,6 +61,7 @@
               <button
                 type="button"
                 class="text-xs @(user.IsEnabled ? "text-ink-muted hover:text-danger" : "text-sage hover:underline")"
+                title="A disabled account cannot sign in, and its share links are suspended until it is enabled again"
                 data-user-enabled-toggle
                 data-user-id="@user.Id"
                 data-next-enabled="@(!user.IsEnabled).ToString().ToLowerInvariant()">

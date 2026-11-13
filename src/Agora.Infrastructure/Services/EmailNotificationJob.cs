@@ -48,11 +48,11 @@ public sealed class EmailNotificationJob(
         var ownerUserId = share?.OwnerUserId;
         var recipient = share is null || ownerUserId is null || share.DeletedAtUtc is not null
             ? null
-            : await db.Users.Where(x => x.Id == ownerUserId).Select(x => x.Email).SingleOrDefaultAsync(cancellationToken);
+            : await db.Users.Where(x => x.Id == ownerUserId && x.IsEnabled).Select(x => x.Email).SingleOrDefaultAsync(cancellationToken);
         if (share is null || string.IsNullOrWhiteSpace(recipient))
         {
-            performContext?.WriteLine("Notification skipped: share deleted or owner not found.");
-            pending.ForEach(x => x.NotificationError = "Share deleted or owner not found.");
+            performContext?.WriteLine("Notification skipped: share deleted, or owner not found or disabled.");
+            pending.ForEach(x => x.NotificationError = "Share deleted, or owner not found or disabled.");
             await db.SaveChangesAsync(cancellationToken);
             return;
         }
@@ -125,11 +125,11 @@ public sealed class EmailNotificationJob(
         var ownerUserId = share.OwnerUserId;
         var recipient = ownerUserId is null || share.DeletedAtUtc is not null
             ? null
-            : await db.Users.Where(x => x.Id == ownerUserId).Select(x => x.Email).SingleOrDefaultAsync(cancellationToken);
+            : await db.Users.Where(x => x.Id == ownerUserId && x.IsEnabled).Select(x => x.Email).SingleOrDefaultAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(recipient))
         {
-            performContext?.WriteLine("Notification skipped: share deleted or owner not found.");
-            downloadEvent.NotificationError = "Share deleted or owner not found.";
+            performContext?.WriteLine("Notification skipped: share deleted, or owner not found or disabled.");
+            downloadEvent.NotificationError = "Share deleted, or owner not found or disabled.";
             await db.SaveChangesAsync(cancellationToken);
             return;
         }

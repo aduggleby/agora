@@ -1589,7 +1589,7 @@ app.MapGet("/api/shares/{token}", async (ShareManager manager, string token, Can
         return Results.NotFound();
     }
 
-    if (ShareManager.IsExpired(share, DateTime.UtcNow))
+    if (await manager.IsGoneAsync(share, ct))
     {
         return Results.StatusCode(StatusCodes.Status410Gone);
     }

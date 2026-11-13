@@ -83,7 +83,9 @@ public class IndexModel(ShareManager manager, IObjectStore objectStore, ShareExp
             return NotFound("Share not found.");
         }
 
-        IsExpired = IsExpired || ShareManager.IsExpired(Share, DateTime.UtcNow);
+        // A disabled owner's share reads as expired, with nothing of it shown, until the account is enabled again.
+        var ownerDisabled = await manager.IsOwnerDisabledAsync(Share, ct);
+        IsExpired = IsExpired || ownerDisabled || ShareManager.IsExpired(Share, DateTime.UtcNow);
         if (IsExpired)
         {
             // The expired view is still rendered, but crawlers and clients see the share is gone.
@@ -97,10 +99,10 @@ public class IndexModel(ShareManager manager, IObjectStore objectStore, ShareExp
         }
 
         RequiresPassword = !string.IsNullOrWhiteSpace(Share.DownloadPasswordHash);
-        if (ShareModes.IsDirectLink(Share.AccessMode) || (RequiresPassword && (IsExpired || !ShareUnlockGate.IsUnlocked(HttpContext, Share.Id))))
+        if (ShareModes.IsDirectLink(Share.AccessMode) || ownerDisabled || (RequiresPassword && (IsExpired || !ShareUnlockGate.IsUnlocked(HttpContext, Share.Id))))
         {
-            // Expired direct links and locked (or expired) password shares: no name, title, description, size,
-            // background or sender, in the body or the meta tags.
+            // Expired direct links, shares of a disabled owner and locked (or expired) password shares: no name,
+            // title, description, size, background or sender, in the body or the meta tags.
             IsGeneric = true;
             IsLocked = RequiresPassword && !IsExpired;
             DisplayH1 = IsLocked ? "Password-protected share" : "This link has expired";

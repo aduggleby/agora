@@ -22,7 +22,8 @@ with one data volume, a SQL Server or PostgreSQL database, and optionally an S3-
   ([API](docs/api/v1.md))
 - Share history with a separate "Received" section for files that arrived through your upload link
 - Accounts with email confirmation, password reset, display name and per-account share defaults
-- Admin page (`/admin`): manage users and roles, enable or disable accounts, switch registration off
+- Admin page (`/admin`): manage users and roles, enable or disable accounts (a disabled account's share links are
+  suspended until it is enabled again), switch registration off
 - Health endpoints (`/live`, `/ready`) and a Hangfire dashboard (`/hangfire`) for admins
 - Two database providers (SQL Server, PostgreSQL) and two storage providers (local file system, S3-compatible)
 - Mobile-friendly public pages, quick-share drag-and-drop from the dashboard
@@ -452,6 +453,10 @@ address (an office NAT counts as one client).
 - Shares and the download-page template belong to the account id, never to the email address: they stay with the
   account through an email change, deleting a user deletes its shares and template, and a later account registered
   under a freed address inherits nothing.
+- Disabling an account ends its sessions, API tokens and upload link and also suspends its share links and direct
+  links: while the account is disabled they answer like an expired share (410, generic "expired" page), and download
+  notifications to it are skipped. Enabling the account again brings the links back unchanged. Deleting the account
+  deletes its shares for good.
 - Admins cannot demote, disable or delete the last enabled admin, nor their own account from the admin forms.
 
 ### What the app logs

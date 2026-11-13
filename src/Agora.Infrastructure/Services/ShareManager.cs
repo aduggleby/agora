@@ -571,13 +571,20 @@ public sealed class ShareManager(
             .SingleOrDefaultAsync(x => x.ShareToken == token, cancellationToken);
     }
 
-    /// <summary>Fresh, untracked read of whether the share can still be served (not deleted, not expired).</summary>
+    /// <summary>
+    /// Fresh, untracked read of whether the share can still be served (not deleted, not expired, owner not disabled).
+    /// </summary>
     public async Task<bool> IsShareActiveAsync(Guid shareId, CancellationToken cancellationToken)
     {
         var state = await db.Shares
             .AsNoTracking()
             .Where(x => x.Id == shareId)
-            .Select(x => new { x.DeletedAtUtc, x.ExpiresAtUtc })
+            .Select(x => new
+            {
+                x.DeletedAtUtc,
+                x.ExpiresAtUtc,
+                OwnerDisabled = db.Users.Any(u => u.Id == x.OwnerUserId && !u.IsEnabled)
+            })
             .SingleOrDefaultAsync(cancellationToken);
         if (state is null)
         {
@@ -585,8 +592,28 @@ public sealed class ShareManager(
         }
 
         var now = DateTime.UtcNow;
-        return state.DeletedAtUtc is null && (state.ExpiresAtUtc is null || now < state.ExpiresAtUtc.Value);
+        return state.DeletedAtUtc is null && (state.ExpiresAtUtc is null || now < state.ExpiresAtUtc.Value) && !state.OwnerDisabled;
     }
+
+    /// <summary>
+    /// Whether a found, not deleted share answers like an expired one (410) on the anonymous routes: it expired, or
+    /// the account that owns it is disabled. A disabled owner's shares serve again once the account is enabled;
+    /// rows without an owner keep serving.
+    /// </summary>
+    public async Task<bool> IsGoneAsync(Share share, CancellationToken cancellationToken)
+    {
+        if (IsExpired(share, DateTime.UtcNow))
+        {
+            return true;
+        }
+
+        return await IsOwnerDisabledAsync(share, cancellationToken);
+    }
+
+    /// <summary>Whether the account that owns the share exists and is disabled (false for rows without an owner).</summary>
+    public async Task<bool> IsOwnerDisabledAsync(Share share, CancellationToken cancellationToken) =>
+        share.OwnerUserId is { } ownerUserId
+        && await db.Users.AsNoTracking().AnyAsync(u => u.Id == ownerUserId && !u.IsEnabled, cancellationToken);
 
     public Task<Share?> FindByTokenForUploaderAsync(string token, ShareOwner owner, CancellationToken cancellationToken)
     {

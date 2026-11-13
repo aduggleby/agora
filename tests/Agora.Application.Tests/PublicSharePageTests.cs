@@ -231,6 +231,45 @@ public sealed class PublicSharePageTests
         Assert.Contains("Share design saved", page.Body);
     }
 
+    [Fact]
+    public async Task A_disabled_owners_shares_read_as_expired_until_the_account_is_enabled_again()
+    {
+        await using var host = await Host.StartAsync();
+        var share = await host.AddShareAsync("ownerofs", archive: true, accessMode: "preview_and_download", withFile: true);
+        var fileId = share.Files.Single().Id;
+        await host.AddShareAsync("ownerdl1", accessMode: "direct_link", withFile: true);
+        var orphan = await host.AddShareAsync("orphan01");
+        await host.ClearOwnerAsync(orphan.Id);
+
+        await host.SetOwnerEnabledAsync(false);
+
+        var page = await host.SendAsync(HttpMethods.Get, "/s/ownerofs");
+        Assert.Equal(StatusCodes.Status410Gone, page.Status);
+        Assert.Contains("This link has expired", page.Body);
+        Assert.DoesNotContain(SecretH1, page.Body);
+        var directLink = await host.SendAsync(HttpMethods.Get, "/s/ownerdl1");
+        Assert.Equal(StatusCodes.Status410Gone, directLink.Status);
+        Assert.Contains("This link has expired", directLink.Body);
+        Assert.Equal(StatusCodes.Status410Gone, (await host.PostFormAsync("/s/ownerofs/download", string.Empty)).Status);
+        foreach (var path in new[] { "/s/ownerofs/background", "/s/ownerofs/files", $"/s/ownerofs/files/{fileId}", $"/s/ownerofs/files/{fileId}/preview-status" })
+        {
+            Assert.Equal(StatusCodes.Status410Gone, (await host.SendAsync(HttpMethods.Get, path)).Status);
+        }
+
+        Assert.Equal(0, await host.DownloadCountAsync(share.Id));
+        // A legacy row without an owner is not affected.
+        Assert.Equal(StatusCodes.Status200OK, (await host.SendAsync(HttpMethods.Get, "/s/orphan01")).Status);
+
+        await host.SetOwnerEnabledAsync(true);
+
+        Assert.Equal(StatusCodes.Status200OK, (await host.SendAsync(HttpMethods.Get, "/s/ownerofs")).Status);
+        var served = await host.SendAsync(HttpMethods.Get, "/s/ownerdl1");
+        Assert.Equal(StatusCodes.Status200OK, served.Status);
+        Assert.Equal("hello", served.Body);
+        Assert.Equal(StatusCodes.Status200OK, (await host.PostFormAsync("/s/ownerofs/download", string.Empty)).Status);
+        Assert.Equal(StatusCodes.Status200OK, (await host.SendAsync(HttpMethods.Get, $"/s/ownerofs/files/{fileId}")).Status);
+    }
+
     private sealed record Response(int Status, string Body, IHeaderDictionary Headers);
 
     private sealed class Host : IAsyncDisposable
@@ -378,6 +417,24 @@ public sealed class PublicSharePageTests
                 .CreateProtector(ShareUnlockGate.Purpose)
                 .ToTimeLimitedDataProtector()
                 .Protect(shareId.ToString("N"), expiresAt);
+
+        public async Task SetOwnerEnabledAsync(bool enabled)
+        {
+            using var scope = _app.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AgoraDbContext>();
+            var owner = await db.Users.SingleAsync(x => x.Id == OwnerId);
+            owner.IsEnabled = enabled;
+            await db.SaveChangesAsync();
+        }
+
+        public async Task ClearOwnerAsync(Guid shareId)
+        {
+            using var scope = _app.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AgoraDbContext>();
+            var share = await db.Shares.SingleAsync(x => x.Id == shareId);
+            share.OwnerUserId = null;
+            await db.SaveChangesAsync();
+        }
 
         public async Task<int> DownloadCountAsync(Guid shareId)
         {

@@ -161,6 +161,21 @@ public sealed class DownloadNotificationCoalescingTests
         Assert.Equal(2, (await none.EventsAsync()).Count);
     }
 
+    [Fact]
+    public async Task A_disabled_owner_gets_no_download_email()
+    {
+        await using var harness = await Harness.CreateAsync();
+        await harness.RecordDownloadAsync();
+        await harness.SetOwnerEnabledAsync(false);
+
+        await harness.RunJobsAsync();
+
+        Assert.Empty(harness.Emails.Sent);
+        var skipped = Assert.Single(await harness.EventsAsync());
+        Assert.False(skipped.NotificationSent);
+        Assert.Equal("Share deleted, or owner not found or disabled.", skipped.NotificationError);
+    }
+
     private sealed class Harness : IAsyncDisposable
     {
         private readonly SqliteConnection _connection;
@@ -244,6 +259,15 @@ public sealed class DownloadNotificationCoalescingTests
                     NullLogger<EmailNotificationJob>.Instance);
                 await notificationJob.ProcessShareDownloadsAsync((Guid)job.Args[0], (string)job.Args[1], CancellationToken.None);
             }
+        }
+
+        public async Task SetOwnerEnabledAsync(bool enabled)
+        {
+            await using var db = NewDb(_connection);
+            var share = await db.Shares.SingleAsync(x => x.Id == _shareId);
+            var owner = await db.Users.SingleAsync(x => x.Id == share.OwnerUserId);
+            owner.IsEnabled = enabled;
+            await db.SaveChangesAsync();
         }
 
         public async Task<List<DownloadEvent>> EventsAsync()

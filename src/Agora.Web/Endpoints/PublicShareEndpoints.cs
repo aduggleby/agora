@@ -27,9 +27,9 @@ public static class PublicShareEndpoints
                 return Results.NotFound();
             }
 
-            if (ShareManager.IsExpired(share, DateTime.UtcNow))
+            if (await manager.IsGoneAsync(share, ct))
             {
-                logger.LogInformation("Background request for share {TokenRef} denied: share expired.", LogSafe.Token(token));
+                logger.LogInformation("Background request for share {TokenRef} denied: share expired or owner disabled.", LogSafe.Token(token));
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
 
@@ -81,7 +81,7 @@ public static class PublicShareEndpoints
                 return Results.NotFound();
             }
 
-            if (ShareManager.IsExpired(share, DateTime.UtcNow))
+            if (await manager.IsGoneAsync(share, ct))
             {
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
@@ -99,7 +99,8 @@ public static class PublicShareEndpoints
                         await objectStore.PutBytesAsync(cacheKey, imageBytes, "image/png", ct);
                         if (!await manager.IsShareActiveAsync(share.Id, ct))
                         {
-                            // Deleted or expired while rendering: the prefix purge may already have run, so remove our write.
+                            // Deleted, expired or owner disabled while rendering: the prefix purge may already have run, so
+                            // remove our write.
                             await objectStore.DeleteAsync(cacheKey, ct);
                             return Results.NotFound();
                         }
@@ -126,7 +127,7 @@ public static class PublicShareEndpoints
                 return Results.NotFound();
             }
 
-            if (ShareManager.IsExpired(share, DateTime.UtcNow))
+            if (await manager.IsGoneAsync(share, ct))
             {
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
@@ -159,7 +160,7 @@ public static class PublicShareEndpoints
                 return Results.NotFound();
             }
 
-            if (ShareManager.IsExpired(share, DateTime.UtcNow))
+            if (await manager.IsGoneAsync(share, ct))
             {
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
@@ -208,7 +209,7 @@ public static class PublicShareEndpoints
                 return Results.NotFound();
             }
 
-            if (ShareManager.IsExpired(share, DateTime.UtcNow))
+            if (await manager.IsGoneAsync(share, ct))
             {
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
@@ -247,7 +248,7 @@ public static class PublicShareEndpoints
                 return Results.NotFound();
             }
 
-            if (ShareManager.IsExpired(share, DateTime.UtcNow))
+            if (await manager.IsGoneAsync(share, ct))
             {
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
@@ -285,7 +286,7 @@ public static class PublicShareEndpoints
                 return Results.NotFound();
             }
 
-            if (ShareManager.IsExpired(share, DateTime.UtcNow))
+            if (await manager.IsGoneAsync(share, ct))
             {
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
@@ -328,7 +329,7 @@ public static class PublicShareEndpoints
                 return Results.NotFound();
             }
 
-            if (ShareManager.IsExpired(share, DateTime.UtcNow))
+            if (await manager.IsGoneAsync(share, ct))
             {
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
@@ -379,7 +380,7 @@ public static class PublicShareEndpoints
                 return Results.NotFound();
             }
 
-            if (ShareManager.IsExpired(share, DateTime.UtcNow))
+            if (await manager.IsGoneAsync(share, ct))
             {
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
@@ -477,7 +478,7 @@ public static class PublicShareEndpoints
                 return Results.NotFound();
             }
 
-            if (ShareManager.IsExpired(share, DateTime.UtcNow))
+            if (await manager.IsGoneAsync(share, ct))
             {
                 return Results.StatusCode(StatusCodes.Status410Gone);
             }
