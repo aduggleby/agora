@@ -38,6 +38,7 @@ public class AgoraDbContext : DbContext
     public DbSet<UserAccount> Users => Set<UserAccount>();
     public DbSet<SystemSetting> SystemSettings => Set<SystemSetting>();
     public DbSet<ApiToken> ApiTokens => Set<ApiToken>();
+    public DbSet<ShareTokenReservation> ShareTokenReservations => Set<ShareTokenReservation>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -59,6 +60,16 @@ public class AgoraDbContext : DbContext
             builder.Property(x => x.DownloadPasswordHash).HasMaxLength(1000);
             builder.Property(x => x.PageBackgroundColorHex).HasMaxLength(16);
             builder.Property(x => x.PageContainerPosition).HasMaxLength(32);
+        });
+
+        modelBuilder.Entity<ShareTokenReservation>(builder =>
+        {
+            builder.HasKey(x => x.Id);
+            // Same width as Shares.ShareToken, and the same collation, so both tables agree on what "the same token" is.
+            builder.HasIndex(x => x.Token).IsUnique();
+            builder.HasIndex(x => x.CreatedAtUtc);
+            builder.Property(x => x.Token).HasMaxLength(120);
+            builder.Property(x => x.DraftShareId).HasMaxLength(64);
         });
 
         modelBuilder.Entity<ShareFile>(builder =>

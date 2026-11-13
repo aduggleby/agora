@@ -339,6 +339,38 @@ namespace Agora.Infrastructure.Migrations
                     b.ToTable("ShareFiles");
                 });
 
+            modelBuilder.Entity("Agora.Domain.Entities.ShareTokenReservation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DraftShareId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("OwnerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Token")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAtUtc");
+
+                    b.HasIndex("Token")
+                        .IsUnique();
+
+                    b.ToTable("ShareTokenReservations");
+                });
+
             modelBuilder.Entity("Agora.Domain.Entities.SystemSetting", b =>
                 {
                     b.Property<string>("Key")

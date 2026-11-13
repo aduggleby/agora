@@ -337,6 +337,38 @@ namespace Agora.Infrastructure.Migrations.Postgres
                     b.ToTable("ShareFiles");
                 });
 
+            modelBuilder.Entity("Agora.Domain.Entities.ShareTokenReservation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DraftShareId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid>("OwnerUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Token")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAtUtc");
+
+                    b.HasIndex("Token")
+                        .IsUnique();
+
+                    b.ToTable("ShareTokenReservations");
+                });
+
             modelBuilder.Entity("Agora.Domain.Entities.SystemSetting", b =>
                 {
                     b.Property<string>("Key")
