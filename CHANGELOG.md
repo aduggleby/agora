@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
-- Drafts now expire after their idle time even if the page stays open: only uploading a file refreshes a draft. Opening or reloading the new-share page, saving a design or a refused request no longer keeps it (and its staged files) alive. A draft idle for more than 24 hours (6 hours for an upload link) is cleaned up, so a page left open overnight may need a reload before the next upload.
+- Drafts now expire after their idle time even if the page stays open: only uploading a file refreshes a draft. Opening or reloading the new-share page, saving a design or a refused request no longer keeps it (and its staged files) alive. A draft idle for more than 24 hours (6 hours for an upload link) is cleaned up, so files uploaded to a page that was left open overnight are gone and must be added again.
 - Signed-in accounts may hold up to 50 GB of staged uploads (files and template backgrounds together, across all drafts); admins are exempt. Configurable with `Agora__MaxStagedBytesPerAccount`. Over the limit an upload is refused with 413.
 - An upload link may hold up to 20 GB in open drafts (`Agora__PublicUploads__MaxOpenDraftBytesPerToken`), and all open anonymous drafts together up to half of the scratch budget (`Agora__PublicUploads__MaxOpenDraftScratchFraction`, see the README for the formula). Over the first limit an upload is refused with 413, over the second with 507.
 - A share creation job that finds the scratch area full is retried later instead of failing and deleting the staged files.
