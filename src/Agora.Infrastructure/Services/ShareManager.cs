@@ -642,7 +642,15 @@ public sealed class ShareManager(
             .ToListAsync(cancellationToken);
     }
 
-    public async Task<bool> DeleteShareAsync(Guid shareId, ShareOwner owner, CancellationToken cancellationToken)
+    /// <summary>The most shares one batch delete accepts; the home list shows at most this many.</summary>
+    public const int MaxBatchDeleteShares = 100;
+
+    /// <summary>
+    /// Soft-deletes one of the owner's shares and queues its file cleanup. The cleanup is queued on the first delete;
+    /// for a share that is already deleted only when <paramref name="requeueCleanup"/> is set (a retry after a failed
+    /// enqueue), so repeated calls cannot pile up cleanup jobs.
+    /// </summary>
+    public async Task<bool> DeleteShareAsync(Guid shareId, ShareOwner owner, CancellationToken cancellationToken, bool requeueCleanup = false)
     {
         var share = await SharesOwnedBy(owner).SingleOrDefaultAsync(x => x.Id == shareId, cancellationToken);
         if (share is null)
@@ -650,14 +658,43 @@ public sealed class ShareManager(
             return false;
         }
 
-        if (share.DeletedAtUtc is null)
+        var firstDelete = share.DeletedAtUtc is null;
+        if (firstDelete)
         {
             share.DeletedAtUtc = DateTime.UtcNow;
             await db.SaveChangesAsync(cancellationToken);
         }
 
-        backgroundJobs.Enqueue<ShareManager>(x => x.DeleteShareFilesAsync(shareId, CancellationToken.None));
+        if (firstDelete || requeueCleanup)
+        {
+            backgroundJobs.Enqueue<ShareManager>(x => x.DeleteShareFilesAsync(shareId, CancellationToken.None));
+        }
+
         return true;
+    }
+
+    /// <summary>
+    /// Deletes several of the owner's shares. Returns null (and changes nothing) for more than
+    /// <see cref="MaxBatchDeleteShares"/> distinct ids, otherwise the number of shares that were deleted or already were.
+    /// </summary>
+    public async Task<int?> DeleteSharesAsync(IReadOnlyCollection<Guid> shareIds, ShareOwner owner, CancellationToken cancellationToken)
+    {
+        var ids = shareIds.Distinct().ToArray();
+        if (ids.Length > MaxBatchDeleteShares)
+        {
+            return null;
+        }
+
+        var deleted = 0;
+        foreach (var shareId in ids)
+        {
+            if (await DeleteShareAsync(shareId, owner, cancellationToken))
+            {
+                deleted += 1;
+            }
+        }
+
+        return deleted;
     }
 
     public async Task<bool> ReenableShareFor24HoursAsync(Guid shareId, ShareOwner owner, CancellationToken cancellationToken)

@@ -741,13 +741,10 @@ app.MapPost("/shares/delete-batch", async (HttpContext context, ShareManager man
         return Results.Redirect("/?msg=No%20shares%20selected");
     }
 
-    var deleted = 0;
-    foreach (var shareId in shareIds)
+    var deleted = await manager.DeleteSharesAsync(shareIds, owner, ct);
+    if (deleted is null)
     {
-        if (await manager.DeleteShareAsync(shareId, owner, ct))
-        {
-            deleted += 1;
-        }
+        return Results.Redirect($"/?msg={Uri.EscapeDataString($"Select at most {ShareManager.MaxBatchDeleteShares} shares at a time")}");
     }
 
     return Results.Redirect($"/?msg={Uri.EscapeDataString($"Deleted {deleted} share(s)")}");

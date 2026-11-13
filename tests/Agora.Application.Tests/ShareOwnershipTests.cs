@@ -124,6 +124,44 @@ public sealed class ShareOwnershipTests
     }
 
     [Fact]
+    public async Task Deleting_a_share_queues_cleanup_once_unless_requeue_is_requested()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var ownerId = harness.AddUser(Email).Id;
+        var share = harness.AddShare(ownerId, Email, "owned");
+        await harness.Db.SaveChangesAsync();
+        var owner = ShareOwner.For(ownerId, Email);
+
+        Assert.True(await harness.Manager.DeleteShareAsync(share.Id, owner, CancellationToken.None));
+        Assert.Equal(1, harness.Jobs.Enqueued);
+
+        Assert.Equal(1, await harness.Manager.DeleteSharesAsync([share.Id], owner, CancellationToken.None));
+        Assert.True(await harness.Manager.DeleteShareAsync(share.Id, owner, CancellationToken.None));
+        Assert.Equal(1, harness.Jobs.Enqueued);
+
+        Assert.True(await harness.Manager.DeleteShareAsync(share.Id, owner, CancellationToken.None, requeueCleanup: true));
+        Assert.Equal(2, harness.Jobs.Enqueued);
+    }
+
+    [Fact]
+    public async Task Batch_delete_refuses_more_than_the_limit_and_changes_nothing()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var ownerId = harness.AddUser(Email).Id;
+        var share = harness.AddShare(ownerId, Email, "owned");
+        await harness.Db.SaveChangesAsync();
+        var owner = ShareOwner.For(ownerId, Email);
+
+        var ids = Enumerable.Range(0, ShareManager.MaxBatchDeleteShares).Select(_ => Guid.NewGuid()).ToList();
+        Assert.Equal(0, await harness.Manager.DeleteSharesAsync(ids, owner, CancellationToken.None));
+
+        ids.Add(share.Id);
+        Assert.Null(await harness.Manager.DeleteSharesAsync(ids, owner, CancellationToken.None));
+        Assert.Equal(0, harness.Jobs.Enqueued);
+        Assert.Equal(0, await harness.Db.Shares.CountAsync(x => x.DeletedAtUtc != null));
+    }
+
+    [Fact]
     public async Task CreateShareAsync_stamps_the_owner_from_the_command()
     {
         await using var harness = await Harness.CreateAsync();
@@ -293,10 +331,12 @@ public sealed class ShareOwnershipTests
         public ShareManager Manager { get; }
         public AuthService Auth { get; }
         public KeyedAsyncLock Locks { get; }
+        public NoopBackgroundJobClient Jobs { get; }
         public string StorageRoot => _storageRoot;
 
-        private Harness(SqliteConnection connection, string storageRoot, AgoraDbContext db, ShareManager manager, KeyedAsyncLock locks)
+        private Harness(SqliteConnection connection, string storageRoot, AgoraDbContext db, ShareManager manager, KeyedAsyncLock locks, NoopBackgroundJobClient jobs)
         {
+            Jobs = jobs;
             _connection = connection;
             _storageRoot = storageRoot;
             Db = db;
@@ -336,16 +376,17 @@ public sealed class ShareOwnershipTests
             var objectStore = new FileSystemObjectStore(storageRoot);
             var scratch = new ScratchSpaceMonitor(options.Value, StorageProvider.FileSystem, _ => long.MaxValue, _ => 0, TimeProvider.System);
             var locks = new KeyedAsyncLock();
+            var jobs = new NoopBackgroundJobClient();
             var manager = new ShareManager(
                 db,
                 options,
                 new ShareContentStore(objectStore),
                 objectStore,
-                new NoopBackgroundJobClient(),
+                jobs,
                 locks,
                 scratch,
                 NullLogger<ShareManager>.Instance);
-            return new Harness(connection, storageRoot, db, manager, locks);
+            return new Harness(connection, storageRoot, db, manager, locks, jobs);
         }
 
         public UserAccount AddUser(string email)
@@ -430,7 +471,14 @@ public sealed class ShareOwnershipTests
 
     private sealed class NoopBackgroundJobClient : IBackgroundJobClient
     {
-        public string Create(Job job, IState state) => Guid.NewGuid().ToString("N");
+        public int Enqueued { get; private set; }
+
+        public string Create(Job job, IState state)
+        {
+            Enqueued += 1;
+            return Guid.NewGuid().ToString("N");
+        }
+
         public bool ChangeState(string jobId, IState state, string expectedState) => true;
     }
 }

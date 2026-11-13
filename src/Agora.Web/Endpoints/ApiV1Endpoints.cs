@@ -298,9 +298,9 @@ public static class ApiV1Endpoints
             return ApiError(StatusCodes.Status404NotFound, "No such direct link.");
         }
 
-        // Always through the manager, even when the row is already marked deleted: it is idempotent and (re)queues the
+        // Always through the manager, even when the row is already marked deleted: it is idempotent and, with requeueCleanup, queues the
         // file cleanup, so a retry after a failed enqueue still removes the durable content.
-        await manager.DeleteShareAsync(share.Id, owner, ct);
+        await manager.DeleteShareAsync(share.Id, owner, ct, requeueCleanup: true);
         return Results.NoContent();
     }
 
