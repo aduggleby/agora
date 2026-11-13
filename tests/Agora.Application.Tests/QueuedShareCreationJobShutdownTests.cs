@@ -10,7 +10,9 @@ using Agora.Web.Hubs;
 using Agora.Web.Services;
 using Hangfire;
 using Hangfire.Common;
+using Hangfire.Server;
 using Hangfire.States;
+using Hangfire.Storage;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -156,19 +158,10 @@ public sealed class QueuedShareCreationJobShutdownTests
     }
 
     [Fact]
-    public async Task Insufficient_scratch_is_rethrown_for_a_retry_and_keeps_the_staged_uploads()
+    public async Task Insufficient_scratch_from_the_real_reservation_is_rethrown_and_keeps_the_staged_uploads()
     {
-        await using var fixture = await Fixture.CreateAsync(onBroadcast: n =>
-        {
-            if (n == 2)
-            {
-                throw new UploadLimitException(UploadLimitKind.InsufficientStorage, "full");
-            }
-        });
-        var draftId = await fixture.Manager.EnsureDraftShareAsync(fixture.OwnerId, null, CancellationToken.None);
-        using var content = new MemoryStream([1, 2, 3]);
-        var staged = await fixture.Manager.StageUploadAsync(fixture.OwnerId, draftId, "f.bin", content.Length, content, CancellationToken.None);
-        await fixture.Manager.SealDraftAsync(fixture.OwnerId, draftId, CancellationToken.None);
+        await using var fixture = await Fixture.CreateAsync(onBroadcast: _ => { });
+        var (draftId, staged) = await fixture.SealedDraftWithFullScratchAsync();
 
         var ex = await Assert.ThrowsAsync<UploadLimitException>(() =>
             fixture.Job.ProcessAsync(Fixture.Payload(fixture.OwnerId, draftId, staged.UploadId), CancellationToken.None));
@@ -177,6 +170,56 @@ public sealed class QueuedShareCreationJobShutdownTests
         Assert.NotEqual("failed", fixture.Status.Read(ShareToken)!.State);
         Assert.True(Directory.Exists(staged.DirectoryPath));
         Assert.True(fixture.Manager.IsDraftSealed(draftId));
+        Assert.Empty(await fixture.Db.Shares.ToListAsync());
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("9")]
+    [InlineData(null)]
+    [InlineData("boom")]
+    [InlineData("throw")]
+    public async Task Insufficient_scratch_is_retried_when_the_retry_count_is_below_final_missing_or_unreadable(string? retryCount)
+    {
+        await using var fixture = await Fixture.CreateAsync(onBroadcast: _ => { });
+        var (draftId, staged) = await fixture.SealedDraftWithFullScratchAsync();
+        // A missing parameter reads as 0 and a connection that throws (here for "boom") must not fail the filter.
+        var context = Fixture.PerformContextWithRetryCount(retryCount);
+
+        var run = fixture.Job.ProcessAsync(Fixture.Payload(fixture.OwnerId, draftId, staged.UploadId), CancellationToken.None, context);
+
+        Assert.IsType<UploadLimitException>(await Record.ExceptionAsync(() => run));
+        Assert.True(Directory.Exists(staged.DirectoryPath));
+        Assert.NotEqual("failed", fixture.Status.Read(ShareToken)!.State);
+    }
+
+    [Fact]
+    public async Task Insufficient_scratch_on_the_final_attempt_fails_the_creation_and_frees_the_draft_scratch()
+    {
+        await using var fixture = await Fixture.CreateAsync(onBroadcast: _ => { });
+        var (draftId, staged) = await fixture.SealedDraftWithFullScratchAsync();
+
+        await fixture.Job.ProcessAsync(
+            Fixture.Payload(fixture.OwnerId, draftId, staged.UploadId), CancellationToken.None, Fixture.PerformContextWithRetryCount("10"));
+
+        Assert.Equal("failed", fixture.Status.Read(ShareToken)!.State);
+        Assert.False(Directory.Exists(staged.DirectoryPath));
+    }
+
+    [Fact]
+    public async Task A_terminal_failure_frees_the_scratch_of_a_sealed_anonymous_draft()
+    {
+        await using var fixture = await Fixture.CreateAsync(onBroadcast: n => { if (n == 2) { throw new InvalidOperationException("boom"); } });
+        var draftId = await fixture.Manager.EnsurePublicUploadDraftAsync(fixture.OwnerId, null, "code1", "10.0.0.1", CancellationToken.None);
+        using var content = new MemoryStream([1, 2, 3]);
+        var staged = await fixture.Manager.StageUploadAsync(fixture.OwnerId, draftId, "f.bin", content.Length, content, CancellationToken.None);
+        await fixture.Manager.SealDraftAsync(fixture.OwnerId, draftId, CancellationToken.None);
+        var payload = Fixture.Payload(fixture.OwnerId, draftId, staged.UploadId) with { SenderEmail = "sender@example.com" };
+
+        await fixture.Job.ProcessAsync(payload, CancellationToken.None);
+
+        Assert.Equal("failed", fixture.Status.Read(ShareToken)!.State);
+        Assert.False(Directory.Exists(staged.DirectoryPath));
     }
 
     private sealed class Fixture : IAsyncDisposable
@@ -200,6 +243,56 @@ public sealed class QueuedShareCreationJobShutdownTests
             Status = status;
         }
 
+        private long _freeBytes = long.MaxValue;
+
+        /// <summary>Seeds the owner, stages and seals one file, then makes the volume report no free space.</summary>
+        public async Task<(string DraftId, ShareManager.StagedUploadFile Staged)> SealedDraftWithFullScratchAsync()
+        {
+            Db.Users.Add(new UserAccount
+            {
+                Id = OwnerId,
+                Email = "owner@example.com",
+                EmailConfirmed = true,
+                PasswordHash = "x:y",
+                SecurityStamp = SecurityStamps.New(),
+                UploadToken = "uploadtk",
+                CreatedAtUtc = DateTime.UtcNow
+            });
+            await Db.SaveChangesAsync();
+            var draftId = await Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
+            using var content = new MemoryStream([1, 2, 3]);
+            var staged = await Manager.StageUploadAsync(OwnerId, draftId, "f.bin", content.Length, content, CancellationToken.None);
+            await Manager.SealDraftAsync(OwnerId, draftId, CancellationToken.None);
+            // The real scratch reservation of the archive build now finds less than the free-space floor.
+            Interlocked.Exchange(ref _freeBytes, 0);
+            return (draftId, staged);
+        }
+
+        /// <summary>A perform context whose RetryCount job parameter reads as given ("throw": the read throws; null: no value).</summary>
+        public static PerformContext PerformContextWithRetryCount(string? retryCount)
+        {
+            var connection = System.Reflection.DispatchProxy.Create<IStorageConnection, ParameterConnection>();
+            ((ParameterConnection)(object)connection).Value = retryCount;
+            var job = Hangfire.Common.Job.FromExpression(() => Console.Out.Flush());
+            return new PerformContext(
+                null!, connection, new BackgroundJob("1", job, DateTime.UtcNow), new JobCancellationToken(false));
+        }
+
+        public class ParameterConnection : System.Reflection.DispatchProxy
+        {
+            public string? Value { get; set; }
+
+            protected override object? Invoke(System.Reflection.MethodInfo? targetMethod, object?[]? args)
+            {
+                if (targetMethod?.Name != nameof(IStorageConnection.GetJobParameter))
+                {
+                    return null;
+                }
+
+                return Value == "throw" ? throw new InvalidOperationException("storage down") : Value;
+            }
+        }
+
         public static QueuedShareCreationJob.Payload Payload(Guid? ownerId = null, string? draftId = null, string? uploadId = null) => new(
             "owner@example.com", draftId ?? Guid.NewGuid().ToString("N"), ShareToken, null, null, null, null, null, false, null,
             "none", "date", DateTime.UtcNow.AddDays(1), "account_default", null, null, null, null, null, null,
@@ -207,6 +300,7 @@ public sealed class QueuedShareCreationJobShutdownTests
 
         public static async Task<Fixture> CreateAsync(Action<int> onBroadcast)
         {
+            Fixture? self = null;
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
             var db = new AgoraDbContext(new DbContextOptionsBuilder<AgoraDbContext>().UseSqlite(connection).Options);
@@ -224,7 +318,7 @@ public sealed class QueuedShareCreationJobShutdownTests
                 objectStore,
                 jobs,
                 new KeyedAsyncLock(),
-                new ScratchSpaceMonitor(options.Value, StorageProvider.FileSystem, _ => long.MaxValue, _ => 0, TimeProvider.System),
+                new ScratchSpaceMonitor(options.Value, StorageProvider.FileSystem, _ => Interlocked.Read(ref self!._freeBytes), _ => 0, TimeProvider.System),
                 NullLogger<ShareManager>.Instance);
 
             var status = new ShareCreationStatusStore(options);
@@ -232,7 +326,8 @@ public sealed class QueuedShareCreationJobShutdownTests
             var job = new QueuedShareCreationJob(
                 manager, db, jobs, new NoopEmailSender(), status, broadcaster, new FixedOrigin(),
                 options, Options.Create(new EmailSenderOptions()), NullLogger<QueuedShareCreationJob>.Instance);
-            return new Fixture(connection, root, job, status, manager, db);
+            self = new Fixture(connection, root, job, status, manager, db);
+            return self;
         }
 
         public async ValueTask DisposeAsync()

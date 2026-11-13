@@ -308,9 +308,10 @@ public sealed class QueuedShareCreationJob(
             {
                 performContext?.WriteLine($"Inner exception: {ex.InnerException.GetType().FullName}: {ex.InnerException.Message}");
             }
-            if (ex is UploadLimitException)
+            if (ex is UploadLimitException || await IsAnonymousDraftAsync(ownerUserId, payload))
             {
-                // Refused by a budget: nothing will ever be built from this draft, so free its scratch right away.
+                // Refused by a budget, or an anonymous (upload link) draft, which is outside the signed-in budgets and
+                // cannot be retried by its sender: nothing will be built from it, so free its scratch right away.
                 await CleanupDraftScratchAsync(ownerUserId, payload, CancellationToken.None);
             }
 
@@ -339,8 +340,33 @@ public sealed class QueuedShareCreationJob(
     }
 
     /// <summary>True when Hangfire will not retry this run again (its retry count reached MaxAttempts).</summary>
-    private static bool IsFinalAttempt(PerformContext? performContext) =>
-        performContext?.GetJobParameter<int>("RetryCount") >= MaxAttempts;
+    private static bool IsFinalAttempt(PerformContext? performContext)
+    {
+        // Runs in an exception filter: anything unexpected means "not final" (retry) rather than a second exception.
+        try
+        {
+            return performContext?.GetJobParameter<int>("RetryCount") >= MaxAttempts;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private async Task<bool> IsAnonymousDraftAsync(Guid ownerUserId, Payload payload)
+    {
+        try
+        {
+            // False for a missing draft as well, which leaves nothing to clean.
+            return payload.SenderEmail is not null && !await manager.IsOwnSignedInDraftAsync(ownerUserId, payload.DraftShareId, CancellationToken.None)
+                && manager.IsDraftSealed(payload.DraftShareId);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Unable to classify the draft of share {TokenRef}", LogSafe.Token(payload.ShareToken));
+            return false;
+        }
+    }
 
     private async Task CleanupDraftScratchAsync(Guid ownerUserId, Payload payload, CancellationToken ct)
     {
