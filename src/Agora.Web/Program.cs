@@ -1393,14 +1393,7 @@ app.MapPost("/api/shares", async (
     }
 
     // Refused as plain text, not a redirect: the page keeps the typed token, and no URL can preset a share's token.
-    var shareTokenRefusal = await manager.CheckRequestedShareTokenAsync(shareToken, ct, owner.UserId, draftShareId);
-    // A creation another owner has in flight (for example queued before reservations existed) holds its link too.
-    if (shareTokenRefusal is null &&
-        creationStatus.Read(shareToken) is { State: not ("completed" or "failed") } pending && pending.OwnerUserId != owner.UserId)
-    {
-        shareTokenRefusal = $"That share link is already in use. Try {await manager.GenerateUniqueShareTokenAsync(8, ct)} or choose another.";
-    }
-
+    var shareTokenRefusal = await ShareSubmission.RefuseRequestedTokenAsync(manager, creationStatus, shareToken, owner.UserId, draftShareId, ct);
     if (shareTokenRefusal is not null)
     {
         return Results.Text(shareTokenRefusal, statusCode: StatusCodes.Status400BadRequest);
@@ -1578,37 +1571,24 @@ app.MapPost("/api/shares", async (
         OwnerUserId: owner.UserId);
 
     // The link is claimed just before sealing (after every refusal above) so only a submission that is queued holds it.
-    var claim = await manager.ReserveShareTokenAsync(shareToken, owner.UserId, draftShareId, ct);
-    if (claim == ShareManager.TokenReservationOutcome.Taken)
-    {
-        return Results.Text(
-            await manager.CheckRequestedShareTokenAsync(shareToken, ct) ?? "That share link is already in use. Choose another.",
-            statusCode: StatusCodes.Status400BadRequest);
-    }
-
     // Sealing stops further staging into this draft and makes a second submission of it a 409; a failed enqueue
     // unseals it again and reports 503 so the user can retry.
-    var sealedAndQueued = false;
     try
     {
-        if (!await manager.SealDraftForSubmissionAsync(owner.UserId, draftShareId, () => { queuedShareCreationJob.Queue(queued); return Task.CompletedTask; }, ct))
+        var submission = await ShareSubmission.ClaimAndSealAsync(manager, shareToken, owner.UserId, draftShareId, () => { queuedShareCreationJob.Queue(queued); return Task.CompletedTask; }, ct);
+        if (submission.Refused)
+        {
+            return Results.Text(submission.Text!, statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (!submission.Sealed)
         {
             return Results.Text("This share was already submitted.", statusCode: StatusCodes.Status409Conflict);
         }
-
-        sealedAndQueued = true;
     }
     catch (UploadLimitException ex)
     {
         return UploadLimitText(ex);
-    }
-    finally
-    {
-        // Nothing was queued: a claim this request made must not outlive it (a held one belongs to the earlier submission).
-        if (!sealedAndQueued && claim == ShareManager.TokenReservationOutcome.Reserved)
-        {
-            await manager.ReleaseShareTokenReservationAsync(shareToken, owner.UserId, draftShareId, CancellationToken.None);
-        }
     }
 
     return Results.Redirect($"/shares/created/{Uri.EscapeDataString(shareToken)}");

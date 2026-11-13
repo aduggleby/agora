@@ -216,6 +216,20 @@ public sealed class ShareManagerTokenTests
     }
 
     [Fact]
+    public async Task CreateShareAsync_CommitsWithTheRequestedTokenWhenTheReservationIsAlreadyGone()
+    {
+        await using var harness = await TestHarness.CreateAsync();
+        var file = await harness.CreateUploadFileAsync("a.txt", "one");
+        await harness.Manager.ReserveShareTokenAsync("swept_token1", UploaderId, DraftA, CancellationToken.None);
+        await harness.Db.ShareTokenReservations.ExecuteDeleteAsync();
+
+        var result = await harness.Manager.CreateShareAsync(CreateCommand("swept_token1", file), CancellationToken.None);
+
+        Assert.Equal("swept_token1", result.Token);
+        Assert.Single(await harness.Db.Shares.ToListAsync());
+    }
+
+    [Fact]
     public async Task ReleaseShareTokenReservationAsync_OnlyRemovesTheOwnersClaim()
     {
         await using var harness = await TestHarness.CreateAsync();

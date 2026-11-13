@@ -1,4 +1,6 @@
+using Agora.Application.Utilities;
 using Agora.Domain.Entities;
+using Microsoft.Extensions.Logging;
 using Microsoft.EntityFrameworkCore;
 
 namespace Agora.Infrastructure.Services;
@@ -52,15 +54,32 @@ public sealed partial class ShareManager
         }
         catch (DbUpdateException)
         {
-            // Not logged or rethrown: the database error text quotes the token.
+            // The provider's error text quotes the token, so it is neither logged nor passed on.
             db.Entry(reservation).State = EntityState.Detached;
             var winner = await FindReservationAsync(token, cancellationToken);
             if (winner is null)
             {
-                throw;
+                throw new InvalidOperationException("The share link could not be reserved right now.");
             }
 
             return IsHeldBy(winner, ownerUserId, draftShareId) ? TokenReservationOutcome.AlreadyHeld : TokenReservationOutcome.Taken;
+        }
+    }
+
+    /// <summary>
+    /// Drops the claim after the share row is committed. Separate from the insert on purpose: a claim that is already
+    /// gone (swept, released) must not fail a commit that succeeded, and a leftover is harmless (the share holds the
+    /// link) and swept later.
+    /// </summary>
+    private async Task TryReleaseCommittedClaimAsync(string token, Guid ownerUserId)
+    {
+        try
+        {
+            await ReleaseShareTokenReservationAsync(token, ownerUserId, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Unable to release the claim on share {TokenRef} after creating it; the zombie sweep will", LogSafe.Token(token));
         }
     }
 

@@ -263,20 +263,16 @@ public sealed partial class ShareManager(
 
                 db.Shares.Add(share);
                 attemptedShareIds.Add(share.Id);
-                // The claim on a requested link goes in the same transaction as the share row.
-                var claim = hasRequestedToken
-                    ? await db.ShareTokenReservations.FirstOrDefaultAsync(x => x.Token == token && x.OwnerUserId == owner.UserId, cancellationToken)
-                    : null;
-                if (claim is not null)
-                {
-                    db.ShareTokenReservations.Remove(claim);
-                }
-
                 try
                 {
                     // The commit is the point of no return: never let a shutdown cancel it halfway, or the job could
                     // be requeued for a share that was in fact created and the re-run would create a second one.
                     await db.SaveChangesAsync(CancellationToken.None);
+                    if (hasRequestedToken)
+                    {
+                        await TryReleaseCommittedClaimAsync(token, owner.UserId);
+                    }
+
                     return new CreateShareResult(share.Id, token, share.ZipDisplayName, share.ExpiresAtUtc);
                 }
                 catch (DbUpdateException ex) when (IsShareTokenConflict(ex))
@@ -293,11 +289,6 @@ public sealed partial class ShareManager(
                         db.Database.ProviderName ?? "<unknown>",
                         constraintName);
                     db.Entry(share).State = EntityState.Detached;
-                    if (claim is not null)
-                    {
-                        db.Entry(claim).State = EntityState.Unchanged;
-                    }
-
                     if (hasRequestedToken)
                     {
                         throw new ShareTokenCollisionException(constraintName);
@@ -308,11 +299,6 @@ public sealed partial class ShareManager(
                 catch
                 {
                     db.Entry(share).State = EntityState.Detached;
-                    if (claim is not null)
-                    {
-                        db.Entry(claim).State = EntityState.Unchanged;
-                    }
-
                     throw;
                 }
             }
