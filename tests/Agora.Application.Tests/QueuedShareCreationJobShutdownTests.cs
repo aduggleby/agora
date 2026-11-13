@@ -155,6 +155,30 @@ public sealed class QueuedShareCreationJobShutdownTests
         Assert.Empty(await fixture.Db.ShareTokenReservations.ToListAsync());
     }
 
+    [Fact]
+    public async Task Insufficient_scratch_is_rethrown_for_a_retry_and_keeps_the_staged_uploads()
+    {
+        await using var fixture = await Fixture.CreateAsync(onBroadcast: n =>
+        {
+            if (n == 2)
+            {
+                throw new UploadLimitException(UploadLimitKind.InsufficientStorage, "full");
+            }
+        });
+        var draftId = await fixture.Manager.EnsureDraftShareAsync(fixture.OwnerId, null, CancellationToken.None);
+        using var content = new MemoryStream([1, 2, 3]);
+        var staged = await fixture.Manager.StageUploadAsync(fixture.OwnerId, draftId, "f.bin", content.Length, content, CancellationToken.None);
+        await fixture.Manager.SealDraftAsync(fixture.OwnerId, draftId, CancellationToken.None);
+
+        var ex = await Assert.ThrowsAsync<UploadLimitException>(() =>
+            fixture.Job.ProcessAsync(Fixture.Payload(fixture.OwnerId, draftId, staged.UploadId), CancellationToken.None));
+
+        Assert.Equal(UploadLimitKind.InsufficientStorage, ex.Kind);
+        Assert.NotEqual("failed", fixture.Status.Read(ShareToken)!.State);
+        Assert.True(Directory.Exists(staged.DirectoryPath));
+        Assert.True(fixture.Manager.IsDraftSealed(draftId));
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private readonly SqliteConnection _connection;

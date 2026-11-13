@@ -62,6 +62,10 @@ public sealed class QueuedShareCreationJob(
         return jobId;
     }
 
+    /// <summary>Hangfire retries of one queued creation (explicit so the final run, RetryCount == MaxAttempts, can be recognized).</summary>
+    private const int MaxAttempts = 10;
+
+    [AutomaticRetry(Attempts = MaxAttempts)]
     public async Task ProcessAsync(Payload payload, CancellationToken ct, PerformContext? performContext = null)
     {
         var token = payload.ShareToken;
@@ -287,6 +291,14 @@ public sealed class QueuedShareCreationJob(
             performContext?.WriteLine("Interrupted by server shutdown; the job will be retried.");
             throw;
         }
+        catch (UploadLimitException ex) when (ex.Kind == UploadLimitKind.InsufficientStorage && !shareCreated && !IsFinalAttempt(performContext))
+        {
+            // Scratch is full right now, which says nothing about this draft: keep the sealed draft and its staged
+            // uploads and let Hangfire retry later. The final attempt falls through to the failure path below.
+            logger.LogWarning("Queued share creation for share {TokenRef} waits for scratch space; it will be retried", LogSafe.Token(token));
+            performContext?.WriteLine("Not enough scratch space right now; the job will be retried.");
+            throw;
+        }
         catch (Exception ex)
         {
             logger.LogError(ex, "Queued share creation failed for share {TokenRef}", LogSafe.Token(token));
@@ -325,6 +337,10 @@ public sealed class QueuedShareCreationJob(
             logger.LogWarning(releaseEx, "Unable to release the share link claim for share {TokenRef}; the zombie sweep will", LogSafe.Token(token));
         }
     }
+
+    /// <summary>True when Hangfire will not retry this run again (its retry count reached MaxAttempts).</summary>
+    private static bool IsFinalAttempt(PerformContext? performContext) =>
+        performContext?.GetJobParameter<int>("RetryCount") >= MaxAttempts;
 
     private async Task CleanupDraftScratchAsync(Guid ownerUserId, Payload payload, CancellationToken ct)
     {
