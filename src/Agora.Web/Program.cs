@@ -909,6 +909,12 @@ app.MapPost("/api/account/template", async (HttpContext context, ShareManager ma
                 await backgroundImageFile.CopyToAsync(stream, ct);
             }
 
+            // Header only (format and pixel budget), so link-preview renders never meet an oversized background.
+            if (!OgImageGenerator.IsAcceptableBackground(scratchPath))
+            {
+                return Results.Redirect($"/account/landing-page-designer?msg={Uri.EscapeDataString(OgImageGenerator.BackgroundRefusalMessage)}");
+            }
+
             await context.RequestServices.GetRequiredService<IObjectStore>()
                 .PutFileAsync(key, scratchPath, ContentTypePolicy.FromFileName(safeName), ct);
         }

@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
 using Agora.Web.Auth;
+using Agora.Web.Services;
 
 namespace Agora.Web.Endpoints;
 
@@ -188,6 +189,15 @@ public static class UploadStagingEndpoints
         if (!ContentTypePolicy.IsAllowedBackgroundImage(file.FileName))
         {
             return Results.BadRequest(new { error = "Only JPG, PNG, or WEBP files are allowed." });
+        }
+
+        // Header only (format and pixel budget), so the share page's link-preview render never meets an oversized image.
+        await using (var header = file.OpenReadStream())
+        {
+            if (!OgImageGenerator.IsAcceptableBackground(header))
+            {
+                return Results.BadRequest(new { error = OgImageGenerator.BackgroundRefusalMessage });
+            }
         }
 
         return (await StageFileAsync(file, manager, cfg, owner.UserId, draftShareId, ShareManager.UploadPurposeTemplateBackground, ct)).ToResponse();

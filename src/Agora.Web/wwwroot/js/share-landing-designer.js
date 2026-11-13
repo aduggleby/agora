@@ -152,12 +152,17 @@
       uploadStatus.classList.remove("text-ink-muted", "text-danger");
       uploadStatus.classList.add(isError ? "text-danger" : "text-ink-muted");
     };
+    const readStageResponse = async (response) => {
+      if (response.ok) return await response.json();
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error?.trim() || "Upload failed.");
+    };
     const stageBackground = (file) => {
       setStatus("Uploading background image...", false);
       const formData = new FormData();
       formData.append("file", file, file.name);
       formData.append("draftShareId", draftShareIdInput.value);
-      fetch(`/api/uploads/stage-template-background?draftShareId=${encodeURIComponent(draftShareIdInput.value)}`, { method: "POST", body: formData }).then((response) => response.ok ? response.json() : Promise.reject()).then((json) => {
+      fetch(`/api/uploads/stage-template-background?draftShareId=${encodeURIComponent(draftShareIdInput.value)}`, { method: "POST", body: formData }).then(readStageResponse).then((json) => {
         backgroundUploadIdInput.value = json.uploadId || "";
         if (uploadedPreviewUrl && uploadedPreviewUrl.startsWith("blob:")) {
           URL.revokeObjectURL(uploadedPreviewUrl);
@@ -165,7 +170,7 @@
         uploadedPreviewUrl = URL.createObjectURL(file);
         setStatus(`Uploaded: ${json.fileName || file.name}`, false);
         updatePreview();
-      }).catch(() => setStatus("Upload failed.", true));
+      }).catch((error) => setStatus(error instanceof Error && error.message ? error.message : "Upload failed.", true));
     };
     const refreshColorMode = () => {
       const isCustom = backgroundColorModeInput.value === "custom";

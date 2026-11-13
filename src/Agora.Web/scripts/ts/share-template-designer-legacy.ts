@@ -60,6 +60,13 @@
     uploadStatus.classList.add(isError ? 'text-danger' : 'text-ink-muted');
   };
 
+  // The staging endpoint answers refusals with { error }; show it instead of a generic failure.
+  const readStageResponse = async (response: Response): Promise<{ uploadId?: string; fileName?: string }> => {
+    if (response.ok) return (await response.json()) as { uploadId?: string; fileName?: string };
+    const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(payload?.error?.trim() || 'Upload failed.');
+  };
+
   const stageBackground = (file: File): void => {
     setStatus('Uploading background image...', false);
 
@@ -71,8 +78,8 @@
 
     const draftQuery = draftShareIdInput?.value ? `?draftShareId=${encodeURIComponent(draftShareIdInput.value)}` : '';
     fetch(`/api/uploads/stage-template-background${draftQuery}`, { method: 'POST', body: formData })
-      .then((response) => (response.ok ? response.json() : Promise.reject(new Error('Upload failed'))))
-      .then((json: { uploadId?: string; fileName?: string }) => {
+      .then(readStageResponse)
+      .then((json) => {
         const backgroundUploadId = json.uploadId || '';
         backgroundUploadIdInput.value = backgroundUploadId;
 
@@ -82,8 +89,8 @@
         setStatus(backgroundUploadId ? `Uploaded: ${json.fileName || file.name}` : 'Upload failed.', !backgroundUploadId);
         updatePreview();
       })
-      .catch(() => {
-        setStatus('Upload failed.', true);
+      .catch((error: unknown) => {
+        setStatus(error instanceof Error && error.message ? error.message : 'Upload failed.', true);
       });
   };
 

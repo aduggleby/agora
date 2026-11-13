@@ -142,6 +142,46 @@ public sealed class OgImageGeneratorTests
         Assert.True(skipped.Cacheable);
     }
 
+    [Fact]
+    public void Upload_check_accepts_a_4k_background_and_refuses_oversized_or_undecodable_ones()
+    {
+        Assert.True(OgImageGenerator.IsAcceptableBackground(new MemoryStream(ImageCrafting.Solid(3840, 2160, Navy))));
+
+        Assert.False(OgImageGenerator.IsAcceptableBackground(new MemoryStream(PngCrafting.HeaderOnly(4001, 4000))));
+        var overBudget = Assert.Throws<PreviewSourceRejectedException>(() =>
+            UntrustedImageDecoding.OpenHeader(new MemoryStream(PngCrafting.HeaderOnly(4001, 4000)), OgImageGenerator.MaxBackgroundPixels));
+        Assert.Contains("pixel budget", overBudget.Message);
+        Assert.False(OgImageGenerator.IsAcceptableBackground(new MemoryStream(PngCrafting.DoubleIhdr(12_000, 12_000, 1, 1))));
+        Assert.False(OgImageGenerator.IsAcceptableBackground(new MemoryStream(ImageCrafting.Gif(8, 8))));
+        Assert.False(OgImageGenerator.IsAcceptableBackground(new MemoryStream("not an image"u8.ToArray())));
+
+        var path = Path.Combine(Path.GetTempPath(), $"agora-og-background-{Guid.NewGuid():N}.png");
+        try
+        {
+            File.WriteAllBytes(path, PngCrafting.HeaderOnly(5000, 5000));
+            Assert.False(OgImageGenerator.IsAcceptableBackground(path));
+            File.WriteAllBytes(path, ImageCrafting.Solid(64, 48, Navy));
+            Assert.True(OgImageGenerator.IsAcceptableBackground(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Stored_background_over_the_pixel_budget_falls_back_to_the_gradient_and_is_cacheable()
+    {
+        var generator = new OgImageGenerator(FontsDirectory);
+        var withoutBackground = await RenderAsync(generator, null);
+
+        var legacy = await generator.GenerateShareOgImageAsync(
+            new MemoryStream(PngCrafting.HeaderOnly(5000, 5000)), null, "Quarterly report", "From Alex", "report.pdf", 3, "12.4 MB", isExpired: false);
+
+        Assert.True(legacy.Cacheable);
+        Assert.Equal(withoutBackground, legacy.Png);
+    }
+
     private static async Task<byte[]> RenderAsync(OgImageGenerator generator, Stream? background) =>
         (await generator.GenerateShareOgImageAsync(background, null, "Quarterly report", "From Alex", "report.pdf", 3, "12.4 MB", isExpired: false)).Png;
 

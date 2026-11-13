@@ -39,6 +39,11 @@
       uploadStatus.classList.remove("text-ink-muted", "text-danger");
       uploadStatus.classList.add(isError ? "text-danger" : "text-ink-muted");
     };
+    const readStageResponse = async (response) => {
+      if (response.ok) return await response.json();
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error?.trim() || "Upload failed.");
+    };
     const stageBackground = (file) => {
       setStatus("Uploading background image...", false);
       const formData = new FormData();
@@ -47,15 +52,15 @@
         formData.append("draftShareId", draftShareIdInput.value);
       }
       const draftQuery = draftShareIdInput?.value ? `?draftShareId=${encodeURIComponent(draftShareIdInput.value)}` : "";
-      fetch(`/api/uploads/stage-template-background${draftQuery}`, { method: "POST", body: formData }).then((response) => response.ok ? response.json() : Promise.reject(new Error("Upload failed"))).then((json) => {
+      fetch(`/api/uploads/stage-template-background${draftQuery}`, { method: "POST", body: formData }).then(readStageResponse).then((json) => {
         const backgroundUploadId = json.uploadId || "";
         backgroundUploadIdInput.value = backgroundUploadId;
         if (uploadedPreviewUrl) URL.revokeObjectURL(uploadedPreviewUrl);
         uploadedPreviewUrl = URL.createObjectURL(file);
         setStatus(backgroundUploadId ? `Uploaded: ${json.fileName || file.name}` : "Upload failed.", !backgroundUploadId);
         updatePreview();
-      }).catch(() => {
-        setStatus("Upload failed.", true);
+      }).catch((error) => {
+        setStatus(error instanceof Error && error.message ? error.message : "Upload failed.", true);
       });
     };
     const handleSelectedFiles = (files) => {

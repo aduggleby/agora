@@ -32,8 +32,48 @@ public sealed class OgImageGenerator
     }
 
     public const long MaxBackgroundBytes = 20L * 1024 * 1024;
-    public const long MaxBackgroundPixels = 40_000_000;
+    /// <summary>
+    /// Pixel budget for share backgrounds, checked at upload and again before every decode (a 4K image is 8.3 million
+    /// pixels). PNG and BMP decode at full size, so this times four bytes is what one background decode can allocate.
+    /// </summary>
+    public const long MaxBackgroundPixels = 16_000_000;
     public const double MaxBackgroundAspectRatio = 10;
+
+    /// <summary>Shown when an uploaded background is refused by <see cref="IsAcceptableBackground(string)"/>.</summary>
+    public const string BackgroundRefusalMessage =
+        "The background image could not be read or is larger than 16 megapixels (for example 4000 x 4000 pixels).";
+
+    /// <summary>
+    /// Upload-time check of a background: the header must be a supported image within <see cref="MaxBackgroundPixels"/>
+    /// (see <see cref="UntrustedImageDecoding.OpenHeader(string, long)"/>). Only the header is parsed, nothing is decoded,
+    /// so this runs without a decode slot; the upload endpoints calling it are signed-in and admission-capped.
+    /// </summary>
+    public static bool IsAcceptableBackground(string absolutePath)
+    {
+        try
+        {
+            using var codec = UntrustedImageDecoding.OpenHeader(absolutePath, MaxBackgroundPixels);
+            return true;
+        }
+        catch (PreviewSourceRejectedException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Stream variant of <see cref="IsAcceptableBackground(string)"/>; a stream that cannot seek is refused.</summary>
+    public static bool IsAcceptableBackground(Stream stream)
+    {
+        try
+        {
+            using var codec = UntrustedImageDecoding.OpenHeader(stream, MaxBackgroundPixels);
+            return true;
+        }
+        catch (PreviewSourceRejectedException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     /// A rendered link-preview image. <paramref name="Cacheable"/> is false when the background was not drawn only

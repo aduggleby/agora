@@ -103,6 +103,13 @@ import { backgroundImageHint, enablePageDrop, isBackgroundImage } from './page-d
     uploadStatus.classList.add(isError ? 'text-danger' : 'text-ink-muted');
   };
 
+  // The staging endpoint answers refusals with { error }; show it instead of a generic failure.
+  const readStageResponse = async (response: Response): Promise<{ uploadId?: string; fileName?: string }> => {
+    if (response.ok) return (await response.json()) as { uploadId?: string; fileName?: string };
+    const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(payload?.error?.trim() || 'Upload failed.');
+  };
+
   const stageBackground = (file: File): void => {
     setStatus('Uploading background image...', false);
 
@@ -111,8 +118,8 @@ import { backgroundImageHint, enablePageDrop, isBackgroundImage } from './page-d
     formData.append('draftShareId', draftShareIdInput.value);
 
     fetch(`/api/uploads/stage-template-background?draftShareId=${encodeURIComponent(draftShareIdInput.value)}`, { method: 'POST', body: formData })
-      .then((response) => (response.ok ? response.json() : Promise.reject()))
-      .then((json: { uploadId?: string; fileName?: string }) => {
+      .then(readStageResponse)
+      .then((json) => {
         backgroundUploadIdInput.value = json.uploadId || '';
         if (uploadedPreviewUrl && uploadedPreviewUrl.startsWith('blob:')) {
           URL.revokeObjectURL(uploadedPreviewUrl);
@@ -121,7 +128,7 @@ import { backgroundImageHint, enablePageDrop, isBackgroundImage } from './page-d
         setStatus(`Uploaded: ${json.fileName || file.name}`, false);
         updatePreview();
       })
-      .catch(() => setStatus('Upload failed.', true));
+      .catch((error: unknown) => setStatus(error instanceof Error && error.message ? error.message : 'Upload failed.', true));
   };
 
   const refreshColorMode = (): void => {

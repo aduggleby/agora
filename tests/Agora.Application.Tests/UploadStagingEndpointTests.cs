@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using Agora.Application.Abstractions;
@@ -10,6 +11,7 @@ using Agora.Infrastructure.Persistence;
 using Agora.Infrastructure.Services;
 using Agora.Infrastructure.Storage;
 using Agora.Web.Endpoints;
+using Agora.Web.Services;
 using Agora.Web.Startup;
 using Hangfire;
 using Hangfire.Common;
@@ -21,6 +23,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using SkiaSharp;
 
 namespace Agora.Application.Tests;
 
@@ -266,6 +269,32 @@ public sealed class UploadStagingEndpointTests
         Assert.True(await host.WithManagerAsync(m => m.IsOwnSignedInDraftAsync(host.OwnerId, signedInDraft, CancellationToken.None)));
     }
 
+    [Fact]
+    public async Task Template_background_over_the_pixel_budget_or_not_an_image_is_refused_before_staging()
+    {
+        await using var host = await Host.StartAsync(scratchMaxBytes: 0);
+        var csrf = await host.FetchCsrfAsync(host.OwnerId);
+        var draft = await host.WithManagerAsync(m => m.EnsureDraftShareAsync(host.OwnerId, null, CancellationToken.None));
+
+        // A tiny file whose header declares 5000x5000 (25 million pixels, above the 16 million budget).
+        foreach (var refused in new[] { PngCrafting.HeaderOnly(5000, 5000), "not an image"u8.ToArray() })
+        {
+            var body = Host.MultipartBody(refused, "bg.png", "image/png");
+            var context = await host.PostStageAsync("/api/uploads/stage-template-background", new MemoryStream(body), body.Length, csrf, draft, user: host.OwnerId);
+
+            Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
+            Assert.Equal(OgImageGenerator.BackgroundRefusalMessage, await host.ErrorAsync(context));
+        }
+
+        var stagedRoot = Path.Combine(host.StorageRoot, "uploads", "staged-template-backgrounds");
+        Assert.True(!Directory.Exists(stagedRoot) || !Directory.EnumerateFileSystemEntries(stagedRoot).Any());
+
+        var accepted = Host.MultipartBody(ImageCrafting.Solid(1920, 1080, new SKColor(30, 60, 90)), "bg.png", "image/png");
+        var ok = await host.PostStageAsync("/api/uploads/stage-template-background", new MemoryStream(accepted), accepted.Length, csrf, draft, user: host.OwnerId);
+
+        Assert.Equal(StatusCodes.Status200OK, ok.Response.StatusCode);
+    }
+
     private sealed record CsrfTokens(string CookieHeader, string? HeaderToken);
 
     private sealed class Host : IAsyncDisposable
@@ -323,9 +352,25 @@ public sealed class UploadStagingEndpointTests
             });
             builder.Services.AddRateLimiter(o => RateLimitSetup.Configure(o, new AgoraRateLimitOptions(), isE2E: true));
 
+            builder.Services.AddAuthorization();
+
             var app = builder.Build();
+            // Test sign-in: the X-Test-User header becomes the session principal (the seeded owner's email).
+            app.Use(async (context, next) =>
+            {
+                if (Guid.TryParse(context.Request.Headers["X-Test-User"].ToString(), out var userId))
+                {
+                    context.User = new ClaimsPrincipal(new ClaimsIdentity(
+                        [new Claim(ClaimTypes.NameIdentifier, userId.ToString()), new Claim(ClaimTypes.Email, Owner)],
+                        authenticationType: "Test"));
+                }
+
+                await next();
+            });
+            app.UseRouting();
             app.UseAgoraCsrf(isE2E: false, CookieSecurePolicy.None, NullLogger.Instance);
             app.UseRateLimiter();
+            app.UseAuthorization();
             app.MapGet("/", () => Results.Ok());
             app.MapUploadStagingEndpoints(stageRequestBodyLimit: 10 * 1024 * 1024);
             await app.StartAsync();
@@ -349,16 +394,21 @@ public sealed class UploadStagingEndpointTests
             }
 
             var host = new Host(app, connection, storageRoot, scratch) { OwnerId = ownerId };
-            await host.FetchCsrfAsync();
+            host.Csrf = await host.FetchCsrfAsync(user: null);
             return host;
         }
 
-        private async Task FetchCsrfAsync()
+        /// <summary>Antiforgery tokens are bound to the signed-in user, so a signed-in request needs its own.</summary>
+        public async Task<CsrfTokens> FetchCsrfAsync(Guid? user)
         {
             var context = await _app.GetTestServer().SendAsync(ctx =>
             {
                 ctx.Request.Method = HttpMethods.Get;
                 ctx.Request.Path = "/";
+                if (user is { } userId)
+                {
+                    ctx.Request.Headers["X-Test-User"] = userId.ToString();
+                }
             });
 
             var cookies = context.Response.Headers.SetCookie
@@ -367,12 +417,18 @@ public sealed class UploadStagingEndpointTests
             var requestToken = cookies
                 .Select(pair => pair.Split('=', 2))
                 .Single(parts => parts[0] == CsrfValidation.RequestTokenCookieName)[1];
-            Csrf = new CsrfTokens(string.Join("; ", cookies), Uri.UnescapeDataString(requestToken));
+            return new CsrfTokens(string.Join("; ", cookies), Uri.UnescapeDataString(requestToken));
         }
 
-        public static byte[] MultipartBody(string content) => Encoding.ASCII.GetBytes(
-            "--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\n" +
-            content + "\r\n--b--\r\n");
+        public static byte[] MultipartBody(string content) => MultipartBody(Encoding.ASCII.GetBytes(content), "a.txt", "text/plain");
+
+        public static byte[] MultipartBody(byte[] content, string fileName, string contentType) =>
+        [
+            .. Encoding.ASCII.GetBytes(
+                $"--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{fileName}\"\r\nContent-Type: {contentType}\r\n\r\n"),
+            .. content,
+            .. "\r\n--b--\r\n"u8
+        ];
 
         public async Task<T> WithManagerAsync<T>(Func<ShareManager, Task<T>> action)
         {
@@ -428,7 +484,7 @@ public sealed class UploadStagingEndpointTests
             Assert.Equal(0, concurrency.InFlight(key));
         }
 
-        public Task<HttpContext> PostStageAsync(string path, Stream body, long? contentLength, CsrfTokens csrf, string? draftShareId = null, string remoteIp = "203.0.113.1")
+        public Task<HttpContext> PostStageAsync(string path, Stream body, long? contentLength, CsrfTokens csrf, string? draftShareId = null, string remoteIp = "203.0.113.1", Guid? user = null)
         {
             return _app.GetTestServer().SendAsync(ctx =>
             {
@@ -440,6 +496,11 @@ public sealed class UploadStagingEndpointTests
                 ctx.Request.ContentLength = contentLength;
                 ctx.Request.Body = body;
                 ctx.Request.Headers.Cookie = csrf.CookieHeader;
+                if (user is { } userId)
+                {
+                    ctx.Request.Headers["X-Test-User"] = userId.ToString();
+                }
+
                 if (csrf.HeaderToken is not null)
                 {
                     ctx.Request.Headers[CsrfValidation.HeaderName] = csrf.HeaderToken;
