@@ -12,7 +12,7 @@ All notable changes to this project will be documented in this file.
 - A request to an upload link's create-share route without files is refused before the draft is looked at.
 
 ### Fixed
-- A custom share link is claimed when the share is submitted, not when its background job commits. While it is pending, another account can no longer submit the same link or reach its progress page, and a smaller share can no longer take the link first. The claim is released when the share is created, when creation fails, or after the upload retention (24 hours by default) if it is stranded.
+- A custom share link is now claimed when the share is submitted and held until the share is created or creation fails; a stranded claim is released after the upload retention (24 hours by default).
 
 ## [0.10.3] - 2026-11-13
 
