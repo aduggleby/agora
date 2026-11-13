@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.3] - 2026-11-13
+
+### Changed
+- Disabling an account also suspends its share links and direct links: while it is disabled they answer like an expired share (410), and download notifications and ready-link emails to it are skipped. Enabling the account brings the links back unchanged.
+- The new-share page always generates the share link itself; it no longer takes a link from the page URL. When a chosen link is invalid or already taken, the page shows the reason (with a free suggestion) in place.
+- Background images are checked when uploaded: they must be readable images within 40 million pixels for JPG and WEBP or 16 million for PNG. Link-preview images decode backgrounds in the same limited decode slots and time budget as file previews; when none is free in time, a plain preview is served and not stored.
+- Deleting shares in a batch takes at most 100 at a time, and deleting an already deleted share from the web UI no longer queues another cleanup job.
+- Routing and EF Core command logs default to Warning.
+
+### Fixed
+- Share links in `/api/shares/...` and `/api/v1/shares/...` request paths (and `/S/`, `/U/` in any case) are redacted in logs like `/s/` links; the `gate` query value is redacted too.
+- Share creation interrupted by a restart or deploy is retried instead of failing; if the share was already created, the job completes instead of creating it twice.
+
 ## [0.10.2] - 2026-11-12
 
 ### Added
