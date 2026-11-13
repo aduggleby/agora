@@ -256,6 +256,16 @@ public sealed class QueuedShareCreationJob(
                 result.ShareId,
                 payload.UploaderEmail);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Hangfire's server is shutting down (a deploy): this is not a failure. Rethrow so the job is requeued and
+            // re-run. The sealed draft, its staged uploads and its processing lease stay as they are (the re-run renews
+            // the lease first), and nothing is built twice: share creation removes its own partial objects when no row
+            // was committed. The status stays "processing" until the re-run reports.
+            logger.LogWarning("Queued share creation interrupted by shutdown for share {TokenRef}; it will be retried", LogSafe.Token(token));
+            performContext?.WriteLine("Interrupted by server shutdown; the job will be retried.");
+            throw;
+        }
         catch (Exception ex)
         {
             logger.LogError(ex, "Queued share creation failed for share {TokenRef}", LogSafe.Token(token));
