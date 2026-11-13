@@ -223,11 +223,11 @@ public sealed class QueuedShareCreationJob(
             {
                 // Resolved right before sending: the recipient is the owner's address now, and nothing is sent when
                 // the owner or the share disappeared while the archive was being built.
-                var recipientEmail = await db.Users.Where(x => x.Id == ownerUserId).Select(x => x.Email).SingleOrDefaultAsync(ct);
+                var recipientEmail = await db.Users.Where(x => x.Id == ownerUserId && x.IsEnabled).Select(x => x.Email).SingleOrDefaultAsync(ct);
                 var shareStillExists = await db.Shares.AnyAsync(x => x.Id == result.ShareId && x.DeletedAtUtc == null, ct);
                 if (string.IsNullOrWhiteSpace(recipientEmail) || !shareStillExists)
                 {
-                    var notifySkipped = statusStore.UpdateStep(token, "notify_uploader", "completed", "No email sent: the owner account or the share no longer exists.");
+                    var notifySkipped = statusStore.UpdateStep(token, "notify_uploader", "completed", "No email sent: the owner account is disabled or gone, or the share no longer exists.");
                     performContext?.WriteLine("Ready-link email skipped: owner account or share no longer exists.");
                     await broadcaster.BroadcastAsync(notifySkipped, ct);
                 }

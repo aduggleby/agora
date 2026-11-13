@@ -413,7 +413,13 @@ public sealed class SharePreviewJobService(
     private async Task<bool> IsShareActiveAsync(Guid shareId, CancellationToken ct)
     {
         var share = await db.Shares.AsNoTracking().SingleOrDefaultAsync(x => x.Id == shareId, ct);
-        return share is not null && ShareManager.IsActive(share, DateTime.UtcNow);
+        if (share is null || !ShareManager.IsActive(share, DateTime.UtcNow))
+        {
+            return false;
+        }
+
+        // A disabled owner's shares are not served, so do not spend decode work on them either.
+        return share.OwnerUserId is null || !await db.Users.AnyAsync(u => u.Id == share.OwnerUserId && !u.IsEnabled, ct);
     }
 
     private async Task<byte[]?> ReadObjectAsync(string key, CancellationToken ct)
