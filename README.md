@@ -524,7 +524,7 @@ In `Production` it warns when `Agora__TrustedProxies` is empty or `AllowedHosts`
 | `Agora__MaxTotalUploadBytes` | `10737418240` (10 GB) | | Per-share total, enforced per draft while staging (a stage request may carry at most what its draft still accepts) |
 | `Agora__MaxStagedBytesPerAccount` | `53687091200` (50 GB) | | Bytes one signed-in account may hold in staged uploads, share files and template backgrounds together, across all its unsubmitted drafts; admins are exempt, `0` disables. Over it a stage is refused with `413` |
 | `Agora__DownloadEventRetentionDays` | `90` | | How long download-event records are kept |
-| `Agora__ZombieUploadRetentionHours` | `24` | | Age after which abandoned staged uploads, drafts of signed-in users, share-creation status files, `tmp/` files and preview `.lock` markers are swept; also the shortest interval at which a polling download page can re-queue a missing preview |
+| `Agora__ZombieUploadRetentionHours` | `24` | | Age after which abandoned staged uploads, drafts of signed-in users, share-creation status files, `tmp/` files and preview `.lock` markers are swept, and after which a pending custom share link claim is released (keep it well above the share-creation retry window of about 8 hours); also the shortest interval at which a polling download page can re-queue a missing preview |
 
 ### `Agora__Auth__*`
 

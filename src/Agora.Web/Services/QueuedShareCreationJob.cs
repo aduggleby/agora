@@ -316,7 +316,8 @@ public sealed class QueuedShareCreationJob(
             }
 
             // Failed for good (cancellation by shutdown is handled above and keeps the claim for the retry). Once the
-            // share row is committed its claim was already removed with it, so a later failure touches nothing.
+            // share row is committed its claim is released best-effort right after the commit; a leftover claim is
+            // harmless (the share already holds the link) and is swept, so a later failure touches nothing.
             if (!shareCreated)
             {
                 await ReleaseTokenClaimAsync(ownerUserId, token);
