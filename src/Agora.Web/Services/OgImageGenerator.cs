@@ -39,7 +39,7 @@ public sealed class OgImageGenerator
     public const long MaxBackgroundPixels = 16_000_000;
 
     /// <summary>
-    /// Pixel budget for JPEG and WEBP backgrounds. Skia scales these during decoding towards the 1200x630 canvas (see
+    /// Pixel budget for JPEG and WEBP backgrounds. Skia scales these during decoding toward the 1200x630 canvas (see
     /// <see cref="UntrustedImageDecoding.DecodeFirstFrame"/>), so the full size is never allocated and ordinary camera
     /// photos (24 megapixels and more) stay accepted.
     /// </summary>
