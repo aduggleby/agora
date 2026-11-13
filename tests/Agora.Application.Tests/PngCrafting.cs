@@ -13,6 +13,13 @@ internal static class PngCrafting
         Craft(("IHDR", Ihdr(width, height)), ("IEND", []));
 
     /// <summary>
+    /// PNG signature + IHDR declaring the given size + a tiny (empty zlib stream) IDAT + IEND: the codec opens and reports
+    /// the declared size, so a refusal proves the pixel budget, while any actual decode would allocate the full size.
+    /// </summary>
+    public static byte[] HeaderWithIdat(int width, int height) =>
+        Craft(("IHDR", Ihdr(width, height)), ("IDAT", [0x78, 0x9C, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01]), ("IEND", []));
+
+    /// <summary>
     /// The double-IHDR trick: a large first IHDR (what a decoder allocates from), an empty IDAT, then a tiny IHDR
     /// (what a header-only identify would report last).
     /// </summary>

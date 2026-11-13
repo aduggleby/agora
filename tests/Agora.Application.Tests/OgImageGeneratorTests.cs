@@ -143,14 +143,33 @@ public sealed class OgImageGeneratorTests
     }
 
     [Fact]
+    public void Upload_check_applies_the_per_format_pixel_budget()
+    {
+        // JPEG and WEBP are scaled during decoding: a 24 megapixel camera photo is fine, up to 40 megapixels.
+        Assert.True(OgImageGenerator.IsAcceptableBackground(new MemoryStream(ImageCrafting.JpegDeclaringSize(6000, 4000))));
+        var jpegOver = Assert.Throws<PreviewSourceRejectedException>(() =>
+            OgImageGenerator.OpenBackgroundHeader(new MemoryStream(ImageCrafting.JpegDeclaringSize(8000, 6000))));
+        Assert.Contains("pixel budget", jpegOver.Message);
+
+        // PNG decodes at full size: 6300x6300 (39.7 million pixels) is under the old 40 million budget but refused now,
+        // from the header (the file opens as a codec, so the refusal is the budget, not a malformed file).
+        Assert.False(OgImageGenerator.IsAcceptableBackground(new MemoryStream(PngCrafting.HeaderWithIdat(6300, 6300))));
+        var pngOver = Assert.Throws<PreviewSourceRejectedException>(() =>
+            OgImageGenerator.OpenBackgroundHeader(new MemoryStream(PngCrafting.HeaderWithIdat(6300, 6300))));
+        Assert.Contains("pixel budget for Png", pngOver.Message);
+        using (var atBudget = OgImageGenerator.OpenBackgroundHeader(new MemoryStream(PngCrafting.HeaderWithIdat(4000, 4000))))
+        {
+            Assert.Equal(4000, atBudget.Info.Width);
+        }
+    }
+
+    [Fact]
     public void Upload_check_accepts_a_4k_background_and_refuses_oversized_or_undecodable_ones()
     {
         Assert.True(OgImageGenerator.IsAcceptableBackground(new MemoryStream(ImageCrafting.Solid(3840, 2160, Navy))));
+        Assert.True(OgImageGenerator.IsAcceptableBackground(new MemoryStream(ImageCrafting.Solid(3840, 2160, Navy, SKEncodedImageFormat.Webp))));
 
         Assert.False(OgImageGenerator.IsAcceptableBackground(new MemoryStream(PngCrafting.HeaderOnly(4001, 4000))));
-        var overBudget = Assert.Throws<PreviewSourceRejectedException>(() =>
-            UntrustedImageDecoding.OpenHeader(new MemoryStream(PngCrafting.HeaderOnly(4001, 4000)), OgImageGenerator.MaxBackgroundPixels));
-        Assert.Contains("pixel budget", overBudget.Message);
         Assert.False(OgImageGenerator.IsAcceptableBackground(new MemoryStream(PngCrafting.DoubleIhdr(12_000, 12_000, 1, 1))));
         Assert.False(OgImageGenerator.IsAcceptableBackground(new MemoryStream(ImageCrafting.Gif(8, 8))));
         Assert.False(OgImageGenerator.IsAcceptableBackground(new MemoryStream("not an image"u8.ToArray())));
@@ -176,7 +195,7 @@ public sealed class OgImageGeneratorTests
         var withoutBackground = await RenderAsync(generator, null);
 
         var legacy = await generator.GenerateShareOgImageAsync(
-            new MemoryStream(PngCrafting.HeaderOnly(5000, 5000)), null, "Quarterly report", "From Alex", "report.pdf", 3, "12.4 MB", isExpired: false);
+            new MemoryStream(PngCrafting.HeaderWithIdat(6300, 6300)), null, "Quarterly report", "From Alex", "report.pdf", 3, "12.4 MB", isExpired: false);
 
         Assert.True(legacy.Cacheable);
         Assert.Equal(withoutBackground, legacy.Png);

@@ -33,26 +33,65 @@ public sealed class OgImageGenerator
 
     public const long MaxBackgroundBytes = 20L * 1024 * 1024;
     /// <summary>
-    /// Pixel budget for share backgrounds, checked at upload and again before every decode (a 4K image is 8.3 million
-    /// pixels). PNG and BMP decode at full size, so this times four bytes is what one background decode can allocate.
+    /// Pixel budget for PNG and BMP backgrounds, checked at upload and again before every decode. Skia always decodes
+    /// these at full size, so this times four bytes is what one such decode allocates (a 4K image is 8.3 million pixels).
     /// </summary>
     public const long MaxBackgroundPixels = 16_000_000;
+
+    /// <summary>
+    /// Pixel budget for JPEG and WEBP backgrounds. Skia scales these during decoding towards the 1200x630 canvas (see
+    /// <see cref="UntrustedImageDecoding.DecodeFirstFrame"/>), so the full size is never allocated and ordinary camera
+    /// photos (24 megapixels and more) stay accepted.
+    /// </summary>
+    public const long MaxScaledBackgroundPixels = 40_000_000;
+
     public const double MaxBackgroundAspectRatio = 10;
 
     /// <summary>Shown when an uploaded background is refused by <see cref="IsAcceptableBackground(string)"/>.</summary>
     public const string BackgroundRefusalMessage =
-        "The background image could not be read or is larger than 16 megapixels (for example 4000 x 4000 pixels).";
+        "The background image could not be read or is too large (at most 40 megapixels for JPG and WEBP, 16 megapixels for PNG).";
+
+    /// <summary>The pixel budget for a background of the given (sniffed and codec-confirmed) format.</summary>
+    public static long MaxBackgroundPixelsFor(SKEncodedImageFormat format) =>
+        format is SKEncodedImageFormat.Jpeg or SKEncodedImageFormat.Webp ? MaxScaledBackgroundPixels : MaxBackgroundPixels;
 
     /// <summary>
-    /// Upload-time check of a background: the header must be a supported image within <see cref="MaxBackgroundPixels"/>
-    /// (see <see cref="UntrustedImageDecoding.OpenHeader(string, long)"/>). Only the header is parsed, nothing is decoded,
-    /// so this runs without a decode slot; the upload endpoints calling it are signed-in and admission-capped.
+    /// Opens a background header under the larger budget, then applies the per-format one
+    /// (<see cref="MaxBackgroundPixelsFor"/>). Throws <see cref="PreviewSourceRejectedException"/> when refused; the
+    /// caller disposes the codec.
+    /// </summary>
+    internal static SKCodec OpenBackgroundHeader(Stream stream) =>
+        CheckFormatBudget(UntrustedImageDecoding.OpenHeader(stream, MaxScaledBackgroundPixels));
+
+    internal static SKCodec OpenBackgroundHeader(string absolutePath) =>
+        CheckFormatBudget(UntrustedImageDecoding.OpenHeader(absolutePath, MaxScaledBackgroundPixels));
+
+    private static SKCodec CheckFormatBudget(SKCodec codec)
+    {
+        var info = codec.Info;
+        var format = codec.EncodedFormat;
+        var pixels = (long)info.Width * info.Height;
+        var budget = MaxBackgroundPixelsFor(format);
+        if (pixels > budget)
+        {
+            codec.Dispose();
+            throw new PreviewSourceRejectedException(
+                $"source is {info.Width}x{info.Height} ({pixels} pixels), above the {budget} pixel budget for {format}");
+        }
+
+        return codec;
+    }
+
+    /// <summary>
+    /// Upload-time check of a background: the header must be a supported image within its format's pixel budget
+    /// (<see cref="OpenBackgroundHeader(string)"/>). Only the header is parsed, nothing is decoded, so this runs without
+    /// a decode slot; the upload endpoints calling it are signed-in and admission-capped.
     /// </summary>
     public static bool IsAcceptableBackground(string absolutePath)
     {
         try
         {
-            using var codec = UntrustedImageDecoding.OpenHeader(absolutePath, MaxBackgroundPixels);
+            using var codec = OpenBackgroundHeader(absolutePath);
             return true;
         }
         catch (PreviewSourceRejectedException)
@@ -66,7 +105,7 @@ public sealed class OgImageGenerator
     {
         try
         {
-            using var codec = UntrustedImageDecoding.OpenHeader(stream, MaxBackgroundPixels);
+            using var codec = OpenBackgroundHeader(stream);
             return true;
         }
         catch (PreviewSourceRejectedException)
@@ -222,7 +261,7 @@ public sealed class OgImageGenerator
     /// <summary>
     /// Draws the uploaded background cover-cropped and blurred straight into the canvas (no cover-sized intermediate:
     /// the decode is downscaled towards 1200x630 where the format allows and the crop happens in the draw).
-    /// Backgrounds above <see cref="MaxBackgroundBytes"/>, <see cref="MaxBackgroundPixels"/> or
+    /// Backgrounds above <see cref="MaxBackgroundBytes"/>, their format's pixel budget (<see cref="MaxBackgroundPixelsFor"/>) or
     /// <see cref="MaxBackgroundAspectRatio"/> are skipped, as are undecodable ones. Returns false when nothing was drawn.
     /// </summary>
     private static bool DrawBackgroundImage(SKCanvas canvas, Stream imageStream)
@@ -234,7 +273,7 @@ public sealed class OgImageGenerator
                 return false;
             }
 
-            using var codec = UntrustedImageDecoding.OpenHeader(imageStream, MaxBackgroundPixels);
+            using var codec = OpenBackgroundHeader(imageStream);
             var info = codec.Info;
 
             // Covering 1200x630 with an extreme strip (e.g. 400x1) would blow the strip up to thousands of pixels.

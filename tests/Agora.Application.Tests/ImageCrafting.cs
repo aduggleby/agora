@@ -65,6 +65,30 @@ internal static class ImageCrafting
     public static byte[] Itxt(string keyword, bool compressed, string text) =>
         [.. Encoding.ASCII.GetBytes(keyword), 0, (byte)(compressed ? 1 : 0), 0, 0, 0, .. Encoding.UTF8.GetBytes(text)];
 
+    /// <summary>
+    /// A small Skia-encoded JPEG whose frame header (SOF0/SOF2) is rewritten to declare <paramref name="width"/> x
+    /// <paramref name="height"/>: the header reports that size without encoding a large image.
+    /// </summary>
+    public static byte[] JpegDeclaringSize(int width, int height)
+    {
+        var jpeg = Solid(16, 16, new SKColor(30, 60, 90), SKEncodedImageFormat.Jpeg);
+        // Walk the marker segments after SOI (each is FF xx + a two-byte length) up to the frame header.
+        for (var i = 2; i + 9 <= jpeg.Length && jpeg[i] == 0xFF;)
+        {
+            if (jpeg[i + 1] is 0xC0 or 0xC2)
+            {
+                // Marker (2), length (2), precision (1), height (2), width (2).
+                BinaryPrimitives.WriteUInt16BigEndian(jpeg.AsSpan(i + 5), (ushort)height);
+                BinaryPrimitives.WriteUInt16BigEndian(jpeg.AsSpan(i + 7), (ushort)width);
+                return jpeg;
+            }
+
+            i += 2 + BinaryPrimitives.ReadUInt16BigEndian(jpeg.AsSpan(i + 2));
+        }
+
+        throw new InvalidOperationException("No SOF marker found in the encoded JPEG.");
+    }
+
     /// <summary>A Skia-encoded JPEG with an APP1 segment of <paramref name="appBytes"/> inserted after SOI.</summary>
     public static byte[] JpegWithAppSegment(int width, int height, SKColor color, int appBytes)
     {

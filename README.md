@@ -411,9 +411,11 @@ starting with "[Report Only]" (Chrome, Edge) or "Content-Security-Policy: The pa
   (inline PDFs are exempt from the CSP so the browser's PDF viewer can render them).
 - Download-page background images must be JPG, PNG or WEBP. SVG backgrounds are not accepted; SVG backgrounds uploaded
   by older versions are offered as a download instead of being displayed.
-- Background uploads are refused unless the file is a readable image of at most 16 million pixels (a 4K image has 8.3
-  million), checked from the image header. Backgrounds stored by older versions keep working on the download page; one
-  above that budget is left out of the link-preview image, which then shows the plain gradient.
+- Background uploads are refused unless the file is a readable image within its format's pixel budget, checked from the
+  image header: 40 million pixels for JPG and WEBP (decoded scaled down to the link-preview size, so camera photos fit)
+  and 16 million for PNG (always decoded at full size; a 4K image has 8.3 million). Backgrounds stored by older versions
+  keep working on the download page; one above its budget is left out of the link-preview image, which then shows the
+  plain gradient.
 
 ### Rate limits
 

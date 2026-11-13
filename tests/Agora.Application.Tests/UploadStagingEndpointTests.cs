@@ -276,8 +276,8 @@ public sealed class UploadStagingEndpointTests
         var csrf = await host.FetchCsrfAsync(host.OwnerId);
         var draft = await host.WithManagerAsync(m => m.EnsureDraftShareAsync(host.OwnerId, null, CancellationToken.None));
 
-        // A tiny file whose header declares 5000x5000 (25 million pixels, above the 16 million budget).
-        foreach (var refused in new[] { PngCrafting.HeaderOnly(5000, 5000), "not an image"u8.ToArray() })
+        // A tiny PNG whose header declares 6300x6300 (39.7 million pixels, above the 16 million PNG budget).
+        foreach (var refused in new[] { PngCrafting.HeaderWithIdat(6300, 6300), "not an image"u8.ToArray() })
         {
             var body = Host.MultipartBody(refused, "bg.png", "image/png");
             var context = await host.PostStageAsync("/api/uploads/stage-template-background", new MemoryStream(body), body.Length, csrf, draft, user: host.OwnerId);
@@ -293,6 +293,12 @@ public sealed class UploadStagingEndpointTests
         var ok = await host.PostStageAsync("/api/uploads/stage-template-background", new MemoryStream(accepted), accepted.Length, csrf, draft, user: host.OwnerId);
 
         Assert.Equal(StatusCodes.Status200OK, ok.Response.StatusCode);
+
+        // A 24 megapixel JPEG (an ordinary camera photo) is within the JPEG budget.
+        var photo = Host.MultipartBody(ImageCrafting.JpegDeclaringSize(6000, 4000), "photo.jpg", "image/jpeg");
+        var photoOk = await host.PostStageAsync("/api/uploads/stage-template-background", new MemoryStream(photo), photo.Length, csrf, draft, user: host.OwnerId);
+
+        Assert.Equal(StatusCodes.Status200OK, photoOk.Response.StatusCode);
     }
 
     private sealed record CsrfTokens(string CookieHeader, string? HeaderToken);
