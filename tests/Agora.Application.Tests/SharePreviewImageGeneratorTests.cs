@@ -11,6 +11,7 @@ namespace Agora.Application.Tests;
 /// Budgets around preview generation: sources are refused by byte size and by header dimensions before any pixel is
 /// decoded, PDFs are rasterized at a bounded size, and ordinary small sources still produce a preview and thumbnail.
 /// </summary>
+[Collection(RasterDecodeSlotsCollection.Name)]
 public sealed class SharePreviewImageGeneratorTests : IDisposable
 {
     private static readonly CancellationToken Ct = CancellationToken.None;

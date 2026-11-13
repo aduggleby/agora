@@ -95,7 +95,22 @@ public static class PublicShareEndpoints
                     cached = await objectStore.OpenReadAsync(cacheKey, ct);
                     if (cached is null)
                     {
-                        var imageBytes = await RenderOgImageAsync(share, objectStore, ogGenerator, ct);
+                        var rendered = await RenderOgImageAsync(share, objectStore, ogGenerator, ct);
+                        var imageBytes = rendered.Png;
+                        if (!rendered.Cacheable)
+                        {
+                            // The background could not be decoded within the shared decode slots and time budget: serve
+                            // the gradient fallback uncached (here and downstream) so a later request renders it again.
+                            if (!await manager.IsShareActiveAsync(share.Id, ct))
+                            {
+                                return Results.NotFound();
+                            }
+
+                            ObjectResults.ApplyUserContentHeaders(response);
+                            ObjectResults.ApplyNoStore(response);
+                            return Results.File(imageBytes, "image/png");
+                        }
+
                         await objectStore.PutBytesAsync(cacheKey, imageBytes, "image/png", ct);
                         if (!await manager.IsShareActiveAsync(share.Id, ct))
                         {
@@ -519,17 +534,20 @@ public static class PublicShareEndpoints
         return Results.Redirect($"/s/{Uri.EscapeDataString(token)}");
     }
 
-    private static async Task<byte[]> RenderOgImageAsync(Domain.Entities.Share share, IObjectStore objectStore, OgImageGenerator ogGenerator, CancellationToken ct)
+    private static async Task<OgImageGenerator.OgImage> RenderOgImageAsync(Domain.Entities.Share share, IObjectStore objectStore, OgImageGenerator ogGenerator, CancellationToken ct)
     {
         if (!string.IsNullOrWhiteSpace(share.DownloadPasswordHash))
         {
-            return await ogGenerator.GenerateDefaultOgImageAsync("Password-protected share", "Enter the password on the download page to open the files.");
+            return new OgImageGenerator.OgImage(
+                await ogGenerator.GenerateDefaultOgImageAsync("Password-protected share", "Enter the password on the download page to open the files."),
+                Cacheable: true);
         }
 
-        // Streamed straight into the generator, which skips oversized or undecodable backgrounds.
+        // Streamed straight into the generator, which skips oversized or undecodable backgrounds and owns (disposes)
+        // the stream from here on.
         var backgroundKey = ObjectKey.FromInternalMarker(share.BackgroundImageUrl);
         var background = backgroundKey is null ? null : await objectStore.OpenReadAsync(backgroundKey, ct);
-        await using var backgroundStream = background?.Content;
+        var backgroundStream = background?.Content;
 
         var sizeDisplay = share.ZipSizeBytes >= 1024 * 1024
             ? $"{share.ZipSizeBytes / (1024.0 * 1024.0):F1} MB"
@@ -543,7 +561,8 @@ public static class PublicShareEndpoints
             fileName: share.ZipDisplayName,
             fileCount: share.Files.Count,
             sizeDisplay: sizeDisplay,
-            isExpired: false);
+            isExpired: false,
+            ct: ct);
     }
 
     private static void ApplyOgImageHeaders(HttpResponse response)

@@ -32,7 +32,8 @@ public sealed class SharePreviewImageGenerator
     // PDFium is native, synchronous and cannot be cancelled: cap how many renders run at once so renders abandoned
     // after a timeout occupy a slot (and block the next one) instead of piling up. Raster decodes get the same
     // treatment: Skia decodes synchronously and a decode abandoned after a timeout holds up to the pixel budget x 4
-    // bytes until it returns. Internal so tests can hold the slots.
+    // bytes until it returns. The raster slots also bound link-preview (og) background decodes. Internal so tests can
+    // hold the slots.
     private static readonly SemaphoreSlim PdfRenderSlots = new(2, 2);
     internal static readonly SemaphoreSlim RasterDecodeSlots = new(2, 2);
     private static long _rasterDecodesStarted;
@@ -125,17 +126,25 @@ public sealed class SharePreviewImageGenerator
     /// Runs <paramref name="work"/> under the configured time budget. A timeout surfaces as
     /// <see cref="PreviewSourceRejectedException"/>; cancellation of <paramref name="ct"/> itself propagates unchanged.
     /// </summary>
-    private async Task<T> WithTimeoutAsync<T>(Func<CancellationToken, Task<T>> work, CancellationToken ct)
+    private Task<T> WithTimeoutAsync<T>(Func<CancellationToken, Task<T>> work, CancellationToken ct) =>
+        WithTimeoutAsync(work, _limits.TimeoutSeconds, ct);
+
+    /// <summary>
+    /// Runs <paramref name="work"/> under a time budget of <paramref name="timeoutSeconds"/> (at least one second). A
+    /// timeout surfaces as <see cref="PreviewSourceRejectedException"/>; cancellation of <paramref name="ct"/> itself
+    /// propagates unchanged. Shared with <see cref="OgImageGenerator"/> so every untrusted decode has the same budget.
+    /// </summary>
+    internal static async Task<T> WithTimeoutAsync<T>(Func<CancellationToken, Task<T>> work, int timeoutSeconds, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _limits.TimeoutSeconds)));
+        timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, timeoutSeconds)));
         try
         {
             return await work(timeout.Token);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            throw new PreviewSourceRejectedException($"generation exceeded the {_limits.TimeoutSeconds}s time budget");
+            throw new PreviewSourceRejectedException($"generation exceeded the {timeoutSeconds}s time budget");
         }
     }
 
@@ -143,8 +152,9 @@ public sealed class SharePreviewImageGenerator
     /// Runs a synchronous Skia decode/draw on the pool inside one of the <see cref="RasterDecodeSlots"/>; only the wait
     /// is cancellable. Waiting for a slot counts against the time budget, so with both slots held by abandoned work a
     /// new request is rejected on timeout without ever starting. The slot is released when the worker actually exits.
+    /// Also used by <see cref="OgImageGenerator"/> for link-preview backgrounds, so both share the same slots.
     /// </summary>
-    private static async Task<T> RunBoundedAsync<T>(Func<T> work, CancellationToken ct)
+    internal static async Task<T> RunBoundedAsync<T>(Func<T> work, CancellationToken ct)
     {
         await RasterDecodeSlots.WaitAsync(ct);
         if (ct.IsCancellationRequested)

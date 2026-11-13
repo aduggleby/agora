@@ -65,7 +65,7 @@ public sealed class StreamSafetyTests
     {
         var background = new CountingStream(OgImageGenerator.MaxBackgroundBytes + 1);
 
-        var png = await CreateOgGenerator().GenerateShareOgImageAsync(background, null, "Title", null, "a.zip", 1, "1 KB", false);
+        var png = (await CreateOgGenerator().GenerateShareOgImageAsync(background, null, "Title", null, "a.zip", 1, "1 KB", false)).Png;
 
         Assert.NotEmpty(png);
         Assert.Equal(0, background.BytesRead);
@@ -76,7 +76,7 @@ public sealed class StreamSafetyTests
     {
         var background = new CountingStream(OgImageGenerator.MaxBackgroundBytes - 1);
 
-        var png = await CreateOgGenerator().GenerateShareOgImageAsync(background, null, "Title", null, "a.zip", 1, "1 KB", false);
+        var png = (await CreateOgGenerator().GenerateShareOgImageAsync(background, null, "Title", null, "a.zip", 1, "1 KB", false)).Png;
 
         Assert.NotEmpty(png);
         Assert.InRange(background.BytesRead, 1, 256 * 1024);

@@ -767,6 +767,9 @@ text chunks, a second colour profile, more than 64 KB of ancillary chunk data or
 file). PDF pages are rasterized with the longer side at 1200 pixels. The link-preview image (`/s/{token}/og-image`) is
 rendered once per share, stored next to the previews as `og.png`, served with `Cache-Control: public, max-age=3600` and
 purged with the share; password-protected shares get a generic image that shows no title, file name or file count.
+Its background is decoded in the same two raster decode slots and under the same `TimeoutSeconds` budget as previews;
+when no slot frees up in time, the image is served with the plain gradient and `Cache-Control: private, no-store` and is
+not stored, so a later request renders it again.
 
 ### Upgrade notes
 

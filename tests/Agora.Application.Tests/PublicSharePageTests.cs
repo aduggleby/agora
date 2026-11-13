@@ -30,8 +30,10 @@ namespace Agora.Application.Tests;
 /// <summary>
 /// The public share page and its routes: a password-protected share shows nothing of itself until unlocked, original
 /// bytes are never cacheable, only the owner's own downloads go uncounted, a freshly failed preview is not re-run on
-/// demand, and the page shares the per-share download rate limit.
+/// demand, the page shares the per-share download rate limit, and a link-preview image whose background could not be
+/// decoded within the shared decode slots is served but not cached.
 /// </summary>
+[Collection(RasterDecodeSlotsCollection.Name)]
 public sealed class PublicSharePageTests
 {
     private const string Password = "correct-horse";
@@ -270,6 +272,41 @@ public sealed class PublicSharePageTests
         Assert.Equal(StatusCodes.Status200OK, (await host.SendAsync(HttpMethods.Get, $"/s/ownerofs/files/{fileId}")).Status);
     }
 
+    [Fact]
+    public async Task Og_image_falls_back_uncached_while_the_decode_slots_are_busy_and_is_cached_once_rendered()
+    {
+        await using var host = await Host.StartAsync();
+        const string backgroundKey = "backgrounds/2026/11/cccccccccccccccccccccccccccccccc.png";
+        await host.ObjectStore.PutBytesAsync(backgroundKey, ImageCrafting.Solid(64, 48, new SkiaSharp.SKColor(30, 60, 90)), "image/png", CancellationToken.None);
+        var share = await host.AddShareAsync("ogslots1", background: $"internal:{backgroundKey}");
+        var cacheKey = SharePreviewPaths.OgImageKey(share.Id);
+        var slots = SharePreviewImageGenerator.RasterDecodeSlots;
+
+        await slots.WaitAsync();
+        await slots.WaitAsync();
+        Response fallback;
+        try
+        {
+            fallback = await host.SendAsync(HttpMethods.Get, "/s/ogslots1/og-image");
+        }
+        finally
+        {
+            slots.Release(2);
+        }
+
+        Assert.Equal(StatusCodes.Status200OK, fallback.Status);
+        Assert.Equal("private, no-store", fallback.Headers.CacheControl.ToString());
+        Assert.Null(await host.ObjectStore.OpenReadAsync(cacheKey, CancellationToken.None));
+
+        var rendered = await host.SendAsync(HttpMethods.Get, "/s/ogslots1/og-image");
+
+        Assert.Equal(StatusCodes.Status200OK, rendered.Status);
+        Assert.Equal("public, max-age=3600", rendered.Headers.CacheControl.ToString());
+        var cached = await host.ObjectStore.OpenReadAsync(cacheKey, CancellationToken.None);
+        Assert.NotNull(cached);
+        await cached.Content.DisposeAsync();
+    }
+
     private sealed record Response(int Status, string Body, IHeaderDictionary Headers);
 
     private sealed class Host : IAsyncDisposable
@@ -290,6 +327,7 @@ public sealed class PublicSharePageTests
 
         public string StorageRoot { get; }
         public CountingJobClient Jobs { get; }
+        public IObjectStore ObjectStore => _objectStore;
 
         public static async Task<Host> StartAsync()
         {
@@ -318,7 +356,8 @@ public sealed class PublicSharePageTests
             builder.Services.AddScoped<IShareExperienceRenderer, GalleryShareExperienceRenderer>();
             builder.Services.AddScoped<ShareExperienceRendererResolver>();
             builder.Services.AddSingleton(new PublicBaseUrlResolver("https://files.example.com", allowRequestHostFallback: false));
-            builder.Services.AddSingleton(_ => new OgImageGenerator(Path.Combine(AppContext.BaseDirectory, "Fonts")));
+            // A one-second budget so the og-image test that holds the decode slots falls back quickly.
+            builder.Services.AddSingleton(_ => new OgImageGenerator(Path.Combine(AppContext.BaseDirectory, "Fonts"), decodeTimeoutSeconds: 1));
             builder.Services.AddSingleton<SharePreviewImageGenerator>();
             builder.Services.AddScoped<SharePreviewJobService>();
             builder.Services.AddRazorPages().AddApplicationPart(typeof(ForgotPasswordModel).Assembly);

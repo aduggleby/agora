@@ -5,8 +5,10 @@ namespace Agora.Application.Tests;
 
 /// <summary>
 /// Runtime smoke of the link-preview (OG) image drawing, plus the background budget: backgrounds are decoded with the
-/// restricted format set, extreme aspect ratios are skipped, and accepted ones are cropped to the canvas in one step.
+/// restricted format set, extreme aspect ratios are skipped, accepted ones are cropped to the canvas in one step, and
+/// the decode runs inside the shared raster decode slots under the time budget.
 /// </summary>
+[Collection(RasterDecodeSlotsCollection.Name)]
 public sealed class OgImageGeneratorTests
 {
     private static readonly string FontsDirectory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "Fonts"));
@@ -88,8 +90,86 @@ public sealed class OgImageGeneratorTests
         Assert.True(corner.Red > 60 && corner.Red > corner.Blue * 2, $"expected darkened red corner, got {corner}");
     }
 
-    private static Task<byte[]> RenderAsync(OgImageGenerator generator, Stream? background) =>
-        generator.GenerateShareOgImageAsync(background, null, "Quarterly report", "From Alex", "report.pdf", 3, "12.4 MB", isExpired: false);
+    [Fact]
+    public async Task Background_waits_for_a_raster_slot_and_falls_back_uncached_on_timeout_without_decoding()
+    {
+        var generator = new OgImageGenerator(FontsDirectory, decodeTimeoutSeconds: 1);
+        var withoutBackground = await RenderAsync(generator, null);
+        var slots = SharePreviewImageGenerator.RasterDecodeSlots;
+        // A large header within the budget: decoding it would allocate width x height x 4 bytes.
+        var background = new TrackingStream(PngCrafting.HeaderOnly(4000, 4000));
+
+        // Hold both slots as two abandoned decodes would.
+        await slots.WaitAsync();
+        await slots.WaitAsync();
+        OgImageGenerator.OgImage result;
+        long started;
+        try
+        {
+            started = SharePreviewImageGenerator.RasterDecodesStarted;
+
+            result = await generator.GenerateShareOgImageAsync(background, null, "Quarterly report", "From Alex", "report.pdf", 3, "12.4 MB", isExpired: false);
+
+            Assert.Equal(started, SharePreviewImageGenerator.RasterDecodesStarted);
+            Assert.Equal(0, slots.CurrentCount);
+        }
+        finally
+        {
+            slots.Release(2);
+        }
+
+        Assert.False(result.Cacheable);
+        Assert.Equal(withoutBackground, result.Png);
+        Assert.Equal(0, background.BytesRead);
+        Assert.True(background.Disposed);
+
+        // With the slots free again, a background is decoded and drawn and the result is cacheable.
+        var retried = await generator.GenerateShareOgImageAsync(
+            new MemoryStream(ImageCrafting.Solid(64, 48, Navy)), null, "Quarterly report", "From Alex", "report.pdf", 3, "12.4 MB", isExpired: false);
+        Assert.True(retried.Cacheable);
+        Assert.NotEqual(withoutBackground, retried.Png);
+    }
+
+    [Fact]
+    public async Task Rendered_backgrounds_and_skipped_ones_are_cacheable()
+    {
+        var generator = new OgImageGenerator(FontsDirectory);
+
+        var drawn = await generator.GenerateShareOgImageAsync(await PngAsync(64, 48), null, "t", null, "a.zip", 1, "1 KB", isExpired: false);
+        var skipped = await generator.GenerateShareOgImageAsync(new MemoryStream("not an image"u8.ToArray()), null, "t", null, "a.zip", 1, "1 KB", isExpired: false);
+
+        Assert.True(drawn.Cacheable);
+        Assert.True(skipped.Cacheable);
+    }
+
+    private static async Task<byte[]> RenderAsync(OgImageGenerator generator, Stream? background) =>
+        (await generator.GenerateShareOgImageAsync(background, null, "Quarterly report", "From Alex", "report.pdf", 3, "12.4 MB", isExpired: false)).Png;
+
+    private sealed class TrackingStream(byte[] bytes) : MemoryStream(bytes)
+    {
+        public long BytesRead { get; private set; }
+        public bool Disposed { get; private set; }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = base.Read(buffer, offset, count);
+            BytesRead += read;
+            return read;
+        }
+
+        public override int Read(Span<byte> buffer)
+        {
+            var read = base.Read(buffer);
+            BytesRead += read;
+            return read;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            Disposed = true;
+            base.Dispose(disposing);
+        }
+    }
 
     private static SKColor CornerPixel(byte[] png)
     {

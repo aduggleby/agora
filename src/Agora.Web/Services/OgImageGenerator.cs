@@ -18,17 +18,106 @@ public sealed class OgImageGenerator
     private static readonly SKSamplingOptions Resampling = new(SKCubicResampler.Mitchell);
 
     private readonly BrandTypefaces _typefaces;
+    private readonly int _decodeTimeoutSeconds;
 
-    public OgImageGenerator(string fontsDirectory)
+    /// <param name="fontsDirectory">Directory holding the brand fonts.</param>
+    /// <param name="decodeTimeoutSeconds">
+    /// Time budget for a render that decodes a background, including the wait for a raster decode slot
+    /// (normally <c>Agora:Previews:TimeoutSeconds</c>).
+    /// </param>
+    public OgImageGenerator(string fontsDirectory, int decodeTimeoutSeconds = 30)
     {
         _typefaces = new BrandTypefaces(fontsDirectory);
+        _decodeTimeoutSeconds = decodeTimeoutSeconds;
     }
 
     public const long MaxBackgroundBytes = 20L * 1024 * 1024;
     public const long MaxBackgroundPixels = 40_000_000;
     public const double MaxBackgroundAspectRatio = 10;
 
-    public Task<byte[]> GenerateShareOgImageAsync(
+    /// <summary>
+    /// A rendered link-preview image. <paramref name="Cacheable"/> is false when the background was not drawn only
+    /// because the decode slots or the time budget ran out; such a render must not be stored, so a later request retries.
+    /// </summary>
+    public sealed record OgImage(byte[] Png, bool Cacheable);
+
+    /// <summary>
+    /// Renders the share's link-preview image. A background is decoded and drawn inside one of the shared raster decode
+    /// slots (<see cref="SharePreviewImageGenerator.RasterDecodeSlots"/>) under the decode time budget; when no slot
+    /// frees up in time or the render runs over, the gradient is drawn instead and the result is not cacheable.
+    /// Takes ownership of <paramref name="backgroundImage"/> and disposes it (possibly after this method returns, when
+    /// an abandoned render is still reading it), so the caller must not dispose or touch it afterwards.
+    /// </summary>
+    public async Task<OgImage> GenerateShareOgImageAsync(
+        Stream? backgroundImage,
+        string? backgroundColorHex,
+        string title,
+        string? subtitle,
+        string fileName,
+        int fileCount,
+        string sizeDisplay,
+        bool isExpired,
+        CancellationToken ct = default)
+    {
+        byte[] Render(Stream? background) =>
+            RenderShareOgImage(background, backgroundColorHex, title, subtitle, fileName, fileCount, sizeDisplay, isExpired);
+
+        if (backgroundImage is null)
+        {
+            return new OgImage(Render(null), Cacheable: true);
+        }
+
+        // Checked without a slot: nothing is decoded and an oversized background is skipped without being read.
+        if (!backgroundImage.CanSeek || backgroundImage.Length > MaxBackgroundBytes)
+        {
+            await backgroundImage.DisposeAsync();
+            return new OgImage(Render(null), Cacheable: true);
+        }
+
+        // Whoever claims the stream first owns it: the worker when it starts, or this method when the worker never
+        // started (slot wait timed out). An abandoned worker keeps reading until it exits, so only it may dispose then.
+        var claimed = 0;
+        try
+        {
+            var png = await SharePreviewImageGenerator.WithTimeoutAsync(
+                token => SharePreviewImageGenerator.RunBoundedAsync(() =>
+                {
+                    if (Interlocked.Exchange(ref claimed, 1) != 0)
+                    {
+                        return Array.Empty<byte>();
+                    }
+
+                    using (backgroundImage)
+                    {
+                        return Render(backgroundImage);
+                    }
+                }, token),
+                _decodeTimeoutSeconds,
+                ct);
+            return new OgImage(png, Cacheable: true);
+        }
+        catch (PreviewSourceRejectedException)
+        {
+            // Only the time budget surfaces here; undecodable or oversized backgrounds are skipped inside the render.
+            ReleaseUnclaimed(backgroundImage, ref claimed);
+            return new OgImage(Render(null), Cacheable: false);
+        }
+        catch
+        {
+            ReleaseUnclaimed(backgroundImage, ref claimed);
+            throw;
+        }
+    }
+
+    private static void ReleaseUnclaimed(Stream stream, ref int claimed)
+    {
+        if (Interlocked.Exchange(ref claimed, 1) == 0)
+        {
+            stream.Dispose();
+        }
+    }
+
+    private byte[] RenderShareOgImage(
         Stream? backgroundImage,
         string? backgroundColorHex,
         string title,
@@ -48,7 +137,7 @@ public sealed class OgImageGenerator
         DrawShareCard(canvas, title, subtitle, fileName, fileCount, sizeDisplay, isExpired);
         DrawBranding(canvas, hasBackground);
 
-        return Task.FromResult(EncodePng(surface));
+        return EncodePng(surface);
     }
 
     public Task<byte[]> GenerateDefaultOgImageAsync(string heading, string? description)

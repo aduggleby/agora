@@ -203,8 +203,9 @@ builder.Services.AddScoped<IShareExperienceRenderer, ArchiveShareExperienceRende
 builder.Services.AddScoped<IShareExperienceRenderer, GalleryShareExperienceRenderer>();
 builder.Services.AddScoped<ShareExperienceRendererResolver>();
 builder.Services.AddScoped<IEmailTemplateRenderer, RazorEmailTemplateRenderer>();
-builder.Services.AddSingleton(new Agora.Web.Services.OgImageGenerator(
-    System.IO.Path.Combine(builder.Environment.ContentRootPath, "Fonts")));
+builder.Services.AddSingleton(sp => new Agora.Web.Services.OgImageGenerator(
+    System.IO.Path.Combine(builder.Environment.ContentRootPath, "Fonts"),
+    sp.GetRequiredService<IOptions<AgoraOptions>>().Value.Previews.TimeoutSeconds));
 
 var emailProvider = (builder.Configuration["Email:Provider"] ?? "resend").Trim().ToLowerInvariant();
 if (emailProvider == "filesystem")
