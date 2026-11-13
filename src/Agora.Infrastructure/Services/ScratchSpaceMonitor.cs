@@ -34,6 +34,7 @@ public sealed class ScratchSpaceMonitor
     private readonly StorageProvider _provider;
     private readonly Func<string, long> _availableFreeBytes;
     private readonly Func<string, long> _scratchBytes;
+    private readonly Func<string, long> _totalCapacityBytes;
     private readonly TimeProvider _clock;
     private readonly ILogger<ScratchSpaceMonitor> _logger;
     private readonly object _gate = new();
@@ -53,14 +54,42 @@ public sealed class ScratchSpaceMonitor
         Func<string, long> availableFreeBytes,
         Func<string, long> scratchBytes,
         TimeProvider clock,
-        ILogger<ScratchSpaceMonitor>? logger = null)
+        ILogger<ScratchSpaceMonitor>? logger = null,
+        Func<string, long>? totalCapacityBytes = null)
     {
+        _totalCapacityBytes = totalCapacityBytes ?? TotalCapacityBytes;
         _options = options;
         _provider = provider;
         _availableFreeBytes = availableFreeBytes;
         _scratchBytes = scratchBytes;
         _clock = clock;
         _logger = logger ?? NullLogger<ScratchSpaceMonitor>.Instance;
+    }
+
+    /// <summary>
+    /// The scratch budget: Scratch:MaxBytes when set, otherwise the total capacity of the StorageRoot volume minus
+    /// Scratch:MinFreeBytes. Total capacity (not current free space) keeps it stable. 0 when it cannot be known.
+    /// </summary>
+    public long ScratchBudgetBytes
+    {
+        get
+        {
+            var limits = _options.Scratch;
+            if (limits.MaxBytes > 0)
+            {
+                return limits.MaxBytes;
+            }
+
+            try
+            {
+                return Math.Max(0, _totalCapacityBytes(Path.GetFullPath(_options.StorageRoot)) - Math.Max(0, limits.MinFreeBytes));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+            {
+                _logger.LogWarning(ex, "Capacity probe for {StorageRoot} failed; the open-draft share of the scratch budget is not enforced", _options.StorageRoot);
+                return 0;
+            }
+        }
     }
 
     /// <summary>Outstanding reservations, for diagnostics and tests.</summary>
@@ -181,6 +210,12 @@ public sealed class ScratchSpaceMonitor
     private static UploadLimitException Insufficient() => new(
         UploadLimitKind.InsufficientStorage,
         "The server is out of storage space for uploads right now. Please try again later.");
+
+    private static long TotalCapacityBytes(string storageRoot)
+    {
+        Directory.CreateDirectory(storageRoot);
+        return new DriveInfo(storageRoot).TotalSize;
+    }
 
     private static long AvailableFreeBytes(string storageRoot)
     {

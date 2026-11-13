@@ -1175,7 +1175,8 @@ public sealed partial class ShareManager(
                 markerDirectory = GetDraftStagedIndexDirectory(draftShareId);
             }
 
-            var staged = await WriteStagedUploadAsync(ownerUserId, draftShareId, originalFileName, originalSizeBytes, source, normalizedPurpose, markerDirectory, cancellationToken);
+            var budgetKind = await ResolveStageBudgetKindAsync(draft, cancellationToken);
+            var staged = await WriteStagedUploadAsync(ownerUserId, draftShareId, originalFileName, originalSizeBytes, source, normalizedPurpose, markerDirectory, budgetKind, cancellationToken);
             await TouchDraftAsync(draftShareId, cancellationToken);
             return staged;
         }
@@ -1190,6 +1191,7 @@ public sealed partial class ShareManager(
         Stream source,
         string normalizedPurpose,
         string? draftMarkerDirectory,
+        StageBudgetKind budgetKind,
         CancellationToken cancellationToken)
     {
         using var reservation = scratchSpace.Reserve(originalSizeBytes);
@@ -1200,10 +1202,36 @@ public sealed partial class ShareManager(
         var payloadPath = Path.Combine(stagingDirectory, "payload.bin");
         var metadataPath = Path.Combine(stagingDirectory, "metadata.json");
         var draftMarkerPath = draftMarkerDirectory is null ? null : Path.Combine(draftMarkerDirectory, uploadId);
+        var budgetMarkerPath = budgetKind == StageBudgetKind.Unlimited
+            ? null
+            : Path.Combine(GetStagedIndexDirectory(budgetKind, ownerUserId), uploadId);
 
         StagedUploadMetadata metadata;
         try
         {
+            if (budgetMarkerPath is not null)
+            {
+                // Check and claim in one short critical section per account (or for all anonymous drafts): the staging
+                // directory and a marker holding the declared size are visible to the next check before the payload
+                // streams in, so concurrent stages cannot both pass on the same remaining budget. The draft lock is
+                // always taken first, this lock second, and nothing takes them the other way round.
+                using (await draftLocks.LockAsync(StageBudgetLockKey(budgetKind, ownerUserId), cancellationToken))
+                {
+                    var limit = ReadStageBudget(budgetKind, ownerUserId);
+                    if (originalSizeBytes > limit.Remaining)
+                    {
+                        throw limit.Refusal;
+                    }
+
+                    Directory.CreateDirectory(stagingDirectory);
+                    Directory.CreateDirectory(Path.GetDirectoryName(budgetMarkerPath)!);
+                    await File.WriteAllTextAsync(
+                        budgetMarkerPath,
+                        string.Join('|', normalizedPurpose, draftShareId, originalSizeBytes.ToString(CultureInfo.InvariantCulture)),
+                        cancellationToken);
+                }
+            }
+
             Directory.CreateDirectory(stagingDirectory);
             if (draftMarkerPath is not null)
             {
@@ -1236,6 +1264,7 @@ public sealed partial class ShareManager(
             // Release the claimed slot and partial payload; the sweep would otherwise hold them for the retention.
             TryDeleteDirectory(stagingDirectory);
             ScratchFiles.TryDelete(draftMarkerPath);
+            ScratchFiles.TryDelete(budgetMarkerPath);
             throw;
         }
 
@@ -1460,6 +1489,211 @@ public sealed partial class ShareManager(
     }
 
     private sealed record DraftStagedTotals(int Count, long Bytes);
+
+    private enum StageBudgetKind
+    {
+        Unlimited,
+        /// <summary>A signed-in account's staged bytes across all its drafts (share files and backgrounds).</summary>
+        Account,
+        /// <summary>Bytes held in open anonymous drafts: per upload link and across all links.</summary>
+        Public
+    }
+
+    /// <summary>Bytes still admitted under a budget and the refusal for a stage that does not fit.</summary>
+    private sealed record StageBudgetLimit(long Remaining, UploadLimitException Refusal);
+
+    private async Task<StageBudgetKind> ResolveStageBudgetKindAsync(DraftShareMetadata draft, CancellationToken cancellationToken)
+    {
+        if (draft.PublicUpload)
+        {
+            return StageBudgetKind.Public;
+        }
+
+        if (_options.MaxStagedBytesPerAccount <= 0 || draft.OwnerUserId is not { } ownerUserId)
+        {
+            return StageBudgetKind.Unlimited;
+        }
+
+        // The same role the admin policy checks ("admin"); read from the user record so cookie and API-token callers agree.
+        var isAdmin = await db.Users.AsNoTracking().AnyAsync(x => x.Id == ownerUserId && x.Role == "admin", cancellationToken);
+        return isAdmin ? StageBudgetKind.Unlimited : StageBudgetKind.Account;
+    }
+
+    private static string StageBudgetLockKey(StageBudgetKind kind, Guid ownerUserId) =>
+        kind == StageBudgetKind.Public ? "stage-budget:public" : $"stage-budget:account:{ownerUserId:N}";
+
+    private string GetStagedIndexDirectory(StageBudgetKind kind, Guid ownerUserId) =>
+        Path.Combine(GetStagedIndexRoot(kind), ownerUserId.ToString("N"));
+
+    private string GetStagedIndexRoot(StageBudgetKind kind) =>
+        Path.Combine(_options.StorageRoot, "uploads", "staged-index", kind == StageBudgetKind.Public ? "public" : "account");
+
+    private StageBudgetLimit ReadStageBudget(StageBudgetKind kind, Guid ownerUserId)
+    {
+        if (kind == StageBudgetKind.Account)
+        {
+            var cap = _options.MaxStagedBytesPerAccount;
+            return new StageBudgetLimit(
+                Math.Max(0, cap - SumStagedIndex(kind, ownerUserId)),
+                new UploadLimitException(
+                    UploadLimitKind.TooManyBytes,
+                    $"Your account already holds the limit of {FormatBytes(cap)} in staged uploads. Submit or remove some first."));
+        }
+
+        var limits = _options.PublicUploads;
+        var linkRemaining = long.MaxValue;
+        if (limits.MaxOpenDraftBytesPerToken > 0)
+        {
+            linkRemaining = Math.Max(0, limits.MaxOpenDraftBytesPerToken - SumStagedIndex(kind, ownerUserId));
+        }
+
+        var globalRemaining = long.MaxValue;
+        var budget = scratchSpace.ScratchBudgetBytes;
+        if (limits.MaxOpenDraftScratchFraction > 0 && budget > 0)
+        {
+            var globalCap = (long)(Math.Min(1.0, limits.MaxOpenDraftScratchFraction) * budget);
+            globalRemaining = Math.Max(0, globalCap - SumStagedIndex(kind, null));
+        }
+
+        // The global cap is a server-wide condition (507); the per-link cap is about this link's own uploads (413).
+        return globalRemaining <= linkRemaining
+            ? new StageBudgetLimit(globalRemaining, new UploadLimitException(
+                UploadLimitKind.InsufficientStorage,
+                "The server is out of storage space for uploads right now. Please try again later."))
+            : new StageBudgetLimit(linkRemaining, new UploadLimitException(
+                UploadLimitKind.TooManyBytes,
+                "This upload link already holds too many pending uploads. Please try again later."));
+    }
+
+    /// <summary>
+    /// Bytes still staged in one index (<paramref name="ownerUserId"/>, or every owner when null). Markers whose
+    /// staging directory is gone are dropped; for the anonymous index, submitted (sealed) drafts are not counted.
+    /// Cost is one small file read and one directory check per staged upload.
+    /// </summary>
+    private long SumStagedIndex(StageBudgetKind kind, Guid? ownerUserId)
+    {
+        var root = GetStagedIndexRoot(kind);
+        var directories = ownerUserId is { } id
+            ? [Path.Combine(root, id.ToString("N"))]
+            : Directory.Exists(root) ? Directory.EnumerateDirectories(root).ToArray() : [];
+
+        long total = 0;
+        foreach (var directory in directories)
+        {
+            if (!Directory.Exists(directory))
+            {
+                continue;
+            }
+
+            foreach (var markerPath in Directory.EnumerateFiles(directory))
+            {
+                if (!TryReadStagedMarker(markerPath, out var draftShareId, out var size))
+                {
+                    continue;
+                }
+
+                if (kind == StageBudgetKind.Public && IsDraftSealed(draftShareId))
+                {
+                    continue;
+                }
+
+                total += size;
+            }
+        }
+
+        return total;
+    }
+
+    /// <summary>Parses a staged-index marker; a malformed one or one whose staging directory is gone is deleted.</summary>
+    private bool TryReadStagedMarker(string markerPath, out string draftShareId, out long size)
+    {
+        draftShareId = string.Empty;
+        size = 0;
+        try
+        {
+            var parts = File.ReadAllText(markerPath).Split('|');
+            var uploadId = Path.GetFileName(markerPath);
+            if (parts.Length == 3 &&
+                Guid.TryParseExact(uploadId, "N", out _) &&
+                long.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out size) &&
+                Directory.Exists(Path.Combine(GetStagingRoot(NormalizeUploadPurpose(parts[0])), uploadId)))
+            {
+                draftShareId = parts[1];
+                size = Math.Max(0, size);
+                return true;
+            }
+        }
+        catch (IOException)
+        {
+            // Removed while being read; nothing to count.
+            return false;
+        }
+
+        // A marker is written in place, so a fresh one may be read half-written by a sweep; only older ones are dropped.
+        if (File.GetLastWriteTimeUtc(markerPath) < DateTime.UtcNow.AddMinutes(-5))
+        {
+            ScratchFiles.TryDelete(markerPath);
+        }
+
+        return false;
+    }
+
+    /// <summary>Drops staged-index markers whose staging directory is gone, and owner directories left empty.</summary>
+    private int SweepStagedIndex(CancellationToken cancellationToken)
+    {
+        var removed = 0;
+        foreach (var kind in new[] { StageBudgetKind.Account, StageBudgetKind.Public })
+        {
+            var root = GetStagedIndexRoot(kind);
+            if (!Directory.Exists(root))
+            {
+                continue;
+            }
+
+            foreach (var ownerDirectory in Directory.EnumerateDirectories(root))
+            {
+                foreach (var markerPath in Directory.EnumerateFiles(ownerDirectory))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!TryReadStagedMarker(markerPath, out _, out _))
+                    {
+                        removed++;
+                    }
+                }
+
+                if (!Directory.EnumerateFileSystemEntries(ownerDirectory).Any())
+                {
+                    TryDeleteDirectory(ownerDirectory);
+                }
+            }
+        }
+
+        return removed;
+    }
+
+    /// <summary>
+    /// Bytes the draft's owner (or, for an anonymous draft, its upload link and the server) may still stage, or
+    /// <see cref="long.MaxValue"/> when no budget applies. Throws when it is exhausted: 413 for an account or link,
+    /// 507 for the server-wide anonymous cap. Advisory, for sizing the request buffer; <see cref="StageUploadAsync"/>
+    /// enforces it again under a lock. Call after the caller's ownership of the draft was checked.
+    /// </summary>
+    public async Task<long> GetStageBudgetRemainingAsync(string draftShareId, CancellationToken cancellationToken)
+    {
+        if (!TryNormalizeDraftShareId(draftShareId, out var normalizedId) ||
+            await ReadDraftMetadataAsync(normalizedId, cancellationToken) is not { OwnerUserId: { } ownerUserId } draft)
+        {
+            return long.MaxValue;
+        }
+
+        var kind = await ResolveStageBudgetKindAsync(draft, cancellationToken);
+        if (kind == StageBudgetKind.Unlimited)
+        {
+            return long.MaxValue;
+        }
+
+        var limit = ReadStageBudget(kind, ownerUserId);
+        return limit.Remaining > 0 ? limit.Remaining : throw limit.Refusal;
+    }
 
     /// <summary>
     /// Bytes still allowed into a draft's share files: the per-share total minus what is already staged. Call only
@@ -1965,7 +2199,7 @@ public sealed partial class ShareManager(
             }
         }
 
-        return removed + staleDrafts + SweepStaleScratchFiles(cutoff, cancellationToken) + SweepDraftIndex(cancellationToken);
+        return removed + staleDrafts + SweepStaleScratchFiles(cutoff, cancellationToken) + SweepDraftIndex(cancellationToken) + SweepStagedIndex(cancellationToken);
     }
 
     /// <summary>

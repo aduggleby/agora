@@ -599,6 +599,121 @@ public sealed class UploadQuotaTests
     }
 
     [Fact]
+    public async Task PublicStaging_IsRefusedBeyondTheLinkBudget_WhileASignedInStageStillSucceeds()
+    {
+        await using var harness = await Harness.CreateAsync(o => o.PublicUploads.MaxOpenDraftBytesPerToken = 10);
+        var first = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        var second = await harness.Manager.EnsurePublicUploadDraftAsync(OwnerId, NewId(), "code1", "10.0.0.2", CancellationToken.None);
+
+        await harness.StageAsync(first, "a.bin", 6);
+        var ex = await Assert.ThrowsAsync<UploadLimitException>(() => harness.StageAsync(second, "b.bin", 6));
+        Assert.Equal(UploadLimitKind.TooManyBytes, ex.Kind);
+        Assert.Equal(413, ex.StatusCode);
+        Assert.Equal(1, harness.StagedDirectoryCount());
+        var remaining = await harness.Manager.GetStageBudgetRemainingAsync(second, CancellationToken.None);
+        Assert.Equal(4, remaining);
+
+        // Another link and the owner's own signed-in drafts have their own budgets.
+        var otherOwner = Guid.NewGuid();
+        var otherLink = await harness.Manager.EnsurePublicUploadDraftAsync(otherOwner, NewId(), "code2", "10.0.0.3", CancellationToken.None);
+        await harness.StageAsync(otherLink, "c.bin", 6, otherOwner);
+        var signedIn = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
+        await harness.StageAsync(signedIn, "d.bin", 6);
+
+        // Submitting the first draft (sealed) releases its bytes from the open-draft budget.
+        await harness.Manager.SealDraftAsync(OwnerId, first, CancellationToken.None);
+        await harness.StageAsync(second, "e.bin", 6);
+    }
+
+    [Fact]
+    public async Task PublicStaging_IsRefusedBeyondTheGlobalShareOfTheScratchBudget_With507()
+    {
+        // Budget = capacity 1000 - floor 200 = 800; half of it = 400 for all open anonymous drafts together.
+        await using var harness = await Harness.CreateAsync(
+            o => o.Scratch.MinFreeBytes = 200,
+            totalCapacity: _ => 1000);
+        Assert.Equal(800, harness.ScratchBudgetBytes);
+        var owner1 = Guid.NewGuid();
+        var first = await harness.Manager.EnsurePublicUploadDraftAsync(owner1, NewId(), "code1", "10.0.0.1", CancellationToken.None);
+        var owner2 = Guid.NewGuid();
+        var second = await harness.Manager.EnsurePublicUploadDraftAsync(owner2, NewId(), "code2", "10.0.0.2", CancellationToken.None);
+
+        await harness.StageAsync(first, "a.bin", 300, owner1);
+        var ex = await Assert.ThrowsAsync<UploadLimitException>(() => harness.StageAsync(second, "b.bin", 150, owner2));
+        Assert.Equal(UploadLimitKind.InsufficientStorage, ex.Kind);
+        await harness.StageAsync(second, "c.bin", 100, owner2);
+
+        // An explicit scratch maximum is the budget when set.
+        await using var capped = await Harness.CreateAsync(o => o.Scratch.MaxBytes = 100, totalCapacity: _ => 1000);
+        Assert.Equal(100, capped.ScratchBudgetBytes);
+    }
+
+    [Fact]
+    public async Task AccountBudget_CountsFilesAndBackgroundsAcrossDrafts_Refuses413_AndExemptsAdmins()
+    {
+        var adminId = Guid.NewGuid();
+        await using var harness = await Harness.CreateAsync(o => o.MaxStagedBytesPerAccount = 10);
+        harness.Db.Users.Add(TestUsers.Seed(adminId, "admin@example.com"));
+        await harness.Db.SaveChangesAsync();
+        await harness.Db.Users.Where(x => x.Id == adminId).ExecuteUpdateAsync(x => x.SetProperty(u => u.Role, "admin"));
+
+        var one = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
+        var two = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
+        await harness.StageAsync(one, "a.bin", 4);
+        await harness.StageAsync(two, "bg.png", 4, purpose: ShareManager.UploadPurposeTemplateBackground);
+
+        var ex = await Assert.ThrowsAsync<UploadLimitException>(() => harness.StageAsync(two, "bg2.png", 4, purpose: ShareManager.UploadPurposeTemplateBackground));
+        Assert.Equal(UploadLimitKind.TooManyBytes, ex.Kind);
+        Assert.Equal(413, ex.StatusCode);
+        await Assert.ThrowsAsync<UploadLimitException>(() => harness.StageAsync(one, "b.bin", 4));
+        Assert.Equal(2L, await harness.Manager.GetStageBudgetRemainingAsync(one, CancellationToken.None));
+
+        // Removing a staged file frees its bytes again.
+        var listed = await harness.Manager.ListStagedUploadsForDraftAsync(OwnerId, one, CancellationToken.None);
+        Assert.True(await harness.Manager.DeleteStagedUploadAsync(OwnerId, one, listed.Single().UploadId, CancellationToken.None));
+        await harness.StageAsync(one, "b.bin", 4);
+
+        var adminDraft = await harness.Manager.EnsureDraftShareAsync(adminId, null, CancellationToken.None);
+        await harness.StageAsync(adminDraft, "big.bin", 50, ownerUserId: adminId);
+        Assert.Equal(long.MaxValue, await harness.Manager.GetStageBudgetRemainingAsync(adminDraft, CancellationToken.None));
+
+        // The sweep reclaims a stale draft's files and with them the budget.
+        harness.BackdateDraft(one, TimeSpan.FromHours(30));
+        harness.BackdateDraft(two, TimeSpan.FromHours(30));
+        await harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
+        Assert.Equal(10L, await harness.Manager.GetStageBudgetRemainingAsync(
+            await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AccountBudget_ParallelStagesCannotBothPassOnTheSameRemainingBytes()
+    {
+        await using var harness = await Harness.CreateAsync(o => o.MaxStagedBytesPerAccount = 10);
+        var drafts = new List<string>();
+        for (var i = 0; i < 12; i++)
+        {
+            drafts.Add(await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None));
+        }
+
+        var results = await Task.WhenAll(drafts.Select(async draft =>
+        {
+            try
+            {
+                var requestManager = await harness.CreateRequestManagerAsync();
+                await requestManager.StageUploadAsync(
+                    OwnerId, draft, "f.bin", 4, new MemoryStream(Encoding.ASCII.GetBytes("xxxx")), CancellationToken.None);
+                return true;
+            }
+            catch (UploadLimitException ex) when (ex.Kind == UploadLimitKind.TooManyBytes)
+            {
+                return false;
+            }
+        }));
+
+        Assert.Equal(2, results.Count(x => x));
+    }
+
+    [Fact]
     public async Task GetReceivedShareUsageAsync_CountsOnlyReceivedSharesOfTheOwnerInTheWindow()
     {
         await using var harness = await Harness.CreateAsync();
@@ -891,8 +1006,19 @@ public sealed class UploadQuotaTests
         public ShareManager Manager { get; }
         public string StorageRoot { get; }
 
-        private Harness(SqliteConnection connection, string storageRoot, AgoraDbContext db, ShareManager manager)
+        private readonly ScratchSpaceMonitor _scratch;
+        private readonly AgoraOptions _options;
+        private readonly KeyedAsyncLock _locks;
+
+        public long ScratchBudgetBytes => _scratch.ScratchBudgetBytes;
+
+        private Harness(
+            SqliteConnection connection, string storageRoot, AgoraDbContext db, ShareManager manager,
+            ScratchSpaceMonitor scratch, AgoraOptions options, KeyedAsyncLock locks)
         {
+            _scratch = scratch;
+            _options = options;
+            _locks = locks;
             _connection = connection;
             StorageRoot = storageRoot;
             Db = db;
@@ -902,7 +1028,8 @@ public sealed class UploadQuotaTests
         public static async Task<Harness> CreateAsync(
             Action<AgoraOptions>? configure = null,
             Func<string, long>? freeBytes = null,
-            Func<string, long>? scratchBytes = null)
+            Func<string, long>? scratchBytes = null,
+            Func<string, long>? totalCapacity = null)
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
@@ -916,24 +1043,27 @@ public sealed class UploadQuotaTests
             var options = new AgoraOptions { StorageRoot = storageRoot };
             configure?.Invoke(options);
             var objectStore = new FileSystemObjectStore(storageRoot);
-            var scratch = new ScratchSpaceMonitor(options, StorageProvider.FileSystem, freeBytes ?? (_ => long.MaxValue), scratchBytes ?? (_ => 0), TimeProvider.System);
+            var scratch = new ScratchSpaceMonitor(options, StorageProvider.FileSystem, freeBytes ?? (_ => long.MaxValue), scratchBytes ?? (_ => 0), TimeProvider.System, totalCapacityBytes: totalCapacity);
+            var locks = new KeyedAsyncLock();
             var manager = new ShareManager(
                 db,
                 Options.Create(options),
                 new ShareContentStore(objectStore),
                 objectStore,
                 new NoopBackgroundJobClient(),
-                new KeyedAsyncLock(),
+                locks,
                 scratch,
                 NullLogger<ShareManager>.Instance);
 
-            return new Harness(connection, storageRoot, db, manager);
+            return new Harness(connection, storageRoot, db, manager, scratch, options, locks);
         }
 
-        public Task<ShareManager.StagedUploadFile> StageAsync(string draftId, string fileName, int bytes)
+        /// <summary>Stages into a draft as <paramref name="ownerUserId"/> (the harness account by default).</summary>
+        public Task<ShareManager.StagedUploadFile> StageAsync(
+            string draftId, string fileName, int bytes, Guid? ownerUserId = null, string purpose = ShareManager.UploadPurposeShareFile)
         {
             var stream = new MemoryStream(Encoding.ASCII.GetBytes(new string('x', bytes)));
-            return Manager.StageUploadAsync(OwnerId, draftId, fileName, bytes, stream, CancellationToken.None);
+            return Manager.StageUploadAsync(ownerUserId ?? OwnerId, draftId, fileName, bytes, stream, CancellationToken.None, purpose);
         }
 
         public async Task<CreateShareCommand> ReceivedCommandAsync(string fileName, string content = "hello")
@@ -953,6 +1083,30 @@ public sealed class UploadQuotaTests
                 TemplateMode = TemplateMode.PerUpload,
                 Files = [new UploadSourceFile(source, fileName, content.Length, "text/plain")]
             };
+        }
+
+        /// <summary>
+        /// A manager with its own database context (as each request has) over the same storage, locks and scratch
+        /// monitor, for tests that stage in parallel. Reads the harness users from a copy of the in-memory database.
+        /// </summary>
+        public async Task<ShareManager> CreateRequestManagerAsync()
+        {
+            var connection = new SqliteConnection("Data Source=:memory:");
+            await connection.OpenAsync();
+            var requestDb = new AgoraDbContext(new DbContextOptionsBuilder<AgoraDbContext>().UseSqlite(connection).Options);
+            await requestDb.Database.EnsureCreatedAsync();
+            requestDb.Users.Add(TestUsers.Seed(OwnerId, Owner));
+            await requestDb.SaveChangesAsync();
+            var objectStore = new FileSystemObjectStore(StorageRoot);
+            return new ShareManager(
+                requestDb,
+                Options.Create(_options),
+                new ShareContentStore(objectStore),
+                objectStore,
+                new NoopBackgroundJobClient(),
+                _locks,
+                _scratch,
+                NullLogger<ShareManager>.Instance);
         }
 
         public int StagedDirectoryCount()

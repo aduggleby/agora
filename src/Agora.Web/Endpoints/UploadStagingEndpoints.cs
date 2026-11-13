@@ -113,7 +113,7 @@ public static class UploadStagingEndpoints
                 return UploadConcurrency.TooManyJson();
             }
 
-            bodyCap = ReserveRequestBuffer(context, scratchSpace, ShareFileAllowance(manager, cfg, draftShareId));
+            bodyCap = ReserveRequestBuffer(context, scratchSpace, await BudgetedAllowanceAsync(manager, draftShareId, ShareFileAllowance(manager, cfg, draftShareId), ct));
         }
         catch (InvalidOperationException ex)
         {
@@ -162,8 +162,9 @@ public static class UploadStagingEndpoints
                 return UploadConcurrency.TooManyJson();
             }
 
-            // A background is not counted against the share's file total, only against the per-file limit.
-            bodyCap = ReserveRequestBuffer(context, scratchSpace, cfg.MaxFileSizeBytes);
+            // A background is not counted against the share's file total, only against the per-file limit and the
+            // account's staged-bytes budget.
+            bodyCap = ReserveRequestBuffer(context, scratchSpace, await BudgetedAllowanceAsync(manager, draftShareId, cfg.MaxFileSizeBytes, ct));
         }
         catch (InvalidOperationException ex)
         {
@@ -250,7 +251,7 @@ public static class UploadStagingEndpoints
                 return UploadConcurrency.TooManyJson();
             }
 
-            bodyCap = ReserveRequestBuffer(context, scratchSpace, ShareFileAllowance(manager, cfg, draftShareId));
+            bodyCap = ReserveRequestBuffer(context, scratchSpace, await BudgetedAllowanceAsync(manager, draftShareId, ShareFileAllowance(manager, cfg, draftShareId), ct));
         }
         catch (InvalidOperationException ex)
         {
@@ -278,6 +279,13 @@ public static class UploadStagingEndpoints
 
         return Math.Min(cfg.MaxFileSizeBytes, remaining);
     }
+
+    /// <summary>
+    /// The allowance cut down to what the account's (or the upload link's) staging budget still admits; throws 413 or
+    /// 507 when nothing is left, before any body is buffered.
+    /// </summary>
+    private static async Task<long> BudgetedAllowanceAsync(ShareManager manager, string draftShareId, long allowanceBytes, CancellationToken ct) =>
+        Math.Min(allowanceBytes, await manager.GetStageBudgetRemainingAsync(draftShareId, ct));
 
     /// <summary>
     /// Holds scratch for the multipart buffer ASP.NET writes under tmp/aspnet until the request (and with it the

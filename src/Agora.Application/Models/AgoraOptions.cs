@@ -15,6 +15,12 @@ public sealed class AgoraOptions
     public int MaxFilesPerShare { get; set; } = 20;
     public long MaxFileSizeBytes { get; set; } = 5L * 1024 * 1024 * 1024;
     public long MaxTotalUploadBytes { get; set; } = 10L * 1024 * 1024 * 1024;
+
+    /// <summary>
+    /// Bytes one signed-in account may hold in staged uploads (share files and template backgrounds together) across
+    /// all of its unsubmitted drafts. Admins are exempt; 0 = unlimited. Over the limit a stage is refused with 413.
+    /// </summary>
+    public long MaxStagedBytesPerAccount { get; set; } = 50L * 1024 * 1024 * 1024;
     public int DownloadEventRetentionDays { get; set; } = 90;
     public int ZombieUploadRetentionHours { get; set; } = 24;
     public AgoraPreviewOptions Previews { get; set; } = new();
@@ -46,6 +52,19 @@ public sealed class AgoraPublicUploadOptions
 
     /// <summary>Open drafts one client IP address may have across all upload codes.</summary>
     public int MaxOpenDraftsPerIp { get; set; } = 10;
+
+    /// <summary>
+    /// Bytes one upload link may hold in open (unsubmitted) anonymous drafts at once; 0 = unlimited. Over the limit a
+    /// stage is refused with 413 until drafts are submitted or expire.
+    /// </summary>
+    public long MaxOpenDraftBytesPerToken { get; set; } = 20L * 1024 * 1024 * 1024;
+
+    /// <summary>
+    /// Share of the scratch budget (Scratch:MaxBytes when set, otherwise the volume's total capacity minus
+    /// Scratch:MinFreeBytes) that all open anonymous drafts together may hold; 0 disables the cap. Over it a stage is
+    /// refused with 507.
+    /// </summary>
+    public double MaxOpenDraftScratchFraction { get; set; } = 0.5;
 
     /// <summary>
     /// Hours an anonymous draft (and its staged files) is kept after its last activity. Shorter than
