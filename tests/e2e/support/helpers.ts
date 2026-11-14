@@ -1,4 +1,7 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -241,4 +244,158 @@ export async function confirmEmailWithPassword(page: Page, confirmUrl: string, p
   const form = page.locator('form').filter({ has: page.locator('input[name="token"]') }).first();
   await form.locator('input[name="password"]').fill(password);
   await form.locator('button[type="submit"]').click();
+}
+
+// ---- OAuth (PKCE, loopback callback) and MCP over HTTP, shared by the agent specs ----
+
+export interface Pkce {
+  verifier: string;
+  challenge: string;
+}
+
+export function newPkce(): Pkce {
+  const verifier = crypto.randomBytes(32).toString('base64url');
+  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+  return { verifier, challenge };
+}
+
+export function newState(): string {
+  return crypto.randomBytes(16).toString('base64url');
+}
+
+export function bearer(token: string): Record<string, string> {
+  return { Authorization: `Bearer ${token}` };
+}
+
+/** A one-shot loopback listener standing in for an app's callback server. */
+export async function startCallbackServer(): Promise<{ redirectUri: string; received: Promise<URL>; close: () => Promise<void> }> {
+  let resolveReceived: (url: URL) => void = () => {};
+  const received = new Promise<URL>((resolve) => {
+    resolveReceived = resolve;
+  });
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end('<!doctype html><title>Connected</title><p>You can close this tab.</p>');
+    if (url.pathname === '/callback') {
+      resolveReceived(url);
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    redirectUri: `http://127.0.0.1:${port}/callback`,
+    received,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+/** Registers an OAuth client (RFC 7591) and returns its client id. */
+export async function registerOAuthClient(request: APIRequestContext, name: string, redirectUris: string[]): Promise<string> {
+  const response = await request.post('/oauth/register', { data: { client_name: name, redirect_uris: redirectUris } });
+  if (response.status() !== 201) {
+    throw new Error(`Client registration failed: ${response.status()} ${await response.text()}`);
+  }
+  return (await response.json() as { client_id: string }).client_id;
+}
+
+export function mcpAuthorizePath(clientId: string, redirectUri: string, state: string, challenge: string, resource?: string): string {
+  const query = new URLSearchParams({
+    response_type: 'code',
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    state,
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+  });
+  if (resource) {
+    query.set('resource', resource);
+  }
+  return `/connect/authorize?${query.toString()}`;
+}
+
+/** Exchanges an authorization code the way MCP clients do (form encoded, no client secret). */
+export async function exchangeFormCode(request: APIRequestContext, clientId: string, code: string, verifier: string, redirectUri?: string, resource?: string) {
+  const form: Record<string, string> = { grant_type: 'authorization_code', code, code_verifier: verifier, client_id: clientId };
+  if (redirectUri) form.redirect_uri = redirectUri;
+  if (resource) form.resource = resource;
+  return request.post('/api/v1/auth/token', { form });
+}
+
+export interface McpToolResult {
+  isError: boolean;
+  text: string;
+  structured: Record<string, any> | undefined;
+  content: Array<Record<string, any>>;
+}
+
+/** The JSON-RPC message with the given id from a JSON or text/event-stream (SSE `data:` lines) response body. */
+export function parseMcpBody(contentType: string, body: string, id: number): Record<string, any> {
+  if (!contentType.includes('text/event-stream')) {
+    return JSON.parse(body);
+  }
+  for (const line of body.split(/\r?\n/)) {
+    if (!line.startsWith('data:')) continue;
+    const message = JSON.parse(line.slice('data:'.length).trim());
+    if (message.id === id) return message;
+  }
+  throw new Error(`No JSON-RPC message with id ${id} in the event stream: ${body}`);
+}
+
+/**
+ * A minimal MCP client over Streamable HTTP in stateless mode: every call is one POST with
+ * Accept "application/json, text/event-stream"; the server keeps no session.
+ */
+export class McpHttpClient {
+  private nextId = 1;
+
+  constructor(private readonly request: APIRequestContext, private readonly token: string | undefined, private readonly path = '/mcp') {}
+
+  /** Raw POST, for status and header checks. */
+  post(body: unknown, headers: Record<string, string> = {}) {
+    return this.request.post(this.path, {
+      headers: {
+        Accept: 'application/json, text/event-stream',
+        ...(this.token ? bearer(this.token) : {}),
+        ...headers,
+      },
+      data: body,
+    });
+  }
+
+  async rpc(method: string, params: Record<string, unknown> = {}): Promise<Record<string, any>> {
+    const id = this.nextId++;
+    const response = await this.post({ jsonrpc: '2.0', id, method, params });
+    if (!response.ok()) {
+      throw new Error(`MCP ${method} failed: ${response.status()} ${await response.text()}`);
+    }
+    const message = parseMcpBody(response.headers()['content-type'] ?? '', await response.text(), id);
+    if (message.error) {
+      throw new Error(`MCP ${method} error: ${JSON.stringify(message.error)}`);
+    }
+    return message.result;
+  }
+
+  initialize() {
+    return this.rpc('initialize', {
+      protocolVersion: '2025-06-18',
+      capabilities: {},
+      clientInfo: { name: 'agora-e2e', version: '1.0.0' },
+    });
+  }
+
+  async listTools(): Promise<string[]> {
+    return ((await this.rpc('tools/list')).tools as Array<{ name: string }>).map((tool) => tool.name);
+  }
+
+  async callTool(name: string, args: Record<string, unknown> = {}): Promise<McpToolResult> {
+    const result = await this.rpc('tools/call', { name, arguments: args });
+    const content = (result.content ?? []) as Array<Record<string, any>>;
+    return {
+      isError: result.isError === true,
+      text: content.filter((block) => block.type === 'text').map((block) => block.text as string).join(''),
+      structured: result.structuredContent,
+      content,
+    };
+  }
 }
