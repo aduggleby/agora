@@ -536,6 +536,8 @@ public sealed class ApiV1HostTests
             builder.Services.AddScoped<ShareManager>();
             builder.Services.AddScoped<ApiTokenService>();
             builder.Services.AddSingleton(new Agora.Web.Services.PublicBaseUrlResolver("https://files.example.test", allowRequestHostFallback: false));
+            builder.Services.AddSingleton<Agora.Application.Abstractions.IEmailSender, TestEmailSender>();
+            builder.Services.AddScoped<AuthService>();
             builder.Services.AddAgoraAgents();
             builder.Services.AddDataProtection().UseEphemeralDataProtectionProvider();
             builder.Services.AddAgoraAuthentication(new AgoraAuthOptions(), CookieSecurePolicy.None);

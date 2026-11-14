@@ -570,6 +570,8 @@ public sealed class OAuthHostTests
             builder.Services.AddAuthorization(AuthSetup.ConfigureAuthorization);
             builder.Services.AddRazorPages().AddApplicationPart(typeof(AuthorizeModel).Assembly);
             builder.Services.AddRateLimiter(o => RateLimitSetup.Configure(o, new AgoraRateLimitOptions { AnonymousPerMinute = 0 }, isE2E: !limitAuthEndpoints));
+            builder.Services.AddSingleton<Agora.Application.Abstractions.IEmailSender, TestEmailSender>();
+            builder.Services.AddScoped<AuthService>();
             builder.Services.AddAgoraAgents();
 
             var app = builder.Build();
