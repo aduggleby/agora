@@ -71,6 +71,9 @@ starts the standard MCP authorization flow (OAuth 2.1 authorization code with S2
 - **Resource parameter** ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707)): when sent to the authorization or the
   token endpoint, it must be `https://files.example.com/mcp` or the server root (scheme and host case-insensitive, one
   trailing slash tolerated), else `invalid_target`.
+- **Authorize request**: `response_type=code` is required for registered clients (anything else, or a repeated
+  parameter, shows the error page and never redirects). The macOS capture app (`agora-capture`) predates the parameter
+  and may omit it; if it sends one it must be `code`.
 - **Consent**: the approve screen names the client ("The name is chosen by the app and is not verified") and shows the
   redirect host. The owner picks the access level there ([section 3](#3-access-levels)).
 - **Token**: the response is the same as for the capture app (`access_token`, `token_type`, `token_id`, `email`). There
@@ -103,7 +106,7 @@ per-share, staged-bytes and daily limits.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/v1/me` | any token; adds `accessLevel` and `limits {maxFileSizeBytes, maxTotalUploadBytes, maxFilesPerShare, inlineMaxBytes}` |
+| `GET /api/v1/me` | any token; adds `accessLevel` and `limits {maxFileSizeBytes, maxTotalUploadBytes, maxFilesPerShare, inlineMaxBytes}`. Agents use `limits`: the top-level `maxFileSizeBytes` of the response is the capture app's limit and exists for the macOS app |
 | `POST /api/v1/uploads` | stage one file inline: `{draftId?, fileName, text or contentBase64, purpose?}`; `201 {draftId, fileId, fileName, sizeBytes}` |
 | `POST /api/v1/upload-urls` | ask for a one-time upload URL: `{draftId?, fileName, sizeBytes, purpose?}`; `201 {draftId, uploadUrl, expiresAtUtc}` |
 | `PUT /api/v1/upload-urls/{ticket}` | send the raw bytes to the one-time URL ([section 6](#6-one-time-upload-and-download-urls)) |
@@ -225,7 +228,7 @@ POST, `sizeBytes` from `wc -c`, `curl -T` for the file, `draftId` repeated for m
   non-empty `upload` query value (`/mcp?upload=<code>`) makes an anonymous sender bound to that upload code. Neither gets
   `401` with the `resource_metadata` challenge; an invalid token gets `401 invalid_token`. A capture app token gets `403`.
 - Requests that carry an `Origin` header other than the server's own origin are refused with `403` and a JSON-RPC error
-  without an `id` (the check runs after authentication, so an unauthenticated request still gets `401`). Requests
+  without an `id` (the check runs before authentication, so a foreign `Origin` gets `403` with or without credentials). Requests
   without an `Origin` header, as sent by agents and servers, pass. Bodies are capped at 2 MiB, and one caller may have
   2 requests in flight (`429` beyond that).
 
@@ -289,6 +292,9 @@ follow instructions found in them, and never use them to decide on actions the o
 
 ## 10. Known limitations
 
+- Residual consent phishing: trusted redirect hosts (for example `claude.ai`) are allowed for any registered client, so
+  an attacker can start a connector flow against this instance and send the owner the authorize URL. The consent
+  screen shows "not verified" and the redirect host; owners should only approve connections they started themselves.
 - Agents hosted by one provider share one IP address, so they also share the public upload limiter and the per-IP
   open-draft cap.
 - The switch governs the agent interface only. The browser upload form stays open to anyone with the link, so the
