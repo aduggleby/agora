@@ -83,6 +83,7 @@ public static class McpSetup
 
     public static IServiceCollection AddAgoraMcp(this IServiceCollection services)
     {
+        services.AddHttpContextAccessor();
         services.AddSingleton<McpToolSets>();
         services.AddMcpServer().WithHttpTransport(o => o.SessionMode = HttpServerSessionMode.Stateless);
         services.AddOptions<HttpServerTransportOptions>().Configure<McpToolSets>((options, sets) =>

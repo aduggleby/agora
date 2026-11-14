@@ -18,7 +18,7 @@ public sealed class AgoraMcpUploadLinkTools
         [Description("Email address of the sender.")] string sender_email,
         [Description("Optional message for the owner.")] string? message = null,
         [Description("Draft id returned by get_upload_url when files were uploaded by URL.")] string? draft_id = null) =>
-        AgoraMcpOwnerTools.Unavailable();
+        Unavailable();
 
     [McpServerTool(Name = "get_upload_url", Title = "Get a one-time upload URL", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false)]
     [Description("Returns a one-time URL that accepts the raw bytes of one larger file with a PUT request; then call send_files with the returned draft id.")]
@@ -26,5 +26,11 @@ public sealed class AgoraMcpUploadLinkTools
         [Description("File name including extension.")] string file_name,
         [Description("Exact size in bytes of the file that will be sent.")] long size_bytes,
         [Description("Draft returned by an earlier call; omit for the first file.")] string? draft_id = null) =>
-        AgoraMcpOwnerTools.Unavailable();
+        Unavailable();
+
+    private static CallToolResult Unavailable() => new()
+    {
+        IsError = true,
+        Content = [new TextContentBlock { Text = "This tool is not available yet." }]
+    };
 }
