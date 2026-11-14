@@ -215,15 +215,14 @@ public sealed class AgentApiHostTests
     {
         await using var host = await Host.StartAsync();
         var token = await host.IssueAgentTokenAsync("own");
-        var body = new { files = new[] { new { fileName = "a.txt", text = "a" } }, expiry = "1_hour", notify = "none", waitSeconds = 3 };
+        var body = new { files = new[] { new { fileName = "a.txt", text = "a" } }, expiry = "1_hour", notify = "none", waitSeconds = 30 };
 
-        // The jobs never run, so both creates sit in their readiness poll.
+        // The jobs do not run until the end, so both creates sit in their readiness poll.
+        // One after the other: the test host shares a single in-memory SQLite connection.
         var first = host.PostJsonAsync("/api/v1/shares", token, body);
+        await host.WaitForJobsAsync(1);
         var second = host.PostJsonAsync("/api/v1/shares", token, body);
-        for (var i = 0; i < 200 && host.Jobs.Jobs.Count < 2; i++)
-        {
-            await Task.Delay(25);
-        }
+        await host.WaitForJobsAsync(2);
 
         Assert.Equal(2, host.Jobs.Jobs.Count);
         Assert.Equal(0, host.Concurrency.InFlight(UploadConcurrency.AccountKey(host.UserId)));
@@ -232,6 +231,8 @@ public sealed class AgentApiHostTests
         var third = await host.PostJsonAsync("/api/v1/shares", token, body with { waitSeconds = 0 });
         Assert.Equal(HttpStatusCode.Created, third.StatusCode);
 
+        await host.RunJobAsync(0);
+        await host.RunJobAsync(1);
         Assert.Equal(HttpStatusCode.Created, (await first).StatusCode);
         Assert.Equal(HttpStatusCode.Created, (await second).StatusCode);
     }
@@ -617,9 +618,19 @@ public sealed class AgentApiHostTests
         }
 
         /// <summary>Runs the most recently queued share creation job, like the Hangfire worker.</summary>
-        public async Task<QueuedShareCreationJob.Payload> RunLastJobAsync()
+        public async Task WaitForJobsAsync(int count)
         {
-            var payload = (QueuedShareCreationJob.Payload)Jobs.Jobs[^1].Args[0];
+            for (var i = 0; i < 400 && Jobs.Jobs.Count < count; i++)
+            {
+                await Task.Delay(25);
+            }
+        }
+
+        public Task<QueuedShareCreationJob.Payload> RunLastJobAsync() => RunJobAsync(Jobs.Jobs.Count - 1);
+
+        public async Task<QueuedShareCreationJob.Payload> RunJobAsync(int index)
+        {
+            var payload = (QueuedShareCreationJob.Payload)Jobs.Jobs[index].Args[0];
             await using var scope = _app.Services.CreateAsyncScope();
             await scope.ServiceProvider.GetRequiredService<QueuedShareCreationJob>().ProcessAsync(payload, CancellationToken.None);
             return payload;
