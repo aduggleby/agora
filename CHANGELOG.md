@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- AI agents can use an account through one MCP endpoint (`/mcp`) and the same JSON API under `/api/v1`: sign in with the standard MCP OAuth flow (discovery documents and dynamic client registration included) or use a token created in Account > Settings > Connected apps. Agents upload files (inline up to 1 MiB per call, larger through one-time upload URLs), create shares with all the new-share options, list and delete shares, and, with "All my shares" access, download files. Each connection is limited to "Only shares it creates" or "All my shares"; the level can be changed and the agent revoked in Connected apps.
+- "Let AI agents send files to my upload link" (Account > Settings, off by default): while on, agents can send files to the upload link through `/mcp?upload=<code>` or the HTTP API without signing in, within the link's existing limits. The upload page then links to `/u/<code>/llms.txt` with instructions. Files sent this way are marked with an "Agent" badge, and the notification email says they came through the agent interface and that the sender details are not verified.
+- `Agora__Agents__AllowedRedirectHosts` adds trusted `https` redirect hosts for MCP client registration. See `docs/api/agents.md`.
+
+### Changed
+- `POST /api/v1/auth/token` also accepts form encoded bodies and an optional `resource` parameter, and `/api/v1/me` reports `accessLevel` and `limits`. `DELETE /api/v1/shares/{token}` deletes shares within an agent token's access level; capture app tokens behave as before.
+- Registered MCP client ids are protected with the DataProtection keys: back up `keys/` with the data volume.
+- Logs redact agent upload codes, one-time URLs and passwords.
+
 ## [0.10.4] - 2026-11-13
 
 ### Changed

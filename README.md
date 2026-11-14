@@ -256,7 +256,7 @@ schema. Drop `TrustServerCertificate=True` once the server presents a certificat
 
 Back up three things together: the database (`pg_dump` or `BACKUP DATABASE`), the data volume `/app/data` (with
 `Storage__Provider=FileSystem` it holds the share content; in every mode it holds the DataProtection keys under
-`keys/`, without which every session and every pending confirmation link becomes invalid) and, in S3 mode, the
+`keys/`, without which every session, every pending confirmation link and every registered MCP client id (`agora_mcp_...`) becomes invalid) and, in S3 mode, the
 bucket. Scratch directories under `/app/data/uploads` (`uploads/staged*`, `uploads/drafts`, `tmp/`) and `logs/` can be
 excluded.
 
@@ -433,7 +433,9 @@ matters). Rejected requests get `429` with a `Retry-After` header.
 | Anonymous requests, site-wide, per IP | `Agora__RateLimits__AnonymousPerMinute` (1200/min, sliding window; `0` disables) |
 | Signed-in requests, per account | 120/min |
 | Sign-in, registration, password reset, resend and confirmation handlers, per IP | 10/min |
-| Public uploads (`/api/public-uploads/*`), per IP | 25/min |
+| Public uploads (`/api/public-uploads/*`), the agent routes to an upload link (`/api/v1/upload-links/*`, `/u/{code}/llms.txt`, `/mcp?upload=`) and anonymous one-time upload URLs, per IP (one shared bucket) | 25/min |
+| OAuth client registration (`/oauth/register`), per IP | 10/min (shared with the sign-in endpoints) |
+| `/mcp` and the inline agent routes, concurrent requests | 2 per account (per client IP for anonymous callers) |
 | Single-file and archive downloads, the preview "retry" button and link-preview images, per share and IP | 20/min (preview, thumbnail and status polling only count against the anonymous budget) |
 
 Health endpoints and static files are exempt. Sizing the anonymous budget: a download page with 20 files whose previews
@@ -478,6 +480,10 @@ the log path and retention, the public base URL and the trusted-proxy list; requ
 deleted after `Agora__DownloadEventRetentionDays`. With `Agora__GeoLookup__Enabled=true` (the default) the
 downloader's public IP address is sent to the third-party service `https://ipwho.is/` to show city and country in
 notification emails; set it to `false` to keep downloader addresses in-house.
+
+Agent credentials are redacted the same way: the `/api/v1/upload-links/{code}`, `/api/v1/upload-urls/{ticket}` and
+`/api/v1/download-urls/{ticket}` paths, the `upload=` query value and the JSON keys `password`, `downloadPassword`,
+`download_password` and `contentBase64` never reach a log line, and the MCP library logs at Warning.
 
 Share, upload and confirmation tokens never appear in Agora's own log lines (they are referenced by a short hash), and
 a Serilog enricher rewrites `/s/{token}`, `/u/{token}`, `/shares/created/{token}`, `/api/shares/{token}`, `/api/v1/shares/{token}` and `token=`/`gate=` values in every string
@@ -563,6 +569,12 @@ In `Production` it warns when `Agora__TrustedProxies` is empty or `AllowedHosts`
 | `Agora__PublicUploads__MaxBytesPerCodePerDay` | `21474836480` (20 GB) | Bytes of received shares per account in any 24 hour window; `0` disables. Both daily budgets are per account, so rotating the code does not reset them |
 | `Agora__PublicUploads__DefaultExpiryDays` | `30` | Expiry of a received share when the owner's default expiry cannot be resolved (every account has one, 7 days unless changed, so this is a fallback) |
 
+### `Agora__Agents__*`
+
+| Setting | Default | What it controls |
+| --- | --- | --- |
+| `Agora__Agents__AllowedRedirectHosts` | empty | Extra `https` host names allowed as OAuth redirect URIs of MCP clients, in addition to `claude.ai` and `claude.com`. A trust list, not a limit: it keeps a self-chosen client name from pairing with an arbitrary redirect. Loopback redirects are always allowed |
+
 ### `Agora__Previews__*`
 
 | Setting | Default | What it controls |
@@ -627,7 +639,7 @@ working until they are changed). Regenerating the code invalidates the old link.
 Received shares use the owner's default expiry (Account > Share defaults; 7 days unless changed, "indefinite" only when
 the owner chose it there) and count toward the owner's quotas. Everything is enforced server-side: the per-file and
 per-share limits, the open-draft caps per code and per client address, the daily count and byte budgets per account,
-the shorter anonymous draft retention and the 25/min per-IP limiter (see [`Agora__PublicUploads__*`](#agora__publicuploads__)).
+the shorter anonymous draft retention and the 25/min per-IP limiter, which agents sending to the link share (see [`Agora__PublicUploads__*`](#agora__publicuploads__)).
 
 ### Temporary direct links
 
@@ -671,6 +683,30 @@ Apps can connect to an account without ever seeing its password. The first one i
 - Tokens and authorization codes are stored only as SHA-256 hashes; the token is shown to the app once.
 
 The full contract (flow, endpoints, errors, curl examples) is in [`docs/api/v1.md`](docs/api/v1.md).
+
+### AI agents and MCP
+
+Agents can use an account through one MCP endpoint, `/mcp` (Streamable HTTP, stateless), and the same capabilities as a
+JSON API under `/api/v1`. Nothing has to be installed.
+
+- **Owner agents** sign in with the standard MCP OAuth flow (for example `claude mcp add --transport http agora
+  https://<your-host>/mcp`; claude.ai custom connectors work too) or use a token from Account > Settings > Connected
+  apps > Create agent token. They upload files and create shares; each connection is limited to "Only shares it
+  creates" (default) or "All my shares" (also lists, deletes and downloads every share, including received ones). The owner
+  changes the level or revokes the agent in Connected apps.
+- **Anonymous agents** can send files to an upload link without signing in, but only while Account > Settings > Upload
+  link > "Let AI agents send files to my upload link" is on (off by default). The upload page then offers
+  `/u/<code>/llms.txt` with instructions and a curl recipe; `/mcp?upload=<code>` is the MCP form. Received shares from
+  agents carry an "Agent" badge, and the notification email says they came through the agent interface and that the sender
+  details are not verified. The switch only governs the agent interface; the browser form stays open to anyone with the link.
+- **Limits**: agent uploads count toward the same per-file, per-share, staged-bytes, daily and open-draft limits as the
+  browser. Small files (up to 1 MiB per call) can be sent inline; larger ones go to a one-time upload URL (15 minutes,
+  single use). `/mcp` and the inline routes accept bodies up to 2 MiB.
+- **Redirect hosts**: OAuth clients may register loopback redirects, `https://claude.ai` and `https://claude.com`
+  callbacks. `Agora__Agents__AllowedRedirectHosts` (comma separated host names) adds more trusted `https` hosts.
+
+The contract (OAuth discovery, routes, tools, errors, limits, untrusted content guidance and known limitations) is in
+[`docs/api/agents.md`](docs/api/agents.md).
 
 ### Share links in general
 
@@ -828,7 +864,7 @@ Serilog keys still honoured). Multipart upload buffering moved from the system t
 
 ## Local development and tests
 
-Prerequisites: .NET SDK 10, Node.js 20+, Docker and tmux.
+Prerequisites: .NET SDK 10, Bun, Docker and tmux.
 
 ```bash
 ./run-dev.sh      # start
@@ -848,7 +884,7 @@ Other useful commands:
 dotnet build Agora.slnx
 dotnet test tests/Agora.Application.Tests/Agora.Application.Tests.csproj   # unit tests (SQLite in-memory); PostgreSQL and MinIO tests use Testcontainers and skip without Docker
 scripts/add-migration.sh <Name>                                           # adds an EF Core migration to both provider sets
-cd src/Agora.Web && npm run tailwind:build && npm run ts:build             # rebuild CSS and the TypeScript bundles after changes
+cd src/Agora.Web && bun run tailwind:build && bun run ts:build             # rebuild CSS and the TypeScript bundles after changes
 ```
 
 Set `AGORA_REQUIRE_POSTGRES_TESTS=1` or `AGORA_REQUIRE_S3_TESTS=1` to make skipped container tests a failure. An
@@ -861,12 +897,12 @@ environment with `Email__Provider=filesystem` and data under `.e2e-data/runs/<id
 
 ```bash
 cd tests/e2e
-npm install
-npm run test:sqlserver     # PLAYWRIGHT_E2E_DB=sqlserver PLAYWRIGHT_E2E_STORAGE=filesystem
-npm run test:postgres      # PLAYWRIGHT_E2E_DB=postgres
-npm run test:postgres-s3   # PLAYWRIGHT_E2E_DB=postgres PLAYWRIGHT_E2E_STORAGE=s3 (MinIO; fails if durable content lands on disk)
-npm run test:all           # all three legs
-npm run report             # open the HTML report
+bun install
+bun run test:sqlserver     # PLAYWRIGHT_E2E_DB=sqlserver PLAYWRIGHT_E2E_STORAGE=filesystem
+bun run test:postgres      # PLAYWRIGHT_E2E_DB=postgres
+bun run test:postgres-s3   # PLAYWRIGHT_E2E_DB=postgres PLAYWRIGHT_E2E_STORAGE=s3 (MinIO; fails if durable content lands on disk)
+bun run test:all           # all three legs
+bun run report             # open the HTML report
 ```
 
 Project conventions for contributors (naming, migrations, storage invariants, design system) are in
