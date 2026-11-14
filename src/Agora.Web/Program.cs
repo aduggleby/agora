@@ -132,6 +132,7 @@ builder.Services.TryAddSingleton(TimeProvider.System);
 // Cookies for the web UI, API bearer tokens for /api/v1 only; see AuthSetup for the invariants.
 builder.Services.AddAgoraAuthentication(authOptions, cookieSecurePolicy);
 builder.Services.AddAuthorization(AuthSetup.ConfigureAuthorization);
+builder.Services.AddAgoraAgents();
 builder.Services.AddAntiforgery(options =>
 {
     options.Cookie.Name = "agora.csrf";
@@ -1638,6 +1639,7 @@ app.MapGet("/api/shares/{token}", async (ShareManager manager, string token, Can
 app.MapPublicShareEndpoints();
 app.MapDirectLinkEndpoints();
 app.MapApiV1Endpoints(captureRequestBodyLimit: stageRequestBodyLimit);
+app.MapAgoraAgents();
 app.MapHub<ShareProgressHub>("/hubs/share-progress").RequireAuthorization();
 
 app.Run();

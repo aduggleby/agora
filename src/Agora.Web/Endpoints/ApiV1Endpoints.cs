@@ -43,6 +43,7 @@ public static class ApiV1Endpoints
         api.MapDelete("/auth/token", RevokeTokenAsync);
         api.MapGet("/me", Me);
         api.MapPost("/captures", CreateCaptureAsync)
+            .RequireAuthorization(ApiTokenDefaults.CapturePolicy)
             .WithMetadata(new RequestSizeLimitAttribute(captureRequestBodyLimit));
         api.MapDelete("/shares/{token}", DeleteShareAsync);
 

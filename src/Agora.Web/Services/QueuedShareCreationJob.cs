@@ -49,7 +49,10 @@ public sealed class QueuedShareCreationJob(
         string? TemplateBackgroundUploadId,
         IReadOnlyList<string> UploadedFileIds,
         // Defaulted so payloads queued before owner ids existed still deserialize; the manager then resolves the owner by email.
-        Guid? OwnerUserId = null);
+        Guid? OwnerUserId = null,
+        // Defaulted like OwnerUserId: payloads queued before agent access existed still deserialize.
+        Guid? CreatedByApiTokenId = null,
+        bool SentByAgent = false);
 
     private readonly AgoraOptions _options = options.Value;
     private readonly EmailSenderOptions _emailSenderOptions = emailSenderOptions.Value;
@@ -514,6 +517,8 @@ public sealed class QueuedShareCreationJob(
                     SenderName = payload.SenderName,
                     SenderEmail = payload.SenderEmail,
                     SenderMessage = payload.SenderMessage,
+                    CreatedByApiTokenId = payload.CreatedByApiTokenId,
+                    SentByAgent = payload.SentByAgent,
                     DownloadPassword = payload.DownloadPassword,
                     ShareExperienceType = shareExperienceType,
                     AccessMode = accessMode,

@@ -1,4 +1,5 @@
 using Agora.Application.Models;
+using Agora.Application.Utilities;
 using Agora.Web.Auth;
 using Agora.Web.Endpoints;
 using Microsoft.AspNetCore.Authentication;
@@ -92,5 +93,13 @@ public static class AuthSetup
             .AddAuthenticationSchemes(ApiTokenDefaults.AuthenticationScheme)
             .RequireAuthenticatedUser()
             .RequireAssertion(context => ApiTokenDefaults.IsApiTokenPrincipal(context.User)));
+        options.AddPolicy(ApiTokenDefaults.CapturePolicy, policy => policy
+            .AddAuthenticationSchemes(ApiTokenDefaults.AuthenticationScheme)
+            .RequireAuthenticatedUser()
+            .RequireAssertion(context => ApiTokenDefaults.AccessLevel(context.User) == ApiTokens.AccessLevels.Capture));
+        options.AddPolicy(ApiTokenDefaults.AgentPolicy, policy => policy
+            .AddAuthenticationSchemes(ApiTokenDefaults.AuthenticationScheme)
+            .RequireAuthenticatedUser()
+            .RequireAssertion(context => ApiTokens.AccessLevels.IsAgentLevel(ApiTokenDefaults.AccessLevel(context.User))));
     }
 }

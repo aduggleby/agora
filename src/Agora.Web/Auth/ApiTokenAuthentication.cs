@@ -16,6 +16,12 @@ public static class ApiTokenDefaults
     /// <summary>Authorization policy of the <c>/api/v1</c> endpoints: authenticated by <see cref="AuthenticationScheme"/>.</summary>
     public const string ApiClientPolicy = "ApiClient";
     public const string TokenIdClaim = "agora:token_id";
+    /// <summary>Access of an API token principal: <c>capture</c>, <c>own</c> or <c>all</c> (<see cref="ApiTokens.AccessLevels"/>).</summary>
+    public const string AccessClaim = "agora:access";
+    /// <summary>Policy of the capture endpoints: capture app tokens only.</summary>
+    public const string CapturePolicy = "Capture";
+    /// <summary>Policy of the agent endpoints: agent tokens (levels own and all) only.</summary>
+    public const string AgentPolicy = "Agent";
 
     private const string BearerPrefix = "Bearer ";
 
@@ -43,7 +49,8 @@ public static class ApiTokenDefaults
             new(ClaimTypes.NameIdentifier, identity.UserId.ToString()),
             new(ClaimTypes.Email, identity.Email),
             new(ClaimTypes.Name, identity.DisplayName),
-            new(TokenIdClaim, identity.TokenId.ToString())
+            new(TokenIdClaim, identity.TokenId.ToString()),
+            new(AccessClaim, identity.AccessLevel ?? ApiTokens.AccessLevels.Capture)
         };
 
         return new ClaimsPrincipal(new ClaimsIdentity(claims, AuthenticationScheme));
@@ -52,6 +59,10 @@ public static class ApiTokenDefaults
     /// <summary>The token id of an API token principal, or null.</summary>
     public static Guid? TokenId(ClaimsPrincipal principal) =>
         IsApiTokenPrincipal(principal) && Guid.TryParse(principal.FindFirstValue(TokenIdClaim), out var id) ? id : null;
+
+    /// <summary>The access of an API token principal (<c>capture</c>, <c>own</c>, <c>all</c>), or null.</summary>
+    public static string? AccessLevel(ClaimsPrincipal principal) =>
+        IsApiTokenPrincipal(principal) ? principal.FindFirstValue(AccessClaim) : null;
 
     /// <summary>A JSON 401 with <c>WWW-Authenticate: Bearer</c>, never a redirect.</summary>
     public static Task WriteUnauthorizedAsync(HttpResponse response, string error, bool invalidToken = false)

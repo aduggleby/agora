@@ -737,6 +737,24 @@ public sealed class AuthService(
         return await TrySaveUserChangeAsync(cancellationToken);
     }
 
+    public async Task<bool> GetAllowAgentUploadsAsync(Guid userId, CancellationToken cancellationToken)
+    {
+        var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
+        return user?.AllowAgentUploads ?? false;
+    }
+
+    public async Task<bool> SetAllowAgentUploadsAsync(Guid userId, bool allow, CancellationToken cancellationToken)
+    {
+        var user = await db.Users.SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
+        if (user is null)
+        {
+            return false;
+        }
+
+        user.AllowAgentUploads = allow;
+        return await TrySaveUserChangeAsync(cancellationToken);
+    }
+
     public async Task<string> GetDefaultExpiryModeAsync(Guid userId, CancellationToken cancellationToken)
     {
         var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);

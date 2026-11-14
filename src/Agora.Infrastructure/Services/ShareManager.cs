@@ -50,6 +50,7 @@ public sealed partial class ShareManager(
         string? SenderName,
         string? SenderEmail,
         string? SenderMessage,
+        bool SentByAgent,
         string AccessMode,
         IReadOnlyList<ShareArchiveFileSummary> Files)
     {
@@ -241,6 +242,8 @@ public sealed partial class ShareManager(
                     SenderName = command.SenderName,
                     SenderEmail = EmailAddress.NormalizeOptional(command.SenderEmail),
                     SenderMessage = command.SenderMessage,
+                    CreatedByApiTokenId = command.CreatedByApiTokenId,
+                    SentByAgent = command.SentByAgent,
                     NotifyMode = command.NotifyMode,
                     ExpiresAtUtc = command.ExpiryMode == ExpiryMode.Indefinite ? null : command.ExpiresAtUtc,
                     CreatedAtUtc = now,
@@ -650,9 +653,27 @@ public sealed partial class ShareManager(
     /// <summary>Lock key shared with account deletion (<c>AuthService.DeleteUserAsync</c>).</summary>
     public static string OwnerLockKey(Guid ownerUserId) => $"owner:{ownerUserId:N}";
 
-    public Task<List<UserShareSummary>> ListRecentSharesForUploaderAsync(ShareOwner owner, int take, CancellationToken cancellationToken)
+    public Task<List<UserShareSummary>> ListRecentSharesForUploaderAsync(ShareOwner owner, int take, CancellationToken cancellationToken) =>
+        ListSummariesAsync(SharesOwnedBy(owner), take, cancellationToken);
+
+    /// <summary>
+    /// The owner's live shares for an agent, newest first: every share when <paramref name="createdByTokenId"/> is null
+    /// (access level "all"), else only the ones that token created (level "own").
+    /// </summary>
+    public Task<List<UserShareSummary>> ListSharesForAgentAsync(ShareOwner owner, Guid? createdByTokenId, int take, CancellationToken cancellationToken)
     {
-        return SharesOwnedBy(owner)
+        var shares = SharesOwnedBy(owner);
+        if (createdByTokenId is { } tokenId)
+        {
+            shares = shares.Where(x => x.CreatedByApiTokenId == tokenId);
+        }
+
+        return ListSummariesAsync(shares, take, cancellationToken);
+    }
+
+    private static Task<List<UserShareSummary>> ListSummariesAsync(IQueryable<Share> shares, int take, CancellationToken cancellationToken)
+    {
+        return shares
             .AsNoTracking()
             .Where(x => x.DeletedAtUtc == null)
             .OrderByDescending(x => x.CreatedAtUtc)
@@ -669,6 +690,7 @@ public sealed partial class ShareManager(
                 x.SenderName,
                 x.SenderEmail,
                 x.SenderMessage,
+                x.SentByAgent,
                 x.AccessMode,
                 x.Files
                     .Select(file => new ShareArchiveFileSummary(

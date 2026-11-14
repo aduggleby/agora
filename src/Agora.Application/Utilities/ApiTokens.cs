@@ -14,6 +14,8 @@ public static partial class ApiTokens
 {
     /// <summary>The only client: the capture app. There is no client registration.</summary>
     public const string CaptureClientId = "agora-capture";
+    /// <summary>Client id stored on tokens created by the owner in Settings for headless agents.</summary>
+    public const string AgentClientId = "agora-agent";
     public const string TokenPrefix = "agora_pat_";
     public const string CodeChallengeMethod = "S256";
     public const int DisplayPrefixLength = 8;
@@ -23,6 +25,22 @@ public static partial class ApiTokens
     public const int MaxStateLength = 512;
     /// <summary>Upper bound of the raw <c>device_name</c> before it is sanitized to <see cref="MaxDeviceNameLength"/>.</summary>
     public const int MaxRawDeviceNameLength = 200;
+
+    /// <summary>Access levels of agent tokens. The capture app has none (null on the row, <see cref="Capture"/> in the claim).</summary>
+    public static class AccessLevels
+    {
+        /// <summary>The claim value of capture app tokens; never stored.</summary>
+        public const string Capture = "capture";
+        /// <summary>Only shares the token created.</summary>
+        public const string Own = "own";
+        /// <summary>Every share of the account.</summary>
+        public const string All = "all";
+
+        public static bool IsAgentLevel(string? value) => value is Own or All;
+
+        /// <summary>The level when valid, else <see cref="Own"/> (the safe default).</summary>
+        public static string NormalizeOrOwn(string? value) => IsAgentLevel(value) ? value! : Own;
+    }
 
     /// <summary>A new bearer token: <see cref="TokenPrefix"/> plus 32 random bytes, base64url.</summary>
     public static string NewToken() => TokenPrefix + TokenCodec.GenerateToken();

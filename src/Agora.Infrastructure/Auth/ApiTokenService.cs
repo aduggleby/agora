@@ -6,10 +6,10 @@ using Microsoft.EntityFrameworkCore;
 namespace Agora.Infrastructure.Auth;
 
 /// <summary>The account behind a valid bearer token, as the authentication handler turns it into a principal.</summary>
-public sealed record ApiTokenIdentity(Guid TokenId, Guid UserId, string Email, string DisplayName);
+public sealed record ApiTokenIdentity(Guid TokenId, Guid UserId, string Email, string DisplayName, string? AccessLevel = null);
 
 /// <summary>An active token as listed under Settings > Connected apps.</summary>
-public sealed record ApiTokenSummary(Guid Id, string ClientId, string DeviceName, string? TokenPrefix, DateTime ConnectedAtUtc, DateTime? LastUsedAtUtc);
+public sealed record ApiTokenSummary(Guid Id, string ClientId, string DeviceName, string? TokenPrefix, DateTime ConnectedAtUtc, DateTime? LastUsedAtUtc, string? AccessLevel = null);
 
 /// <summary>The outcome of a code exchange: the plaintext token (shown once) or an RFC 6749 error code.</summary>
 public sealed record ApiTokenExchangeResult(string? AccessToken, Guid TokenId, string? Email, string? Error)
@@ -37,6 +37,9 @@ public sealed class ApiTokenService(AgoraDbContext db, TimeProvider? timeProvide
     /// <summary>How long revoked and expired rows are kept before cleanup deletes them.</summary>
     public static readonly TimeSpan DeadRowRetention = TimeSpan.FromDays(30);
 
+    /// <summary>Stored <see cref="ApiToken.ClientId"/> prefix of MCP clients (a hash of their registered client id follows).</summary>
+    public const string McpClientIdPrefix = "mcp:";
+
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
 
     private DateTime NowUtc => _time.GetUtcNow().UtcDateTime;
@@ -46,7 +49,9 @@ public sealed class ApiTokenService(AgoraDbContext db, TimeProvider? timeProvide
     /// is disabled, or <paramref name="sessionSecurityStamp"/> (the stamp in the consenting session's cookie) is not
     /// the user's current stamp. The last check matters: a cookie stolen before a password reset is still accepted
     /// until its next revalidation, and must not be able to mint a token bound to the new stamp. The inputs must
-    /// already be validated (client id, redirect URI, S256 challenge); the device name is sanitized here.
+    /// already be validated (client id, redirect URI, S256 challenge); the device name is sanitized here. The capture
+    /// app never gets an access level (it stays null); any other client stores <paramref name="accessLevel"/>, and a
+    /// missing or unknown value becomes <see cref="ApiTokens.AccessLevels.Own"/>.
     /// </summary>
     public async Task<string?> CreatePendingAsync(
         Guid userId,
@@ -55,9 +60,11 @@ public sealed class ApiTokenService(AgoraDbContext db, TimeProvider? timeProvide
         string? deviceName,
         string codeChallenge,
         string redirectUri,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? accessLevel = null)
     {
-        if (!string.Equals(clientId, ApiTokens.CaptureClientId, StringComparison.Ordinal))
+        var isCapture = string.Equals(clientId, ApiTokens.CaptureClientId, StringComparison.Ordinal);
+        if (!isCapture && !clientId.StartsWith(McpClientIdPrefix, StringComparison.Ordinal))
         {
             throw new ArgumentException("Unknown client id.", nameof(clientId));
         }
@@ -92,10 +99,66 @@ public sealed class ApiTokenService(AgoraDbContext db, TimeProvider? timeProvide
             CodeChallenge = codeChallenge,
             RedirectUri = redirectUri,
             IssuedSecurityStamp = user.SecurityStamp,
-            CreatedAtUtc = now
+            CreatedAtUtc = now,
+            AccessLevel = isCapture ? null : ApiTokens.AccessLevels.NormalizeOrOwn(accessLevel)
         });
         await db.SaveChangesAsync(cancellationToken);
         return code;
+    }
+
+    /// <summary>
+    /// Creates an active agent token for a headless agent (Settings > Create agent token) and returns the plaintext
+    /// (shown once), or null when the user is gone or disabled or <paramref name="sessionSecurityStamp"/> is not the
+    /// user's current stamp (same reason as <see cref="CreatePendingAsync"/>). An unknown level becomes "own".
+    /// </summary>
+    public async Task<string?> CreateAgentTokenAsync(
+        Guid userId,
+        string? sessionSecurityStamp,
+        string? name,
+        string? accessLevel,
+        CancellationToken cancellationToken)
+    {
+        var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
+        if (user is null || !user.IsEnabled || string.IsNullOrEmpty(user.SecurityStamp) ||
+            !string.Equals(sessionSecurityStamp, user.SecurityStamp, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var now = NowUtc;
+        var token = ApiTokens.NewToken();
+        db.ApiTokens.Add(new ApiToken
+        {
+            Id = Guid.NewGuid(),
+            UserId = user.Id,
+            ClientId = ApiTokens.AgentClientId,
+            DeviceName = ApiTokens.SanitizeDeviceName(name),
+            TokenHash = ApiTokens.Hash(token),
+            TokenPrefix = ApiTokens.DisplayPrefix(token),
+            // IsActive requires an exchange time and the issuing stamp; there is no code exchange for these rows.
+            ExchangedAtUtc = now,
+            IssuedSecurityStamp = user.SecurityStamp,
+            CreatedAtUtc = now,
+            AccessLevel = ApiTokens.AccessLevels.NormalizeOrOwn(accessLevel)
+        });
+        await db.SaveChangesAsync(cancellationToken);
+        return token;
+    }
+
+    /// <summary>
+    /// Changes the access level of one of the user's agent tokens. False for an invalid level, an unknown or foreign
+    /// id, or a capture app token (null level), which has no level to change.
+    /// </summary>
+    public async Task<bool> SetAccessLevelAsync(Guid tokenId, Guid userId, string level, CancellationToken cancellationToken)
+    {
+        if (!ApiTokens.AccessLevels.IsAgentLevel(level))
+        {
+            return false;
+        }
+
+        return await db.ApiTokens
+            .Where(x => x.Id == tokenId && x.UserId == userId && x.AccessLevel != null)
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.AccessLevel, level), cancellationToken) == 1;
     }
 
     /// <summary>
@@ -195,7 +258,7 @@ public sealed class ApiTokenService(AgoraDbContext db, TimeProvider? timeProvide
 
         var user = match.User;
         var displayName = string.IsNullOrWhiteSpace(user.DisplayName) ? user.Email : user.DisplayName.Trim();
-        return new ApiTokenIdentity(row.Id, user.Id, user.Email, displayName);
+        return new ApiTokenIdentity(row.Id, user.Id, user.Email, displayName, row.AccessLevel);
     }
 
     /// <summary>
@@ -231,7 +294,7 @@ public sealed class ApiTokenService(AgoraDbContext db, TimeProvider? timeProvide
             .OrderByDescending(x => x.ExchangedAtUtc)
             // SQL Server (datetime2) and SQLite read timestamps back with Kind=Unspecified; they are stored as UTC, and
             // the page formats them with "O", which only appends Z for Kind=Utc.
-            .Select(x => new ApiTokenSummary(x.Id, x.ClientId, x.DeviceName, x.TokenPrefix, AsUtc(x.ExchangedAtUtc!.Value), x.LastUsedAtUtc is { } used ? AsUtc(used) : null))
+            .Select(x => new ApiTokenSummary(x.Id, x.ClientId, x.DeviceName, x.TokenPrefix, AsUtc(x.ExchangedAtUtc!.Value), x.LastUsedAtUtc is { } used ? AsUtc(used) : null, x.AccessLevel))
             .ToList();
     }
 

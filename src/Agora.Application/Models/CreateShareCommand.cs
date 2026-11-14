@@ -10,6 +10,10 @@ public sealed class CreateShareCommand
     public string? SenderName { get; init; }
     public string? SenderEmail { get; init; }
     public string? SenderMessage { get; init; }
+    /// <summary>The agent token that created the share, when it was created through the agent API.</summary>
+    public Guid? CreatedByApiTokenId { get; init; }
+    /// <summary>True when a received share came through the anonymous agent interface.</summary>
+    public bool SentByAgent { get; init; }
     public string? DownloadPassword { get; init; }
     public string ShareExperienceType { get; init; } = "archive";
     public string AccessMode { get; init; } = "download_only";
