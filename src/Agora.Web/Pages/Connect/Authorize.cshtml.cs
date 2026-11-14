@@ -82,6 +82,16 @@ public class AuthorizeModel(ApiTokenService tokens, OAuthClientCodec clients, Pu
             return RedirectError("The app sent an invalid redirect address, so Agora cannot send you back to it. Start the connection again from the app.");
         }
 
+        // Only the authorization code flow exists. MCP clients must say so; the capture app (which predates the
+        // parameter) may omit it, but when anyone sends it, it must be exactly "code". Error page, never a redirect.
+        var hasResponseType = values.ContainsKey("response_type");
+        if (hasResponseType
+                ? !TrySingle(values, "response_type", out var responseType) || !string.Equals(responseType, "code", StringComparison.Ordinal)
+                : registration is not null)
+        {
+            return RedirectError("The app asked for an unsupported response type. Agora only supports the authorization code flow. Start the connection again from the app.");
+        }
+
         RedirectUri = redirectUri;
         // The Approve/Deny POST is answered with a redirect to the app's callback; allow its origin in this page's form-action.
         // IPv6 literals cannot be written as CSP host sources, so [::1] relies on the policy being report-only.
