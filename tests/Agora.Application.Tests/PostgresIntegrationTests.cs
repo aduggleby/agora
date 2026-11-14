@@ -79,6 +79,45 @@ public sealed class PostgresIntegrationTests(PostgresFixture fixture) : IClassFi
     }
 
     [SkippableFact]
+    public async Task Agent_access_columns_round_trip_and_agent_listing_filters_by_token()
+    {
+        await using var app = await CreateAppAsync();
+        await using var scope = app.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AgoraDbContext>();
+        var user = TestUsers.Seed(Guid.NewGuid(), "agent.user@example.com");
+        db.Users.Add(user);
+        var tokenId = Guid.NewGuid();
+        var byAgent = NewShare("agent-made", DateTime.UtcNow.AddMinutes(-1));
+        byAgent.OwnerUserId = user.Id;
+        byAgent.CreatedByApiTokenId = tokenId;
+        byAgent.SentByAgent = true;
+        var plain = NewShare("browser-made", DateTime.UtcNow);
+        plain.OwnerUserId = user.Id;
+        db.Shares.AddRange(byAgent, plain);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var service = new ApiTokenService(db);
+        var agentToken = await service.CreateAgentTokenAsync(user.Id, user.SecurityStamp, "bot", ApiTokens.AccessLevels.All, CancellationToken.None);
+        Assert.Equal("all", (await service.ValidateAsync(agentToken, CancellationToken.None))!.AccessLevel);
+        var auth = new AuthService(db, new NoopEmailSender());
+        Assert.False(await auth.GetAllowAgentUploadsAsync(user.Id, CancellationToken.None));
+        Assert.True(await auth.SetAllowAgentUploadsAsync(user.Id, true, CancellationToken.None));
+        Assert.True(await auth.GetAllowAgentUploadsAsync(user.Id, CancellationToken.None));
+        Assert.True(await service.SetAccessLevelAsync((await db.ApiTokens.SingleAsync()).Id, user.Id, ApiTokens.AccessLevels.Own, CancellationToken.None));
+
+        var rows = await db.Shares.AsNoTracking().ToDictionaryAsync(x => x.ShareToken);
+        Assert.Equal(tokenId, rows["agent-made"].CreatedByApiTokenId);
+        Assert.True(rows["agent-made"].SentByAgent);
+        Assert.Null(rows["browser-made"].CreatedByApiTokenId);
+        Assert.False(rows["browser-made"].SentByAgent);
+        var manager = CreateShareManager(db, Path.GetTempPath(), new RecordingJobClient());
+        var owner = ShareOwner.For(user.Id, user.Email);
+        Assert.Equal(["agent-made"], (await manager.ListSharesForAgentAsync(owner, tokenId, 10, CancellationToken.None)).Select(x => rows.Values.Single(r => r.Id == x.ShareId).ShareToken));
+        Assert.Equal(2, (await manager.ListSharesForAgentAsync(owner, null, 10, CancellationToken.None)).Count);
+    }
+
+    [SkippableFact]
     public async Task Owner_backfill_stamps_legacy_rows_by_lower_cased_address()
     {
         await using var app = await CreateAppAsync();

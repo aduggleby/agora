@@ -176,6 +176,60 @@ public sealed class ShareOwnershipTests
     }
 
     [Fact]
+    public async Task CreateShareAsync_copies_the_agent_fields_and_defaults_them_for_browser_shares()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var ownerId = harness.AddUser(Email).Id;
+        await harness.Db.SaveChangesAsync();
+        var tokenId = Guid.NewGuid();
+
+        var browser = await harness.Manager.CreateShareAsync(await harness.CommandAsync(Email, ownerId), CancellationToken.None);
+        var agent = await harness.Manager.CreateShareAsync(await harness.CommandAsync(Email, ownerId, tokenId, sentByAgent: true), CancellationToken.None);
+
+        var rows = await harness.Db.Shares.AsNoTracking().ToDictionaryAsync(x => x.Id);
+        Assert.Null(rows[browser.ShareId].CreatedByApiTokenId);
+        Assert.False(rows[browser.ShareId].SentByAgent);
+        Assert.Equal(tokenId, rows[agent.ShareId].CreatedByApiTokenId);
+        Assert.True(rows[agent.ShareId].SentByAgent);
+    }
+
+    [Fact]
+    public async Task ListSharesForAgentAsync_filters_by_token_and_owner_and_reports_the_agent_mark()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var ownerId = harness.AddUser(Email).Id;
+        var otherOwnerId = harness.AddUser("other@example.com").Id;
+        var tokenA = Guid.NewGuid();
+        var tokenB = Guid.NewGuid();
+        var now = DateTime.UtcNow;
+        var browser = harness.AddShare(ownerId, Email, "browser", createdAtUtc: now.AddMinutes(-4));
+        var byA = harness.AddShare(ownerId, Email, "by-a", createdAtUtc: now.AddMinutes(-3));
+        byA.CreatedByApiTokenId = tokenA;
+        var byB = harness.AddShare(ownerId, Email, "by-b", createdAtUtc: now.AddMinutes(-2));
+        byB.CreatedByApiTokenId = tokenB;
+        var received = harness.AddShare(ownerId, Email, "received", sender: true, createdAtUtc: now.AddMinutes(-1));
+        received.SentByAgent = true;
+        var deleted = harness.AddShare(ownerId, Email, "deleted", createdAtUtc: now);
+        deleted.CreatedByApiTokenId = tokenA;
+        deleted.DeletedAtUtc = now;
+        var foreign = harness.AddShare(otherOwnerId, "other@example.com", "foreign");
+        foreign.CreatedByApiTokenId = tokenA;
+        await harness.Db.SaveChangesAsync();
+        var owner = ShareOwner.For(ownerId, Email);
+
+        var all = await harness.Manager.ListSharesForAgentAsync(owner, null, 10, CancellationToken.None);
+        var own = await harness.Manager.ListSharesForAgentAsync(owner, tokenA, 10, CancellationToken.None);
+        var limited = await harness.Manager.ListSharesForAgentAsync(owner, null, 2, CancellationToken.None);
+
+        Assert.Equal([received.Id, byB.Id, byA.Id, browser.Id], all.Select(x => x.ShareId));
+        Assert.Equal([true, false, false, false], all.Select(x => x.SentByAgent));
+        Assert.Equal([byA.Id], own.Select(x => x.ShareId));
+        Assert.Equal(2, limited.Count);
+        Assert.Empty(await harness.Manager.ListSharesForAgentAsync(owner, Guid.NewGuid(), 10, CancellationToken.None));
+        Assert.DoesNotContain((await harness.Manager.ListRecentSharesForUploaderAsync(owner, 10, CancellationToken.None)).Where(x => x.ShareId != received.Id), x => x.SentByAgent);
+    }
+
+    [Fact]
     public async Task Share_creation_waits_for_the_owner_lock_and_is_refused_once_the_account_is_deleted()
     {
         await using var harness = await Harness.CreateAsync();
@@ -437,7 +491,7 @@ public sealed class ShareOwnershipTests
             return share;
         }
 
-        public async Task<CreateShareCommand> CommandAsync(string uploaderEmail, Guid ownerUserId)
+        public async Task<CreateShareCommand> CommandAsync(string uploaderEmail, Guid ownerUserId, Guid? createdByApiTokenId = null, bool sentByAgent = false)
         {
             var path = Path.Combine(_storageRoot, $"{Guid.NewGuid():N}-hello.txt");
             await File.WriteAllTextAsync(path, "hello");
@@ -445,6 +499,8 @@ public sealed class ShareOwnershipTests
             {
                 UploaderEmail = uploaderEmail,
                 OwnerUserId = ownerUserId,
+                CreatedByApiTokenId = createdByApiTokenId,
+                SentByAgent = sentByAgent,
                 ExpiryMode = ExpiryMode.Indefinite,
                 NotifyMode = "none",
                 TemplateMode = TemplateMode.PerUpload,

@@ -58,6 +58,39 @@ public sealed class ApiV1HostTests
         Assert.False(response.Headers.Contains("Set-Cookie"));
     }
 
+    [Theory]
+    [InlineData("own")]
+    [InlineData("all")]
+    public async Task Agent_token_reaches_me_but_gets_403_on_captures(string level)
+    {
+        await using var host = await Host.StartAsync();
+        var token = await host.IssueAgentTokenAsync(level);
+
+        var me = await host.SendAsync(HttpMethod.Get, "/api/v1/me", bearer: token);
+        var capture = await host.SendAsync(HttpMethod.Post, "/api/v1/captures?duration=1d", bearer: token,
+            content: Multipart("capture.png", PaddedPng(1024)));
+
+        Assert.Equal(HttpStatusCode.OK, me.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, capture.StatusCode);
+    }
+
+    [Fact]
+    public async Task Capture_token_still_reaches_captures_and_carries_the_capture_access_claim()
+    {
+        await using var host = await Host.StartAsync();
+        var token = await host.IssueTokenAsync();
+
+        var capture = await host.SendAsync(HttpMethod.Post, "/api/v1/captures?duration=1d", bearer: token,
+            content: Multipart("capture.png", PaddedPng(1024)));
+
+        Assert.Equal(HttpStatusCode.OK, capture.StatusCode);
+        Assert.Equal("capture", (await host.SendAsync(HttpMethod.Get, "/test/access", bearer: token)).Content.ReadAsStringAsync().Result);
+        var agent = await host.IssueAgentTokenAsync("all");
+        Assert.Equal("all", await (await host.SendAsync(HttpMethod.Get, "/test/access", bearer: agent)).Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.Forbidden, (await host.SendAsync(HttpMethod.Get, "/test/agent-only", bearer: token)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await host.SendAsync(HttpMethod.Get, "/test/agent-only", bearer: agent)).StatusCode);
+    }
+
     [Fact]
     public async Task Cookie_is_not_accepted_on_api_v1()
     {
@@ -535,6 +568,10 @@ public sealed class ApiV1HostTests
             app.MapPost("/cookie-only", () => "posted").RequireAuthorization();
             // Stands in for anonymous form endpoints such as /login: antiforgery reads the form when no header token is sent.
             app.MapPost("/anonymous-form", () => "posted");
+            // Probes for the access claim and AgentPolicy, which no endpoint uses yet.
+            var probes = app.MapGroup("/test").WithMetadata(ApiEndpointMetadata.Instance);
+            probes.MapGet("/access", (HttpContext context) => ApiTokenDefaults.AccessLevel(context.User)).RequireAuthorization(ApiTokenDefaults.ApiClientPolicy);
+            probes.MapGet("/agent-only", () => "ok").RequireAuthorization(ApiTokenDefaults.AgentPolicy);
             app.MapApiV1Endpoints(captureRequestBodyLimit: maxFileSizeBytes is { } maxFile ? maxFile + 1024 * 1024 : 10 * 1024 * 1024);
             await app.StartAsync();
 
@@ -565,6 +602,13 @@ public sealed class ApiV1HostTests
             var result = await scope.ServiceProvider.GetRequiredService<ApiTokenService>()
                 .ExchangeAsync(code, ApiTokenServiceTests.Verifier, ApiTokenServiceTests.Redirect, ApiTokens.CaptureClientId, CancellationToken.None);
             return result.AccessToken!;
+        }
+
+        public async Task<string> IssueAgentTokenAsync(string level)
+        {
+            await using var scope = _app.Services.CreateAsyncScope();
+            return (await scope.ServiceProvider.GetRequiredService<ApiTokenService>()
+                .CreateAgentTokenAsync(UserId, Stamp, "Test agent", level, CancellationToken.None))!;
         }
 
         public async Task<string> LoginCookieAsync()

@@ -41,6 +41,116 @@ public sealed class ApiTokenServiceTests
     }
 
     [Fact]
+    public async Task Capture_tokens_have_no_access_level_even_when_one_is_requested()
+    {
+        await using var h = await Harness.CreateAsync();
+        var stamp = (await h.Db.Users.AsNoTracking().SingleAsync(x => x.Id == h.User.Id)).SecurityStamp;
+        var code = (await h.Service.CreatePendingAsync(h.User.Id, stamp, Client, "Mac", Challenge, Redirect, CancellationToken.None, ApiTokens.AccessLevels.All))!;
+
+        var result = await h.Service.ExchangeAsync(code, Verifier, Redirect, Client, CancellationToken.None);
+
+        Assert.Null((await h.RowAsync()).AccessLevel);
+        Assert.Null((await h.Service.ValidateAsync(result.AccessToken, CancellationToken.None))!.AccessLevel);
+        Assert.Null((await h.Service.ListForUserAsync(h.User.Id, CancellationToken.None)).Single().AccessLevel);
+    }
+
+    [Theory]
+    [InlineData("all", "all")]
+    [InlineData("own", "own")]
+    [InlineData(null, "own")]
+    [InlineData("capture", "own")]
+    [InlineData("admin", "own")]
+    public async Task Level_given_at_consent_survives_the_code_exchange(string? requested, string expected)
+    {
+        await using var h = await Harness.CreateAsync();
+        const string client = "mcp:0123456789abcdef0123456789abcdef";
+        var stamp = (await h.Db.Users.AsNoTracking().SingleAsync(x => x.Id == h.User.Id)).SecurityStamp;
+        var code = (await h.Service.CreatePendingAsync(h.User.Id, stamp, client, "Agent", Challenge, Redirect, CancellationToken.None, requested))!;
+
+        var result = await h.Service.ExchangeAsync(code, Verifier, Redirect, client, CancellationToken.None);
+
+        Assert.True(result.Success, result.Error);
+        Assert.Equal(expected, (await h.Service.ValidateAsync(result.AccessToken, CancellationToken.None))!.AccessLevel);
+        Assert.Equal(expected, (await h.Service.ListForUserAsync(h.User.Id, CancellationToken.None)).Single().AccessLevel);
+    }
+
+    [Fact]
+    public async Task Agent_token_is_active_at_once_and_stores_hashes_a_sanitized_name_and_the_stamp()
+    {
+        await using var h = await Harness.CreateAsync();
+        var user = await h.Db.Users.AsNoTracking().SingleAsync(x => x.Id == h.User.Id);
+
+        var token = await h.Service.CreateAgentTokenAsync(user.Id, user.SecurityStamp, "  Report\u0000 bot ", "all", CancellationToken.None);
+
+        Assert.True(ApiTokens.IsWellFormedToken(token));
+        var row = await h.RowAsync();
+        Assert.Equal(ApiTokens.AgentClientId, row.ClientId);
+        Assert.Equal("Report bot", row.DeviceName);
+        Assert.Equal(ApiTokens.Hash(token!), row.TokenHash);
+        Assert.Equal(ApiTokens.DisplayPrefix(token!), row.TokenPrefix);
+        Assert.Equal("all", row.AccessLevel);
+        Assert.Equal(user.SecurityStamp, row.IssuedSecurityStamp);
+        Assert.Null(row.AuthCodeHash);
+        Assert.Equal(string.Empty, row.CodeChallenge);
+        Assert.Equal(string.Empty, row.RedirectUri);
+        var identity = await h.Service.ValidateAsync(token, CancellationToken.None);
+        Assert.Equal(("all", row.Id), (identity!.AccessLevel, identity.TokenId));
+        Assert.Equal(row.Id, (await h.Service.ListForUserAsync(user.Id, CancellationToken.None)).Single().Id);
+    }
+
+    [Fact]
+    public async Task Agent_token_defaults_to_own_and_survives_cleanup_until_the_stamp_rotates()
+    {
+        await using var h = await Harness.CreateAsync();
+        var user = await h.Db.Users.AsNoTracking().SingleAsync(x => x.Id == h.User.Id);
+        var token = await h.Service.CreateAgentTokenAsync(user.Id, user.SecurityStamp, "bot", "bogus", CancellationToken.None);
+
+        Assert.Equal("own", (await h.Service.ValidateAsync(token, CancellationToken.None))!.AccessLevel);
+        await h.Service.CleanupAsync(CancellationToken.None);
+        Assert.NotNull(await h.Service.ValidateAsync(token, CancellationToken.None));
+        await h.RotateStampAsync();
+        Assert.Null(await h.Service.ValidateAsync(token, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Agent_token_creation_checks_the_session_stamp_and_the_user()
+    {
+        await using var h = await Harness.CreateAsync();
+        var user = await h.Db.Users.AsNoTracking().SingleAsync(x => x.Id == h.User.Id);
+
+        Assert.Null(await h.Service.CreateAgentTokenAsync(user.Id, "stale-stamp", "bot", "own", CancellationToken.None));
+        Assert.Null(await h.Service.CreateAgentTokenAsync(user.Id, null, "bot", "own", CancellationToken.None));
+        Assert.Null(await h.Service.CreateAgentTokenAsync(Guid.NewGuid(), user.SecurityStamp, "bot", "own", CancellationToken.None));
+        await h.DisableAsync();
+        Assert.Null(await h.Service.CreateAgentTokenAsync(user.Id, user.SecurityStamp, "bot", "own", CancellationToken.None));
+        Assert.Empty(await h.Db.ApiTokens.ToListAsync());
+    }
+
+    [Fact]
+    public async Task SetAccessLevel_changes_agent_rows_at_once_and_refuses_capture_foreign_and_invalid()
+    {
+        await using var h = await Harness.CreateAsync();
+        var user = await h.Db.Users.AsNoTracking().SingleAsync(x => x.Id == h.User.Id);
+        var agent = (await h.Service.CreateAgentTokenAsync(user.Id, user.SecurityStamp, "bot", "own", CancellationToken.None))!;
+        var capture = await h.TokenAsync("Mac");
+        var agentId = (await h.Service.ValidateAsync(agent, CancellationToken.None))!.TokenId;
+        var captureId = (await h.Service.ValidateAsync(capture, CancellationToken.None))!.TokenId;
+
+        Assert.False(await h.Service.SetAccessLevelAsync(captureId, user.Id, "all", CancellationToken.None));
+        Assert.Null((await h.Service.ValidateAsync(capture, CancellationToken.None))!.AccessLevel);
+        Assert.False(await h.Service.SetAccessLevelAsync(agentId, Guid.NewGuid(), "all", CancellationToken.None));
+        Assert.False(await h.Service.SetAccessLevelAsync(agentId, user.Id, "capture", CancellationToken.None));
+        Assert.False(await h.Service.SetAccessLevelAsync(agentId, user.Id, "ALL", CancellationToken.None));
+        Assert.False(await h.Service.SetAccessLevelAsync(Guid.NewGuid(), user.Id, "all", CancellationToken.None));
+        Assert.Equal("own", (await h.Service.ValidateAsync(agent, CancellationToken.None))!.AccessLevel);
+
+        Assert.True(await h.Service.SetAccessLevelAsync(agentId, user.Id, "all", CancellationToken.None));
+        Assert.Equal("all", (await h.Service.ValidateAsync(agent, CancellationToken.None))!.AccessLevel);
+        Assert.True(await h.Service.SetAccessLevelAsync(agentId, user.Id, "own", CancellationToken.None));
+        Assert.Equal("own", (await h.Service.ValidateAsync(agent, CancellationToken.None))!.AccessLevel);
+    }
+
+    [Fact]
     public async Task Code_is_single_use()
     {
         await using var h = await Harness.CreateAsync();
