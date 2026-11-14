@@ -497,6 +497,63 @@ public sealed class OAuthHostTests
         Assert.Contains("data-connect-error", page.Body);
     }
 
+    [Theory]
+    [InlineData("&response_type=token")]
+    [InlineData("&response_type=")]
+    [InlineData("&response_type=code&response_type=code")]
+    [InlineData("")]
+    public async Task Mcp_authorize_requires_response_type_code_and_shows_the_error_page(string responseType)
+    {
+        await using var host = await Host.StartAsync();
+        await host.SignInAsync();
+        var clientId = await host.RegisterClientAsync("Claude", "https://claude.ai/api/mcp/auth_callback");
+        var url = host.AuthorizeUrl(clientId, "https://claude.ai/api/mcp/auth_callback", Pkce.New()).Replace("response_type=code", "x=1") + responseType;
+
+        var page = await host.GetPageAsync(url);
+
+        Assert.Equal(HttpStatusCode.BadRequest, page.Status);
+        Assert.Contains("data-connect-error", page.Body);
+    }
+
+    [Fact]
+    public async Task Capture_authorize_without_response_type_still_works_but_a_wrong_one_is_refused()
+    {
+        await using var host = await Host.StartAsync();
+        await host.SignInAsync();
+        var url = $"/connect/authorize?client_id=agora-capture&redirect_uri={Uri.EscapeDataString(ApiTokenServiceTests.Redirect)}&state={State}" +
+                  $"&code_challenge={ApiTokenServiceTests.Challenge}&code_challenge_method=S256&device_name=My%20Mac";
+
+        var without = await host.GetPageAsync(url);
+        var code = await host.GetPageAsync(url + "&response_type=code");
+        var token = await host.GetPageAsync(url + "&response_type=token");
+
+        Assert.Equal(HttpStatusCode.OK, without.Status);
+        Assert.Equal(HttpStatusCode.OK, code.Status);
+        Assert.Equal(HttpStatusCode.BadRequest, token.Status);
+    }
+
+    [Fact]
+    public async Task Machine_routes_ignore_the_session_cookie_and_never_set_cookies()
+    {
+        await using var host = await Host.StartAsync();
+        await host.SignInAsync();
+        await host.QueryAsync(async db =>
+        {
+            var user = await db.Users.SingleAsync();
+            user.AllowAgentUploads = true;
+            return await db.SaveChangesAsync();
+        });
+        var code = await host.QueryAsync(db => db.Users.Select(x => x.UploadToken).SingleAsync());
+
+        var who = await host.GetPageAsync("/test/api-who");
+        var llms = await host.GetPageAsync($"/u/{code}/llms.txt");
+
+        Assert.Equal("anonymous", who.Body);
+        Assert.False(who.Headers.ContainsKey("Set-Cookie"));
+        Assert.Equal(HttpStatusCode.OK, llms.Status);
+        Assert.False(llms.Headers.ContainsKey("Set-Cookie"));
+    }
+
     private static async Task AssertErrorAsync(HttpResponseMessage response, string error, string description)
     {
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -585,6 +642,8 @@ public sealed class OAuthHostTests
                 await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, CookieSessions.CreatePrincipal(user));
                 return Results.Ok();
             });
+            app.MapGet("/test/api-who", (HttpContext context) => Results.Text(context.User.Identity?.IsAuthenticated == true ? "signed-in" : "anonymous"))
+                .WithMetadata(Agora.Web.Endpoints.ApiEndpointMetadata.Instance).AllowAnonymous();
             app.MapRazorPages();
             app.MapApiV1Endpoints(captureRequestBodyLimit: 1024 * 1024);
             app.MapAgoraAgents();

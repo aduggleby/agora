@@ -71,12 +71,12 @@ public static class AuthSetup
     }
 
     /// <summary>
-    /// The API token scheme only for a <c>Bearer agora_pat_</c> header on an endpoint marked
-    /// <see cref="ApiEndpointMetadata"/> (routing has already selected the endpoint); cookies everywhere else, so a
-    /// token presented to any other endpoint is simply ignored.
+    /// The API token scheme for every endpoint marked <see cref="ApiEndpointMetadata"/> (routing has already selected
+    /// the endpoint); without a bearer it yields no principal, so a session cookie is never read there and cannot be
+    /// refreshed (no sliding-expiration Set-Cookie on machine routes). Cookies everywhere else, so a token presented to
+    /// any other endpoint is simply ignored.
     /// </summary>
     public static string SelectScheme(HttpContext context) =>
-        ApiTokenDefaults.ReadBearerToken(context.Request) is not null &&
         context.GetEndpoint()?.Metadata.GetMetadata<ApiEndpointMetadata>() is not null
             ? ApiTokenDefaults.AuthenticationScheme
             : CookieAuthenticationDefaults.AuthenticationScheme;
@@ -86,9 +86,10 @@ public static class AuthSetup
         const string cookies = CookieAuthenticationDefaults.AuthenticationScheme;
         // [Authorize] and RequireAuthorization(): a signed-in cookie user.
         options.DefaultPolicy = new AuthorizationPolicyBuilder(cookies).RequireAuthenticatedUser().Build();
-        // Endpoints without authorization metadata stay anonymous, but their principal is re-read from the cookie
-        // only, so an API token principal can never reach them.
-        options.FallbackPolicy = new AuthorizationPolicyBuilder(cookies).RequireAssertion(_ => true).Build();
+        // Endpoints without authorization metadata stay anonymous. The policy names no scheme, so the principal is
+        // re-read through the default selector (SelectScheme): the cookie on ordinary endpoints, and never the cookie on
+        // machine routes (ApiEndpointMetadata), where reading it would also refresh it with a Set-Cookie.
+        options.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAssertion(_ => true).Build();
         options.AddPolicy(AdminOnlyPolicy, policy => policy.AddAuthenticationSchemes(cookies).RequireRole("admin"));
         options.AddPolicy(ApiTokenDefaults.ApiClientPolicy, policy => policy
             .AddAuthenticationSchemes(ApiTokenDefaults.AuthenticationScheme)
