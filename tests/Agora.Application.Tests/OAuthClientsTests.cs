@@ -103,3 +103,35 @@ public sealed class OAuthClientsTests
         Assert.True(stored.Length <= 64);
     }
 }
+
+public sealed class OAuthClientCodecConfigurationTests
+{
+    private static Agora.Web.Endpoints.OAuthClientCodec Codec(Dictionary<string, string?> values) =>
+        new(new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider(),
+            Microsoft.Extensions.Configuration.MemoryConfigurationBuilderExtensions.AddInMemoryCollection(new Microsoft.Extensions.Configuration.ConfigurationBuilder(), values).Build());
+
+    [Fact]
+    public void Allowed_redirect_hosts_bind_from_indexed_keys_like_Agora__Agents__AllowedRedirectHosts__0()
+    {
+        var codec = Codec(new()
+        {
+            ["Agora:Agents:AllowedRedirectHosts:0"] = "agents.example.org",
+            ["Agora:Agents:AllowedRedirectHosts:1"] = "other.example.net"
+        });
+
+        Assert.Equal(["agents.example.org", "other.example.net"], codec.AllowedRedirectHosts);
+    }
+
+    [Fact]
+    public void Allowed_redirect_hosts_are_empty_when_unset()
+    {
+        Assert.Empty(Codec(new()).AllowedRedirectHosts);
+    }
+
+    [Fact]
+    public void A_single_comma_separated_value_does_not_bind_as_a_list()
+    {
+        // Documented in the README: the setting takes one indexed variable per host, not a comma separated string.
+        Assert.Empty(Codec(new() { ["Agora:Agents:AllowedRedirectHosts"] = "a.example.org,b.example.org" }).AllowedRedirectHosts);
+    }
+}
