@@ -533,7 +533,7 @@ public sealed class OAuthHostTests
     }
 
     [Fact]
-    public async Task Machine_routes_ignore_the_session_cookie_and_never_set_cookies()
+    public async Task Machine_routes_ignore_the_session_cookie()
     {
         await using var host = await Host.StartAsync();
         await host.SignInAsync();

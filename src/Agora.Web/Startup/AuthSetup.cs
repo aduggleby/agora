@@ -15,10 +15,12 @@ namespace Agora.Web.Startup;
 /// <item>the sign-in cookie, accepted by every page, endpoint, the SignalR hub and Hangfire;</item>
 /// <item>the API bearer token of connected apps, accepted only by <c>/api/v1</c> endpoints (<see cref="ApiEndpointMetadata"/>).</item>
 /// </list>
-/// The default authenticate scheme is a policy scheme that picks the token scheme only for a <c>Bearer agora_pat_</c>
-/// header on an API endpoint, so <c>HttpContext.User</c> is populated before CSRF and rate limiting. Independently, every
-/// authorization policy names its scheme (the default, fallback and admin policies: cookies; <see cref="ApiTokenDefaults.ApiClientPolicy"/>:
-/// the token), and the authorization middleware re-authenticates with exactly those schemes.
+/// The default authenticate scheme is a policy scheme that picks the token scheme on every machine route
+/// (<see cref="ApiEndpointMetadata"/>, where a session cookie is never read) and the cookie everywhere else, so
+/// <c>HttpContext.User</c> is populated before CSRF and rate limiting. Independently, every authorization policy names
+/// its scheme (the default and admin policies: cookies; <see cref="ApiTokenDefaults.ApiClientPolicy"/>:
+/// the token), and the authorization middleware re-authenticates with exactly those schemes. The anonymous fallback policy
+/// names none on purpose and keeps the principal the selector produced.
 /// </summary>
 public static class AuthSetup
 {
@@ -86,9 +88,9 @@ public static class AuthSetup
         const string cookies = CookieAuthenticationDefaults.AuthenticationScheme;
         // [Authorize] and RequireAuthorization(): a signed-in cookie user.
         options.DefaultPolicy = new AuthorizationPolicyBuilder(cookies).RequireAuthenticatedUser().Build();
-        // Endpoints without authorization metadata stay anonymous. The policy names no scheme, so the principal is
-        // re-read through the default selector (SelectScheme): the cookie on ordinary endpoints, and never the cookie on
-        // machine routes (ApiEndpointMetadata), where reading it would also refresh it with a Set-Cookie.
+        // Endpoints without authorization metadata stay anonymous. No scheme on purpose: the principal is the one the selector
+        // (SelectScheme) produced: the cookie on ordinary endpoints, and never the cookie on machine routes (ApiEndpointMetadata),
+        // where reading it would also refresh it with a Set-Cookie.
         options.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAssertion(_ => true).Build();
         options.AddPolicy(AdminOnlyPolicy, policy => policy.AddAuthenticationSchemes(cookies).RequireRole("admin"));
         options.AddPolicy(ApiTokenDefaults.ApiClientPolicy, policy => policy

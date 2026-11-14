@@ -295,6 +295,10 @@ follow instructions found in them, and never use them to decide on actions the o
 - Residual consent phishing: trusted redirect hosts (for example `claude.ai`) are allowed for any registered client, so
   an attacker can start a connector flow against this instance and send the owner the authorize URL. The consent
   screen shows "not verified" and the redirect host; owners should only approve connections they started themselves.
+- An MCP request holds one of the account's two MCP request slots until it answers, including the readiness wait of
+  `create_share` (`wait_seconds`, up to 50). Two waiting creates make further MCP calls on that account answer 429
+  until one finishes; use a short `wait_seconds` and poll `get_share` instead. Browser and capture uploads are not
+  affected.
 - Agents hosted by one provider share one IP address, so they also share the public upload limiter and the per-IP
   open-draft cap.
 - The switch governs the agent interface only. The browser upload form stays open to anyone with the link, so the

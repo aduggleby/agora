@@ -2415,7 +2415,7 @@ public sealed partial class ShareManager(
                     {
                         Directory.Delete(directory, recursive: false);
                     }
-                    catch (IOException)
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                     {
                     }
                 }

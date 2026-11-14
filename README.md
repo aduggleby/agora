@@ -483,7 +483,7 @@ notification emails; set it to `false` to keep downloader addresses in-house.
 
 Agent credentials are redacted the same way: the `/api/v1/upload-links/{code}`, `/api/v1/upload-urls/{ticket}` and
 `/api/v1/download-urls/{ticket}` paths, the `upload=` query value and the JSON keys `password`, `downloadPassword`,
-`download_password` and `contentBase64` never reach a log line, and the MCP library logs at Warning.
+`download_password`, `contentBase64` and `content_base64` never reach a log line, and the MCP library logs at Warning.
 
 Share, upload and confirmation tokens never appear in Agora's own log lines (they are referenced by a short hash), and
 a Serilog enricher rewrites `/s/{token}`, `/u/{token}`, `/shares/created/{token}`, `/api/shares/{token}`, `/api/v1/shares/{token}` and `token=`/`gate=` values in every string
