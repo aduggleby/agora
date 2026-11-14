@@ -250,6 +250,25 @@ public sealed class AgentApiHostTests
     }
 
     [Fact]
+    public async Task Level_own_sees_the_creation_status_of_its_own_shares_only()
+    {
+        await using var host = await Host.StartAsync();
+        var own = await host.IssueAgentTokenAsync("own");
+        var ownId = host.LastTokenId;
+        var all = await host.IssueAgentTokenAsync("all");
+        host.CreationStatus.MarkQueued("browserone", host.UserId, "job1");
+        host.CreationStatus.MarkQueued("agentone", host.UserId, "job2", ownId);
+
+        Assert.Equal(HttpStatusCode.NotFound, (await host.SendAsync(HttpMethod.Get, "/api/v1/shares/browserone", own)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await host.SendAsync(HttpMethod.Get, "/api/v1/shares/agentone", own)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await host.SendAsync(HttpMethod.Get, "/api/v1/shares/browserone", all)).StatusCode);
+        // The id survives the job's later status updates.
+        host.CreationStatus.MarkProcessing("agentone");
+        var processing = await (await host.SendAsync(HttpMethod.Get, "/api/v1/shares/agentone", own)).Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("processing", processing.GetProperty("state").GetString());
+    }
+
+    [Fact]
     public async Task Second_put_and_expired_urls_are_404()
     {
         await using var host = await Host.StartAsync();
@@ -431,6 +450,7 @@ public sealed class AgentApiHostTests
         public RecordingJobClient Jobs { get; }
         public AgentTicketStoreTests.MutableClock Clock { get; }
         public UploadConcurrency Concurrency => _app.Services.GetRequiredService<UploadConcurrency>();
+        public ShareCreationStatusStore CreationStatus => _app.Services.GetRequiredService<ShareCreationStatusStore>();
         public AgentTicketStore Tickets => _app.Services.GetRequiredService<AgentTicketStore>();
         public Guid LastTokenId { get; private set; }
 

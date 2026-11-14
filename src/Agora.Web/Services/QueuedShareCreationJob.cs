@@ -60,7 +60,7 @@ public sealed class QueuedShareCreationJob(
     public string Queue(Payload payload)
     {
         var jobId = backgroundJobs.Enqueue<QueuedShareCreationJob>(x => x.ProcessAsync(payload, CancellationToken.None, null));
-        var queued = statusStore.MarkQueued(payload.ShareToken, payload.OwnerUserId ?? Guid.Empty, jobId);
+        var queued = statusStore.MarkQueued(payload.ShareToken, payload.OwnerUserId ?? Guid.Empty, jobId, payload.CreatedByApiTokenId);
         _ = broadcaster.BroadcastAsync(queued);
         return jobId;
     }

@@ -468,7 +468,9 @@ public sealed class AgentShareService(
         }
 
         var status = creationStatus.Read(token);
-        if (status is null || status.OwnerUserId != caller.Owner.UserId || ShareCreationStatusView.IsCompleted(status.State))
+        // Level own sees only what its own token submitted, like the finished shares above.
+        if (status is null || status.OwnerUserId != caller.Owner.UserId || ShareCreationStatusView.IsCompleted(status.State) ||
+            (caller.ScopeTokenId is { } scope && status.CreatedByApiTokenId != scope))
         {
             return null;
         }

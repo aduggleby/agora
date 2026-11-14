@@ -26,7 +26,9 @@ public sealed class ShareCreationStatusStore(IOptions<AgoraOptions> options)
         string? JobId,
         IReadOnlyList<Step> Steps,
         DateTime CreatedAtUtc,
-        DateTime UpdatedAtUtc);
+        DateTime UpdatedAtUtc,
+        /// <summary>The agent token that submitted the share, or null (browser, or an entry written before this field existed).</summary>
+        Guid? CreatedByApiTokenId = null);
 
     public sealed record Step(
         string Key,
@@ -35,7 +37,7 @@ public sealed class ShareCreationStatusStore(IOptions<AgoraOptions> options)
         string? Detail,
         DateTime? UpdatedAtUtc);
 
-    public Entry MarkQueued(string token, Guid ownerUserId, string? jobId)
+    public Entry MarkQueued(string token, Guid ownerUserId, string? jobId, Guid? createdByApiTokenId = null)
     {
         var now = DateTime.UtcNow;
         var entry = new Entry(
@@ -46,7 +48,8 @@ public sealed class ShareCreationStatusStore(IOptions<AgoraOptions> options)
             JobId: jobId,
             Steps: DefaultSteps,
             CreatedAtUtc: now,
-            UpdatedAtUtc: now);
+            UpdatedAtUtc: now,
+            CreatedByApiTokenId: createdByApiTokenId);
 
         Write(entry);
         return entry;
@@ -64,7 +67,8 @@ public sealed class ShareCreationStatusStore(IOptions<AgoraOptions> options)
             JobId: existing?.JobId,
             Steps: existing?.Steps ?? DefaultSteps,
             CreatedAtUtc: existing?.CreatedAtUtc ?? now,
-            UpdatedAtUtc: now);
+            UpdatedAtUtc: now,
+            CreatedByApiTokenId: existing?.CreatedByApiTokenId);
         Write(entry);
         return entry;
     }
@@ -83,7 +87,8 @@ public sealed class ShareCreationStatusStore(IOptions<AgoraOptions> options)
                 .Select(step => step with { State = "completed", Detail = step.Detail, UpdatedAtUtc = now })
                 .ToList(),
             CreatedAtUtc: existing?.CreatedAtUtc ?? now,
-            UpdatedAtUtc: now);
+            UpdatedAtUtc: now,
+            CreatedByApiTokenId: existing?.CreatedByApiTokenId);
         Write(entry);
         return entry;
     }
@@ -112,7 +117,8 @@ public sealed class ShareCreationStatusStore(IOptions<AgoraOptions> options)
             JobId: existing?.JobId,
             Steps: steps,
             CreatedAtUtc: existing?.CreatedAtUtc ?? now,
-            UpdatedAtUtc: now);
+            UpdatedAtUtc: now,
+            CreatedByApiTokenId: existing?.CreatedByApiTokenId);
         Write(entry);
         return entry;
     }
@@ -141,7 +147,8 @@ public sealed class ShareCreationStatusStore(IOptions<AgoraOptions> options)
             JobId: existing?.JobId,
             Steps: steps,
             CreatedAtUtc: existing?.CreatedAtUtc ?? now,
-            UpdatedAtUtc: now);
+            UpdatedAtUtc: now,
+            CreatedByApiTokenId: existing?.CreatedByApiTokenId);
         Write(entry);
         return entry;
     }
