@@ -13,3 +13,11 @@ public sealed class McpEndpointMetadata
     {
     }
 }
+
+/// <summary>
+/// Marks the anonymous upload-link routes of the agent API. <see cref="InlineBody"/> routes parse a JSON body before
+/// any draft is known, so the rate limiter admits at most two of them per address at a time before the body is read.
+/// <see cref="TicketPut"/> marks <c>PUT /upload-urls/{ticket}</c>, which uses the public-upload bucket only for tickets
+/// of an upload link (owner tickets are authorized by the token that issued them).
+/// </summary>
+public sealed record AgentUploadRouteMetadata(bool InlineBody = false, bool TicketPut = false);

@@ -214,7 +214,8 @@ public sealed class AgentShareService(
             DraftId: draft,
             Purpose: storagePurpose == ShareManager.UploadPurposeTemplateBackground ? AgentTicketStore.PurposeBackground : AgentTicketStore.PurposeFile,
             FileName: name.Value,
-            SizeBytes: sizeBytes));
+            SizeBytes: sizeBytes,
+            TokenId: caller.TokenId));
         return AgentResult<UploadUrlInfo>.Ok(new UploadUrlInfo(draft, $"{baseUrl}/api/v1/upload-urls/{ticket}", expires), StatusCodes.Status201Created);
     }
 
@@ -415,7 +416,7 @@ public sealed class AgentShareService(
 
         var expires = tickets.UtcNow + AgentLimits.TicketLifetime;
         var ticket = tickets.Issue(new AgentTicketStore.Ticket(
-            AgentTicketStore.KindDownload, caller.Owner.UserId, expires, ShareToken: token, FileId: file.Id));
+            AgentTicketStore.KindDownload, caller.Owner.UserId, expires, ShareToken: token, FileId: file.Id, TokenId: caller.TokenId));
         return AgentResult<DownloadUrlInfo>.Ok(new DownloadUrlInfo($"{baseUrl}/api/v1/download-urls/{ticket}", expires, file.OriginalFilename, file.OriginalSizeBytes));
     }
 

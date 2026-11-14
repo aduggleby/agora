@@ -82,7 +82,9 @@ public static class RateLimitSetup
         // This runs in the middleware, before the endpoint reads any body.
         var mcpConcurrency = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
         {
-            if (httpContext.GetEndpoint()?.Metadata.GetMetadata<McpEndpointMetadata>() is null)
+            var endpoint = httpContext.GetEndpoint();
+            if (endpoint?.Metadata.GetMetadata<McpEndpointMetadata>() is null &&
+                endpoint?.Metadata.GetMetadata<AgentUploadRouteMetadata>() is not { InlineBody: true })
             {
                 return RateLimitPartition.GetNoLimiter("mcp:none");
             }
@@ -148,6 +150,14 @@ public static class RateLimitSetup
                 ApiTokenDefaults.IsApiTokenPrincipal(httpContext.User))
             {
                 return RateLimitPartition.GetNoLimiter("public-upload:mcp-token");
+            }
+
+            // An owner's one-time upload URL is authorized by its token, not by the upload link.
+            if (httpContext.GetEndpoint()?.Metadata.GetMetadata<AgentUploadRouteMetadata>() is { TicketPut: true } &&
+                httpContext.Request.RouteValues.TryGetValue("ticket", out var ticket) &&
+                httpContext.RequestServices.GetService<Agora.Web.Agents.AgentTicketStore>()?.Peek(ticket?.ToString() ?? string.Empty) is { IsPublic: false })
+            {
+                return RateLimitPartition.GetNoLimiter("public-upload:owner-ticket");
             }
 
             return RateLimitPartition.GetFixedWindowLimiter(

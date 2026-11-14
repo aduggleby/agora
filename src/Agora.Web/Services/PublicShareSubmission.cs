@@ -22,13 +22,8 @@ public sealed record PublicShareRequest(
 /// </summary>
 public static class PublicShareSubmission
 {
-    public static async Task<PreparedShare> PrepareAsync(
-        AuthService authService,
-        ShareManager manager,
-        ScratchSpaceMonitor scratchSpace,
-        AgoraOptions cfg,
-        PublicShareRequest request,
-        CancellationToken ct)
+    /// <summary>The refusal for missing or invalid link, draft or sender fields (checked before anything is looked up or staged), or null.</summary>
+    public static ShareRefusal? CheckSender(PublicShareRequest request)
     {
         var uploadToken = request.UploadToken.Trim();
         var draftShareId = request.DraftShareId.Trim();
@@ -38,28 +33,50 @@ public static class PublicShareSubmission
         var senderMessage = request.SenderMessage.Trim();
         if (string.IsNullOrWhiteSpace(uploadToken) || string.IsNullOrWhiteSpace(draftShareId))
         {
-            return Refuse(ShareRefusal.BadRequest("uploadToken and draftShareId are required."));
+            return ShareRefusal.BadRequest("uploadToken and draftShareId are required.");
         }
 
         if (string.IsNullOrWhiteSpace(senderName))
         {
-            return Refuse(ShareRefusal.BadRequest("senderName is required."));
+            return ShareRefusal.BadRequest("senderName is required.");
         }
 
         if (senderName.Length > 200)
         {
-            return Refuse(ShareRefusal.BadRequest("senderName must be at most 200 characters."));
+            return ShareRefusal.BadRequest("senderName must be at most 200 characters.");
         }
 
         if (senderMessage.Length > 2000)
         {
-            return Refuse(ShareRefusal.BadRequest("senderMessage must be at most 2000 characters."));
+            return ShareRefusal.BadRequest("senderMessage must be at most 2000 characters.");
         }
 
         if (senderEmail.Length > 320 || !SenderFields.IsValidEmailAddress(senderEmail))
         {
-            return Refuse(ShareRefusal.BadRequest("senderEmail must be a valid email address."));
+            return ShareRefusal.BadRequest("senderEmail must be a valid email address.");
         }
+
+        return null;
+    }
+
+    public static async Task<PreparedShare> PrepareAsync(
+        AuthService authService,
+        ShareManager manager,
+        ScratchSpaceMonitor scratchSpace,
+        AgoraOptions cfg,
+        PublicShareRequest request,
+        CancellationToken ct)
+    {
+        if (CheckSender(request) is { } senderRefusal)
+        {
+            return Refuse(senderRefusal);
+        }
+
+        var uploadToken = request.UploadToken.Trim();
+        var draftShareId = request.DraftShareId.Trim();
+        var senderName = SenderFields.NormalizeText(request.SenderName);
+        var senderEmail = EmailAddress.Normalize(SenderFields.NormalizeText(request.SenderEmail));
+        var senderMessage = request.SenderMessage.Trim();
 
         var user = await authService.FindByUploadTokenAsync(uploadToken, ct);
         if (user is null)

@@ -270,6 +270,16 @@ public sealed class ApiTokenService(AgoraDbContext db, TimeProvider? timeProvide
         return new ApiTokenIdentity(row.Id, user.Id, user.Email, displayName, row.AccessLevel);
     }
 
+    /// <summary>True while the token is working (not revoked, not idle too long) and its user is enabled with the same security stamp.</summary>
+    public async Task<bool> IsTokenActiveAsync(Guid tokenId, Guid userId, CancellationToken cancellationToken)
+    {
+        var match = await db.ApiTokens.AsNoTracking()
+            .Where(x => x.Id == tokenId && x.UserId == userId)
+            .Join(db.Users.AsNoTracking(), t => t.UserId, u => u.Id, (t, u) => new { Token = t, User = u })
+            .SingleOrDefaultAsync(cancellationToken);
+        return match is not null && IsActive(match.Token, match.User, NowUtc);
+    }
+
     /// <summary>
     /// Revokes one of the user's tokens (or pending consents). True when the token belongs to the user, including when
     /// it was already revoked; false for someone else's or an unknown id.

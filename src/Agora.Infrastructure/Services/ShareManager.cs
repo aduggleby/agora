@@ -2380,6 +2380,8 @@ public sealed partial class ShareManager(
         {
             (Root: ScratchFiles.Root(_options.StorageRoot), Pattern: "*"),
             (Root: Path.Combine(_options.StorageRoot, "uploads", "share-create-status"), Pattern: "*.json"),
+            // Server-issued draft ids of anonymous agent sends (one marker per upload code and draft).
+            (Root: Path.Combine(_options.StorageRoot, "uploads", "agent-drafts"), Pattern: "*"),
             // One-time agent upload and download tickets live 15 minutes; leftovers (expired, or claimed and not removed) go here.
             (Root: Path.Combine(_options.StorageRoot, "uploads", "agent-tickets"), Pattern: "*"),
             (Root: Path.Combine(_options.StorageRoot, "previews"), Pattern: "*.lock")

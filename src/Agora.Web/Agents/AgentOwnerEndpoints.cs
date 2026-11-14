@@ -47,7 +47,8 @@ public static class AgentOwnerEndpoints
             .AllowAnonymous()
             .DisableAntiforgery();
         tickets.MapPut("/upload-urls/{ticket}", PutUploadAsync)
-            .WithMetadata(new RequestSizeLimitAttribute(putRequestBodyLimit));
+            .RequireRateLimiting(RateLimitSetup.PublicUploadEndpoints)
+            .WithMetadata(new AgentUploadRouteMetadata(TicketPut: true), new RequestSizeLimitAttribute(putRequestBodyLimit));
         tickets.MapGet("/download-urls/{ticket}", GetDownloadAsync);
 
         return app;
@@ -218,6 +219,12 @@ public static class AgentOwnerEndpoints
         }
         else
         {
+            // An owner ticket lives and dies with the token that issued it (and its account).
+            if (!await TokenStillWorksAsync(context, t, ct))
+            {
+                return Refuse(StatusCodes.Status404NotFound, InvalidTicket);
+            }
+
             try
             {
                 ownerUserId = t.OwnerUserId;
@@ -303,6 +310,11 @@ public static class AgentOwnerEndpoints
             return Refuse(StatusCodes.Status404NotFound, invalid);
         }
 
+        if (!await TokenStillWorksAsync(context, t, ct))
+        {
+            return Refuse(StatusCodes.Status404NotFound, invalid);
+        }
+
         // Open first so a share that is gone does not burn the URL; then claim, so exactly one caller gets the bytes.
         var opened = await service.OpenFileAsync(t.OwnerUserId, token, fileId.ToString(), ct);
         if (!opened.IsOk)
@@ -318,6 +330,10 @@ public static class AgentOwnerEndpoints
 
         return ServeFile(context.Response, opened.Value!);
     }
+
+    private static async Task<bool> TokenStillWorksAsync(HttpContext context, AgentTicketStore.Ticket ticket, CancellationToken ct) =>
+        ticket.TokenId is { } tokenId &&
+        await context.RequestServices.GetRequiredService<Agora.Infrastructure.Auth.ApiTokenService>().IsTokenActiveAsync(tokenId, ticket.OwnerUserId, ct);
 
     private static async Task<bool> CopyExactlyAsync(Stream source, Stream destination, long expected, CancellationToken ct)
     {

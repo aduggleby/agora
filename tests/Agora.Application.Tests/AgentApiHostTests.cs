@@ -334,7 +334,7 @@ public sealed class AgentApiHostTests
     }
 
     [Fact]
-    public async Task Public_upload_tickets_are_404_until_an_admission_is_registered()
+    public async Task Public_upload_tickets_of_an_unknown_upload_code_are_404()
     {
         await using var host = await Host.StartAsync();
         var ticket = host.Tickets.Issue(new AgentTicketStore.Ticket(
@@ -380,7 +380,7 @@ public sealed class AgentApiHostTests
         public override long Length => throw new NotSupportedException();
     }
 
-    private sealed class Host : IAsyncDisposable
+    internal sealed class Host : IAsyncDisposable
     {
         private readonly WebApplication _app;
         private readonly SqliteConnection _connection;
@@ -407,7 +407,7 @@ public sealed class AgentApiHostTests
             Clock = clock;
         }
 
-        public static async Task<Host> StartAsync(Action<AgoraOptions>? configure = null)
+        public static async Task<Host> StartAsync(Action<AgoraOptions>? configure = null, bool rateLimited = false)
         {
             var jobs = new RecordingJobClient();
             var clock = new AgentTicketStoreTests.MutableClock();
@@ -428,6 +428,7 @@ public sealed class AgentApiHostTests
                 o.MaxFileSizeBytes = options.MaxFileSizeBytes;
                 o.MaxTotalUploadBytes = options.MaxTotalUploadBytes;
                 o.MaxFilesPerShare = options.MaxFilesPerShare;
+                o.PublicUploads = options.PublicUploads;
             });
             builder.Services.Configure<EmailSenderOptions>(_ => { });
             builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(FormLimits.Configure);
@@ -454,7 +455,7 @@ public sealed class AgentApiHostTests
             builder.Services.AddAgoraAuthentication(new AgoraAuthOptions(), CookieSecurePolicy.None);
             builder.Services.AddAuthorization(AuthSetup.ConfigureAuthorization);
             builder.Services.AddAntiforgery(o => o.HeaderName = CsrfValidation.HeaderName);
-            builder.Services.AddRateLimiter(o => RateLimitSetup.Configure(o, new AgoraRateLimitOptions { AnonymousPerMinute = 0 }, isE2E: true));
+            builder.Services.AddRateLimiter(o => RateLimitSetup.Configure(o, new AgoraRateLimitOptions { AnonymousPerMinute = rateLimited ? 10_000 : 0 }, isE2E: !rateLimited));
 
             var app = builder.Build();
             app.UseAgoraExceptionHandler();
@@ -464,9 +465,13 @@ public sealed class AgentApiHostTests
             app.UseAuthorization();
             app.MapApiV1Endpoints(captureRequestBodyLimit: 10 * 1024 * 1024);
             app.MapAgoraAgents();
+            // Stands in for the browser's public-upload endpoints, which use the same rate limit policy.
+            app.MapGet("/test/browser-upload", () => "ok").AllowAnonymous().RequireRateLimiting(RateLimitSetup.PublicUploadEndpoints);
             await app.StartAsync();
 
             var user = TestUsers.Seed(Guid.NewGuid(), Email);
+            user.AllowAgentUploads = true;
+            user.UploadToken = "linkcode1";
             await using (var scope = app.Services.CreateAsyncScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<AgoraDbContext>();
@@ -476,6 +481,55 @@ public sealed class AgentApiHostTests
             }
 
             return new Host(app, connection, storageRoot, user.Id, user.SecurityStamp, jobs, clock);
+        }
+
+        public string UploadCode { get; private set; } = "linkcode1";
+
+        public async Task SetAllowAgentUploadsAsync(bool allow)
+        {
+            await using var scope = _app.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<AgoraDbContext>();
+            (await db.Users.SingleAsync()).AllowAgentUploads = allow;
+            await db.SaveChangesAsync();
+        }
+
+        public async Task<string> RegenerateCodeAsync(string newCode)
+        {
+            await using var scope = _app.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<AgoraDbContext>();
+            (await db.Users.SingleAsync()).UploadToken = newCode;
+            await db.SaveChangesAsync();
+            UploadCode = newCode;
+            return newCode;
+        }
+
+        public async Task DisableOwnerAsync()
+        {
+            await using var scope = _app.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<AgoraDbContext>();
+            (await db.Users.SingleAsync()).IsEnabled = false;
+            await db.SaveChangesAsync();
+        }
+
+        /// <summary>Staged payload files anywhere under the storage root.</summary>
+        public int StagedPayloadCount() => Directory.EnumerateFiles(_storageRoot, "payload.bin", SearchOption.AllDirectories).Count();
+
+        public Task<HttpResponseMessage> PostAnonymousAsync(string path, object body) =>
+            SendAsync(HttpMethod.Post, path, null, JsonContent.Create(body));
+
+        public async Task<List<Share>> SharesAsync()
+        {
+            await using var scope = _app.Services.CreateAsyncScope();
+            return await scope.ServiceProvider.GetRequiredService<AgoraDbContext>().Shares.AsNoTracking().ToListAsync();
+        }
+
+        /// <summary>Runs the most recently queued share creation job, like the Hangfire worker.</summary>
+        public async Task<QueuedShareCreationJob.Payload> RunLastJobAsync()
+        {
+            var payload = (QueuedShareCreationJob.Payload)Jobs.Jobs[^1].Args[0];
+            await using var scope = _app.Services.CreateAsyncScope();
+            await scope.ServiceProvider.GetRequiredService<QueuedShareCreationJob>().ProcessAsync(payload, CancellationToken.None);
+            return payload;
         }
 
         public async Task<string> IssueAgentTokenAsync(string level)
@@ -635,7 +689,7 @@ public sealed class AgentApiHostTests
         }
     }
 
-    private sealed class NoopEmailSender : IEmailSender
+    internal sealed class NoopEmailSender : IEmailSender
     {
         public Task SendDownloadNotificationAsync(DownloadNotification notification, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task SendAuthEmailAsync(AuthEmailMessage message, CancellationToken cancellationToken) => Task.CompletedTask;
@@ -643,7 +697,7 @@ public sealed class AgentApiHostTests
         public Task<string> RenderAuthEmailHtmlAsync(AuthEmailMessage message, CancellationToken cancellationToken) => Task.FromResult(string.Empty);
     }
 
-    private sealed class RecordingJobClient : IBackgroundJobClient
+    internal sealed class RecordingJobClient : IBackgroundJobClient
     {
         public List<Job> Jobs { get; } = [];
 

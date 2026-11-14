@@ -23,7 +23,8 @@ public sealed class AgentTicketStore(IOptions<AgoraOptions> options, TimeProvide
     /// <summary>
     /// What a ticket authorizes. Upload: stage <see cref="FileName"/> (exactly <see cref="SizeBytes"/> bytes) into
     /// <see cref="DraftId"/>. Download: read <see cref="FileId"/> of the share <see cref="ShareToken"/>.
-    /// <see cref="UploadCode"/> is set on anonymous (upload link) tickets only.
+    /// <see cref="UploadCode"/> is set on anonymous (upload link) tickets only; owner tickets carry the
+    /// <see cref="TokenId"/> that issued them and stop working when that token does.
     /// </summary>
     public sealed record Ticket(
         string Kind,
@@ -35,7 +36,8 @@ public sealed class AgentTicketStore(IOptions<AgoraOptions> options, TimeProvide
         string? FileName = null,
         long SizeBytes = 0,
         string? ShareToken = null,
-        Guid? FileId = null)
+        Guid? FileId = null,
+        Guid? TokenId = null)
     {
         public bool IsPublic => UploadCode is not null;
     }

@@ -16,6 +16,8 @@ public static class AgentSetup
         services.AddSingleton<OAuthClientCodec>();
         services.AddSingleton<AgentTicketStore>();
         services.AddScoped<AgentShareService>();
+        services.AddScoped<AgentUploadLinkService>();
+        services.AddScoped<IPublicDraftAdmission>(sp => sp.GetRequiredService<AgentUploadLinkService>());
         services.AddAgoraMcp();
         return services;
     }
@@ -24,6 +26,7 @@ public static class AgentSetup
     {
         app.MapAgentDiscoveryEndpoints();
         app.MapOAuthEndpoints();
+        app.MapAgentUploadLinkEndpoints();
         app.MapAgentOwnerEndpoints(app.Services.GetRequiredService<IOptions<AgoraOptions>>().Value.MaxFileSizeBytes + 1024 * 1024);
         app.MapAgoraMcp();
         return app;
