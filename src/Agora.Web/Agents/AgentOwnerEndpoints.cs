@@ -107,18 +107,29 @@ public static class AgentOwnerEndpoints
             return Unauthorized();
         }
 
-        if (!concurrency.TryAdmit(context, UploadConcurrency.AccountKey(caller.Owner.UserId)))
+        // Held while the body is parsed and inline files are staged; the service releases it before the readiness poll.
+        var lease = concurrency.TryAcquire(UploadConcurrency.AccountKey(caller.Owner.UserId));
+        if (lease is null)
         {
             return UploadConcurrency.TooManyJson();
         }
 
-        var (body, refusal) = await ReadJsonAsync<CreateShareRequest>(context.Request, AgentLimits.InlineRequestBodyLimit, ct);
-        if (refusal is not null)
+        AgentResult<AgentShareView> result;
+        try
         {
-            return refusal;
+            var (body, refusal) = await ReadJsonAsync<CreateShareRequest>(context.Request, AgentLimits.InlineRequestBodyLimit, ct);
+            if (refusal is not null)
+            {
+                return refusal;
+            }
+
+            result = await service.CreateShareAsync(caller, origin.Resolve(context.Request), body!, ct, lease);
+        }
+        finally
+        {
+            lease.Dispose();
         }
 
-        var result = await service.CreateShareAsync(caller, origin.Resolve(context.Request), body!, ct);
         return result.ToHttp(view =>
         {
             context.Response.Headers.Location = $"/api/v1/shares/{Uri.EscapeDataString(view.Token)}";

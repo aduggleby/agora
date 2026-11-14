@@ -249,8 +249,26 @@ public sealed class AgentShareService(
 
     // ---- shares ----
 
+    /// <summary>
+    /// Creates a share. <paramref name="admission"/> (the HTTP route's account lease, held while the body is parsed and
+    /// inline files are staged) is released as soon as staging is done, so the readiness poll never holds the account's
+    /// upload slots.
+    /// </summary>
     public async Task<AgentResult<AgentShareView>> CreateShareAsync(
-        AgentCaller caller, string baseUrl, CreateShareRequest request, CancellationToken ct)
+        AgentCaller caller, string baseUrl, CreateShareRequest request, CancellationToken ct, IDisposable? admission = null)
+    {
+        try
+        {
+            return await CreateShareCoreAsync(caller, baseUrl, request, admission, ct);
+        }
+        finally
+        {
+            admission?.Dispose();
+        }
+    }
+
+    private async Task<AgentResult<AgentShareView>> CreateShareCoreAsync(
+        AgentCaller caller, string baseUrl, CreateShareRequest request, IDisposable? admission, CancellationToken ct)
     {
         var hasDraft = !string.IsNullOrWhiteSpace(request.DraftId);
         var hasFiles = request.Files is { Count: > 0 };
@@ -291,6 +309,7 @@ public sealed class AgentShareService(
             }
         }
 
+        admission?.Dispose();
         var page = request.Page;
         var form = new OwnerShareRequest(
             DraftShareId: draftId!,

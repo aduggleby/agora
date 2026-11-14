@@ -211,6 +211,32 @@ public sealed class AgentApiHostTests
     }
 
     [Fact]
+    public async Task Creates_waiting_for_readiness_do_not_hold_the_accounts_upload_slots()
+    {
+        await using var host = await Host.StartAsync();
+        var token = await host.IssueAgentTokenAsync("own");
+        var body = new { files = new[] { new { fileName = "a.txt", text = "a" } }, expiry = "1_hour", notify = "none", waitSeconds = 3 };
+
+        // The jobs never run, so both creates sit in their readiness poll.
+        var first = host.PostJsonAsync("/api/v1/shares", token, body);
+        var second = host.PostJsonAsync("/api/v1/shares", token, body);
+        for (var i = 0; i < 200 && host.Jobs.Jobs.Count < 2; i++)
+        {
+            await Task.Delay(25);
+        }
+
+        Assert.Equal(2, host.Jobs.Jobs.Count);
+        Assert.Equal(0, host.Concurrency.InFlight(UploadConcurrency.AccountKey(host.UserId)));
+        var stage = await host.PostJsonAsync("/api/v1/uploads", token, new { fileName = "b.txt", text = "b" });
+        Assert.Equal(HttpStatusCode.Created, stage.StatusCode);
+        var third = await host.PostJsonAsync("/api/v1/shares", token, body with { waitSeconds = 0 });
+        Assert.Equal(HttpStatusCode.Created, third.StatusCode);
+
+        Assert.Equal(HttpStatusCode.Created, (await first).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await second).StatusCode);
+    }
+
+    [Fact]
     public async Task Second_put_and_expired_urls_are_404()
     {
         await using var host = await Host.StartAsync();
