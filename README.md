@@ -257,7 +257,7 @@ schema. Drop `TrustServerCertificate=True` once the server presents a certificat
 Back up three things together: the database (`pg_dump` or `BACKUP DATABASE`), the data volume `/app/data` (with
 `Storage__Provider=FileSystem` it holds the share content; in every mode it holds the DataProtection keys under
 `keys/`, without which every session, every pending confirmation link and every registered MCP client id (`agora_mcp_...`) becomes invalid) and, in S3 mode, the
-bucket. Scratch directories under `/app/data/uploads` (`uploads/staged*`, `uploads/drafts`, `tmp/`) and `logs/` can be
+bucket. Scratch directories under `/app/data/uploads` (`uploads/staged*`, `uploads/drafts`, `uploads/agent-tickets`, `uploads/agent-drafts`, `tmp/`) and `logs/` can be
 excluded.
 
 ## Storage
@@ -573,7 +573,7 @@ In `Production` it warns when `Agora__TrustedProxies` is empty or `AllowedHosts`
 
 | Setting | Default | What it controls |
 | --- | --- | --- |
-| `Agora__Agents__AllowedRedirectHosts` | empty | Extra `https` host names allowed as OAuth redirect URIs of MCP clients, in addition to `claude.ai` and `claude.com`. A trust list, not a limit: it keeps a self-chosen client name from pairing with an arbitrary redirect. Loopback redirects are always allowed |
+| `Agora__Agents__AllowedRedirectHosts__0`, `__1`, ... | empty | Extra `https` host names allowed as OAuth redirect URIs of MCP clients, in addition to `claude.ai` and `claude.com`: one variable per host (`Agora__Agents__AllowedRedirectHosts__0=agents.example.org`). A comma separated list in a single variable is not read. A trust list, not a limit: it keeps a self-chosen client name from pairing with an arbitrary redirect. Loopback redirects are always allowed |
 
 ### `Agora__Previews__*`
 
@@ -687,26 +687,68 @@ The full contract (flow, endpoints, errors, curl examples) is in [`docs/api/v1.m
 ### AI agents and MCP
 
 Agents can use an account through one MCP endpoint, `/mcp` (Streamable HTTP, stateless), and the same capabilities as a
-JSON API under `/api/v1`. Nothing has to be installed.
+JSON API under `/api/v1`. Nothing has to be installed. The server must be reachable at its public URL
+(`Agora__PublicBaseUrl`); the examples below use `https://files.example.com`.
 
-- **Owner agents** sign in with the standard MCP OAuth flow (for example `claude mcp add --transport http agora
-  https://<your-host>/mcp`; claude.ai custom connectors work too) or use a token from Account > Settings > Connected
-  apps > Create agent token. They upload files and create shares; each connection is limited to "Only shares it
-  creates" (default) or "All my shares" (also lists, deletes and downloads every share, including received ones). The owner
-  changes the level or revokes the agent in Connected apps.
-- **Anonymous agents** can send files to an upload link without signing in, but only while Account > Settings > Upload
-  link > "Let AI agents send files to my upload link" is on (off by default). The upload page then offers
-  `/u/<code>/llms.txt` with instructions and a curl recipe; `/mcp?upload=<code>` is the MCP form. Received shares from
-  agents carry an "Agent" badge, and the notification email says they came through the agent interface and that the sender
-  details are not verified. The switch only governs the agent interface; the browser form stays open to anyone with the link.
-- **Limits**: agent uploads count toward the same per-file, per-share, staged-bytes, daily and open-draft limits as the
-  browser. Small files (up to 1 MiB per call) can be sent inline; larger ones go to a one-time upload URL (15 minutes,
-  single use). `/mcp` and the inline routes accept bodies up to 2 MiB.
-- **Redirect hosts**: OAuth clients may register loopback redirects, `https://claude.ai` and `https://claude.com`
-  callbacks. `Agora__Agents__AllowedRedirectHosts` (comma separated host names) adds more trusted `https` hosts.
+**Connect an agent you sign in with**
 
-The contract (OAuth discovery, routes, tools, errors, limits, untrusted content guidance and known limitations) is in
-[`docs/api/agents.md`](docs/api/agents.md).
+- **Claude Code**: `claude mcp add --transport http agora https://files.example.com/mcp`, then run `/mcp` in Claude Code
+  and choose Authenticate. A browser window opens, you sign in to Agora and approve the connection on the consent
+  screen (client name, where approving returns to, and the access level).
+- **claude.ai** (and the Claude apps that share its connectors): Settings > Connectors > Add custom connector, enter
+  `https://files.example.com/mcp`, then Connect and approve. Its callback `https://claude.ai/api/mcp/auth_callback` is
+  trusted by default; `claude.com` callbacks too. The server must be reachable from the internet for this.
+- **Codex**: add the server to `~/.codex/config.toml` and sign in:
+
+  ```toml
+  [mcp_servers.agora]
+  url = "https://files.example.com/mcp"
+  ```
+
+  then `codex mcp login agora` (the exact commands depend on your Codex version; Codex signs in with a loopback
+  callback, which is always allowed).
+- **Any other MCP client** that supports remote HTTP servers with OAuth: point it at `https://files.example.com/mcp`.
+  It discovers the sign-in from the `401` response (`/.well-known/oauth-protected-resource/mcp`), registers itself
+  (`/oauth/register`) and uses PKCE.
+
+**Headless agents and scripts: a token from Settings.** Account > Settings > Connected apps > Create agent token gives a
+name, an access level and a token (`agora_pat_...`, shown once). Send it as `Authorization: Bearer <token>`:
+
+```sh
+claude mcp add --transport http agora https://files.example.com/mcp --header "Authorization: Bearer $AGORA_TOKEN"
+curl -sS https://files.example.com/api/v1/me -H "Authorization: Bearer $AGORA_TOKEN"
+```
+
+(In Codex use `bearer_token_env_var = "AGORA_TOKEN"` next to `url`.)
+
+**Access levels.** Each connection is limited to "Only shares it creates" (default) or "All my shares" (also lists,
+deletes and downloads every share, including files people sent you; those are labeled as coming from an outside party).
+The owner picks the level on the consent screen or when creating a token, changes it later in Connected apps, and
+revokes the agent there; both apply on the next call. Treat an "All my shares" agent as trusted with your whole account.
+
+**Anonymous agents** can send files to an upload link without signing in, but only while Account > Settings > Upload
+link > "Let AI agents send files to my upload link" is on (off by default). The upload page then offers
+`/u/<code>/llms.txt` with instructions and a curl recipe, and `/mcp?upload=<code>` is the MCP form. Received shares from
+agents carry an "Agent" badge, and the notification email says they came through the agent interface and that the sender
+details are not verified. The switch only governs the agent interface; the browser form stays open to anyone with the link.
+
+**Limits.** Agent uploads count toward the same per-file, per-share, staged-bytes, daily and open-draft limits as the
+browser. Small files (up to 1 MiB per call, in total) can be sent inline; larger ones go to a one-time upload URL (15
+minutes, single use). `/mcp` and the inline routes accept bodies up to 2 MiB. Agent tokens share the signed-in budget
+of 120 requests per minute per account; anonymous agents share the upload page's 25 requests per minute per IP (see
+[Rate limits](#rate-limits)).
+
+**Redirect hosts.** OAuth clients may register loopback redirects and `https://claude.ai` and `https://claude.com`
+callbacks. More trusted `https` hosts go in `Agora__Agents__AllowedRedirectHosts__0`, `__1` and so on (one variable per
+host; a comma separated value is ignored).
+
+**Operations.** Registered MCP client ids are protected with the DataProtection keys in `keys/` (see
+[Backups](#backups)); without them agents must register again, existing tokens keep working. One-time URL files
+(`uploads/agent-tickets`) and the draft markers of anonymous agents (`uploads/agent-drafts`) are scratch. Agent
+credentials, upload codes and one-time URLs are redacted from logs ([What the app logs](#what-the-app-logs)).
+
+The contract (OAuth discovery, routes, tool arguments, errors, limits, untrusted content guidance and known
+limitations) is in [`docs/api/agents.md`](docs/api/agents.md).
 
 ### Share links in general
 
