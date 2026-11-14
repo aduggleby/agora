@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-14
+
 ### Added
 - AI agents can use an account through one MCP endpoint (`/mcp`) and the same JSON API under `/api/v1`: sign in with the standard MCP OAuth flow (discovery documents and dynamic client registration included) or use a token created in Account > Settings > Connected apps. Agents upload files (inline up to 1 MiB per call, larger through one-time upload URLs), create shares with all the new-share options, list and delete shares, and, with "All my shares" access, download files. Each connection is limited to "Only shares it creates" or "All my shares"; the level can be changed and the agent revoked in Connected apps.
 - "Let AI agents send files to my upload link" (Account > Settings, off by default): while on, agents can send files to the upload link through `/mcp?upload=<code>` or the HTTP API without signing in, within the link's existing limits. The upload page then links to `/u/<code>/llms.txt` with instructions. Files sent this way are marked with an "Agent" badge, and the notification email says they came through the agent interface and that the sender details are not verified.
