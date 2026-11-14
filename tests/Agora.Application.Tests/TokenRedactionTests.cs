@@ -24,6 +24,14 @@ public sealed class TokenRedactionTests
     [InlineData("/auth/confirm-email?email=a%40b.c&token=Zz9-yy_8", "token=")]
     [InlineData("https://files.example.com/reset-password?email=a&t=abcdefgh", "t=")]
     [InlineData("uploadToken=AbCdEfGh12", "uploadToken=")]
+    [InlineData("/api/v1/upload-links/Ab12cd34", "/api/v1/upload-links/")]
+    [InlineData("/api/v1/upload-links/Ab12cd34/send", "/api/v1/upload-links/")]
+    [InlineData("/api/v1/upload-links/Ab12cd34/uploads", "/api/v1/upload-links/")]
+    [InlineData("/api/v1/upload-links/Ab12cd34/upload-urls", "/api/v1/upload-links/")]
+    [InlineData("/API/V1/Upload-Urls/Ab12cd34", "/API/V1/Upload-Urls/")]
+    [InlineData("/api/v1/download-urls/Ab12cd34?x=1", "/api/v1/download-urls/")]
+    [InlineData("/mcp?upload=Ab12cd34", "upload=")]
+    [InlineData("/mcp?x=1&upload=Ab12cd34&y=2", "upload=")]
     public void Redact_ReplacesTokensWithTheirLogReference(string input, string keptPrefix)
     {
         var redacted = TokenRedaction.Redact(input);
@@ -108,5 +116,46 @@ public sealed class TokenRedactionTests
     {
         public LogEventProperty CreateProperty(string name, object? value, bool destructureObjects = false) =>
             new(name, new ScalarValue(value));
+    }
+
+    [Theory]
+    [InlineData("/api/v1/upload-links/Ab12cd34/send", "/api/v1/upload-links/tok:", "/send")]
+    [InlineData("/api/v1/upload-links/Ab12cd34/uploads", "/api/v1/upload-links/tok:", "/uploads")]
+    [InlineData("/api/v1/upload-links/Ab12cd34/upload-urls", "/api/v1/upload-links/tok:", "/upload-urls")]
+    public void Redact_KeepsTrailingUploadLinkSegmentsReadable(string input, string expectedStart, string expectedEnd)
+    {
+        var redacted = TokenRedaction.Redact(input);
+
+        Assert.StartsWith(expectedStart, redacted);
+        Assert.EndsWith(expectedEnd, redacted);
+    }
+
+    [Theory]
+    [InlineData("{\"password\":\"Sup3r-Secret\"}", "\"password\":\"")]
+    [InlineData("{\"downloadPassword\": \"Sup3r-Secret\"}", "\"downloadPassword\": \"")]
+    [InlineData("{\"download_password\":\"Sup3r-Secret\"}", "\"download_password\":\"")]
+    [InlineData("{\"password\":\"Sup3r\\\"Secret\"}", "\"password\":\"")]
+    public void Redact_ReplacesPasswordJsonValues(string input, string keptPrefix)
+    {
+        var redacted = TokenRedaction.Redact(input);
+
+        Assert.Contains(keptPrefix + "tok:", redacted);
+        Assert.DoesNotContain("Sup3r", redacted);
+        Assert.DoesNotContain("Secret", redacted);
+        Assert.Equal(redacted, TokenRedaction.Redact(redacted));
+    }
+
+    [Fact]
+    public void Redact_ReplacesLongContentBase64Values()
+    {
+        var payload = string.Concat(Enumerable.Repeat("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo+/0=", 5000));
+        var input = "{\"name\":\"a.txt\",\"contentBase64\":\"" + payload + "\",\"size\":3}";
+
+        var redacted = TokenRedaction.Redact(input);
+
+        Assert.DoesNotContain("QUJDREVG", redacted);
+        Assert.Contains("\"contentBase64\":\"tok:", redacted);
+        Assert.Contains("\"size\":3", redacted);
+        Assert.Equal(redacted, TokenRedaction.Redact(redacted));
     }
 }
