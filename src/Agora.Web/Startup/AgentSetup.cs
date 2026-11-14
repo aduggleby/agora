@@ -1,5 +1,7 @@
 using Agora.Web.Agents;
 using Agora.Web.Endpoints;
+using Agora.Application.Models;
+using Microsoft.Extensions.Options;
 
 namespace Agora.Web.Startup;
 
@@ -12,6 +14,8 @@ public static class AgentSetup
     public static IServiceCollection AddAgoraAgents(this IServiceCollection services)
     {
         services.AddSingleton<OAuthClientCodec>();
+        services.AddSingleton<AgentTicketStore>();
+        services.AddScoped<AgentShareService>();
         return services;
     }
 
@@ -19,6 +23,7 @@ public static class AgentSetup
     {
         app.MapAgentDiscoveryEndpoints();
         app.MapOAuthEndpoints();
+        app.MapAgentOwnerEndpoints(app.Services.GetRequiredService<IOptions<AgoraOptions>>().Value.MaxFileSizeBytes + 1024 * 1024);
         return app;
     }
 }

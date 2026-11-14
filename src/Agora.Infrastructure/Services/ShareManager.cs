@@ -57,6 +57,29 @@ public sealed partial class ShareManager(
         public bool IsDirectLink => ShareModes.IsDirectLink(AccessMode);
     }
 
+    public sealed record AgentFileSummary(Guid Id, string Name, long SizeBytes);
+
+    /// <summary>What the agent API shows of a share: link data, files with ids, counts and where it came from.</summary>
+    public sealed record AgentShareSummary(
+        string ShareToken,
+        string Title,
+        string ZipDisplayName,
+        long ZipSizeBytes,
+        string AccessMode,
+        bool PasswordProtected,
+        DateTime CreatedAtUtc,
+        DateTime? ExpiresAtUtc,
+        int DownloadCount,
+        string? SenderName,
+        string? SenderEmail,
+        string? SenderMessage,
+        bool SentByAgent,
+        IReadOnlyList<AgentFileSummary> Files)
+    {
+        public bool Received => SenderEmail is not null;
+        public bool IsDirectLink => ShareModes.IsDirectLink(AccessMode);
+    }
+
     public sealed record DraftTemplateState(
         string DraftShareId,
         string TemplateMode,
@@ -669,6 +692,58 @@ public sealed partial class ShareManager(
         }
 
         return ListSummariesAsync(shares, take, cancellationToken);
+    }
+
+    private IQueryable<Share> AgentShares(ShareOwner owner, Guid? createdByTokenId)
+    {
+        var shares = SharesOwnedBy(owner).Where(x => x.DeletedAtUtc == null);
+        return createdByTokenId is { } tokenId ? shares.Where(x => x.CreatedByApiTokenId == tokenId) : shares;
+    }
+
+    private static IQueryable<AgentShareSummary> ToAgentSummaries(IQueryable<Share> shares) =>
+        shares.Select(x => new AgentShareSummary(
+            x.ShareToken,
+            x.PageTitle,
+            x.ZipDisplayName,
+            x.ZipSizeBytes,
+            x.AccessMode,
+            x.DownloadPasswordHash != null,
+            x.CreatedAtUtc,
+            x.ExpiresAtUtc,
+            x.DownloadEvents.Count,
+            x.SenderName,
+            x.SenderEmail,
+            x.SenderMessage,
+            x.SentByAgent,
+            x.Files.Select(file => new AgentFileSummary(file.Id, file.OriginalFilename, file.OriginalSizeBytes)).ToList()));
+
+    /// <summary>The owner's live shares for an agent, newest first (see <see cref="ListSharesForAgentAsync"/> for the scope rule).</summary>
+    public Task<List<AgentShareSummary>> ListAgentSharesAsync(ShareOwner owner, Guid? createdByTokenId, int take, CancellationToken cancellationToken) =>
+        ToAgentSummaries(AgentShares(owner, createdByTokenId).AsNoTracking().OrderByDescending(x => x.CreatedAtUtc).Take(take)).ToListAsync(cancellationToken);
+
+    /// <summary>One live share of the owner for an agent (exact token match), or null when absent or out of scope.</summary>
+    public async Task<AgentShareSummary?> FindAgentShareAsync(ShareOwner owner, Guid? createdByTokenId, string token, CancellationToken cancellationToken)
+    {
+        var found = await ToAgentSummaries(AgentShares(owner, createdByTokenId).AsNoTracking().Where(x => x.ShareToken == token)).ToListAsync(cancellationToken);
+        // Exact match: SQL Server's default collation would also match a token that differs only in case.
+        return found.FirstOrDefault(x => string.Equals(x.ShareToken, token, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Soft-deletes a share an agent may delete: any of the owner's shares, or only those the token created. False
+    /// when there is no such live-or-deleted share in scope (an already deleted one is deleted again, idempotently).
+    /// </summary>
+    public async Task<bool> DeleteShareForAgentAsync(ShareOwner owner, Guid? createdByTokenId, string token, CancellationToken cancellationToken)
+    {
+        var shares = SharesOwnedBy(owner);
+        if (createdByTokenId is { } tokenId)
+        {
+            shares = shares.Where(x => x.CreatedByApiTokenId == tokenId);
+        }
+
+        var share = (await shares.Where(x => x.ShareToken == token).ToListAsync(cancellationToken))
+            .FirstOrDefault(x => string.Equals(x.ShareToken, token, StringComparison.Ordinal));
+        return share is not null && await DeleteShareAsync(share.Id, owner, cancellationToken, requeueCleanup: true);
     }
 
     private static Task<List<UserShareSummary>> ListSummariesAsync(IQueryable<Share> shares, int take, CancellationToken cancellationToken)
@@ -2305,6 +2380,8 @@ public sealed partial class ShareManager(
         {
             (Root: ScratchFiles.Root(_options.StorageRoot), Pattern: "*"),
             (Root: Path.Combine(_options.StorageRoot, "uploads", "share-create-status"), Pattern: "*.json"),
+            // One-time agent upload and download tickets live 15 minutes; leftovers (expired, or claimed and not removed) go here.
+            (Root: Path.Combine(_options.StorageRoot, "uploads", "agent-tickets"), Pattern: "*"),
             (Root: Path.Combine(_options.StorageRoot, "previews"), Pattern: "*.lock")
         };
 

@@ -271,7 +271,7 @@ public static class UploadStagingEndpoints
     /// What one more share file may still add to a draft: the per-file limit, or less when the draft is close to the
     /// per-share total. Throws 413 when nothing is left.
     /// </summary>
-    private static long ShareFileAllowance(ShareManager manager, AgoraOptions cfg, string draftShareId)
+    public static long ShareFileAllowance(ShareManager manager, AgoraOptions cfg, string draftShareId)
     {
         var remaining = manager.GetDraftRemainingShareBytes(draftShareId);
         if (remaining <= 0)
@@ -287,7 +287,7 @@ public static class UploadStagingEndpoints
     /// staging budget still admits. Throws 413 or 507 when nothing is left, before any body is buffered; a body that
     /// only exceeds the budget is refused with the budget's own status (507 for the server-wide anonymous cap).
     /// </summary>
-    private static async Task<long> ReserveBudgetedAsync(
+    public static async Task<long> ReserveBudgetedAsync(
         HttpContext context, ScratchSpaceMonitor scratchSpace, ShareManager manager, string draftShareId, long allowanceBytes, CancellationToken ct)
     {
         var budget = await manager.GetStageBudgetAsync(draftShareId, ct);

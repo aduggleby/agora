@@ -5,6 +5,7 @@ using Agora.Application.Models;
 using Agora.Application.Utilities;
 using Agora.Infrastructure.Auth;
 using Agora.Infrastructure.Services;
+using Agora.Web.Agents;
 using Agora.Web.Auth;
 using Agora.Web.Startup;
 using Microsoft.AspNetCore.Mvc;
@@ -62,6 +63,7 @@ public static class ApiV1Endpoints
             displayName = context.User.Identity?.Name ?? owner.Email,
             serverVersion = AppVersion.Current,
             accessLevel = ApiTokenDefaults.AccessLevel(context.User),
+            limits = AgentLimits.Describe(cfg),
             // One capture is one file in one draft: both the per-file and the per-share limit apply.
             maxFileSizeBytes = MaxCaptureBytes(cfg),
             directLinkDurations = DirectLinkDurations.All.Select(DirectLinkDurations.ToWireValue).ToArray()
@@ -208,7 +210,7 @@ public static class ApiV1Endpoints
     }
 
     /// <summary>
-    /// Deletes one of the caller's own direct links early, through the same path as the web UI. Not found, someone
+    /// Deletes one of the caller's own direct links early (capture tokens; agent tokens delete by access level), through the same path as the web UI. Not found, someone
     /// else's and not a direct link all answer the same 404; an already deleted link answers 204 again (and its file
     /// cleanup is queued again).
     /// </summary>
@@ -217,6 +219,12 @@ public static class ApiV1Endpoints
         if (!context.User.TryGetShareOwner(out var owner))
         {
             return ApiError(StatusCodes.Status401Unauthorized, "An API token is required.");
+        }
+
+        // Agent tokens delete by access level (own: the shares the token created; all: any share of the account).
+        if (AgentCaller.FromPrincipal(context.User) is { } agent)
+        {
+            return (await context.RequestServices.GetRequiredService<AgentShareService>().DeleteShareAsync(agent, token, ct)).ToHttp(_ => Results.NoContent());
         }
 
         var share = ShareTokens.IsValid(token) ? await manager.FindByTokenForUploaderAsync(token, owner, ct) : null;
