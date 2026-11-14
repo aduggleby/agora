@@ -127,6 +127,9 @@ Details:
   - `expiry`: `account_default` (default), `1_hour`, `24_hours`, `7_days`, `30_days`, `1_year` or `indefinite`; or give
     `expiresAt` instead, RFC 3339 with an offset and in the future (`2026-12-31T18:00:00Z`).
   - `notify`: `account_default` (default), `none`, `once` or `every_time`.
+  - `page.backgroundFileId`: a file staged with `purpose: "background"` in the same draft. It needs the `draftId` path:
+    stage the files and the background into one draft, then create with that `draftId`. Inline `files` always open a new
+    draft, so a background staged earlier in another draft is refused.
   - `downloadPassword`: 8 to 256 characters. `showPreviews` is `true` or left out. Giving `page` sets the page design of
     this share from the fields you give instead of the account's design.
 - **Readiness**: creation is queued like in the browser. The call waits up to `waitSeconds` (default 20, maximum 50) and

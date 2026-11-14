@@ -67,7 +67,7 @@ public sealed class AgoraMcpOwnerTools(IHttpContextAccessor accessor, AgentShare
         [Description("Share page description.")] string? description = null,
         [Description("Page background color as hex, for example #C4663A.")] string? background_color_hex = null,
         [Description("Page container position.")] string? container_position = null,
-        [Description("Staged file id (purpose background) to use as page background.")] string? background_file_id = null,
+        [Description("Staged file id (purpose background) to use as page background. Needs draft_id: stage the files and the background into one draft, then create with that draft_id (inline files open a new draft and cannot use a background staged elsewhere).")] string? background_file_id = null,
         [Description("Seconds to wait for the share to become ready (default 20, at most 50).")] int? wait_seconds = null,
         CancellationToken ct = default)
     {
