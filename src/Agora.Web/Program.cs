@@ -8,6 +8,7 @@ using Agora.Infrastructure.Logging;
 using Agora.Infrastructure.Persistence;
 using Agora.Infrastructure.Services;
 using Agora.Infrastructure.Storage;
+using Agora.Web.Agents;
 using Agora.Web.Auth;
 using Agora.Web.Endpoints;
 using Agora.Web.Hubs;
@@ -334,6 +335,7 @@ if (!isDevelopment)
 app.UsePasswordHashingBusyHandling();
 
 app.UseStaticFiles();
+app.UseAgoraMcpOrigin();
 app.UseAuthentication();
 app.UseAgoraCsrf(isE2E, cookieSecurePolicy, app.Logger);
 app.UseRateLimiter();

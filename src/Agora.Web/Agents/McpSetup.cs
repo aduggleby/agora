@@ -99,9 +99,12 @@ public static class McpSetup
         return services;
     }
 
-    public static WebApplication MapAgoraMcp(this WebApplication app)
+    /// <summary>
+    /// Refuses a foreign <c>Origin</c> on <c>/mcp</c> with 403 (DNS rebinding guard). Register it before
+    /// <c>UseAuthentication</c> so the answer does not depend on credentials: the endpoint is already selected by routing.
+    /// </summary>
+    public static WebApplication UseAgoraMcpOrigin(this WebApplication app)
     {
-        // Runs after authentication and rate limiting, before the MCP handler reads the body.
         app.Use(async (context, next) =>
         {
             if (context.GetEndpoint()?.Metadata.GetMetadata<McpEndpointMetadata>() is not null &&
@@ -116,7 +119,11 @@ public static class McpSetup
 
             await next();
         });
+        return app;
+    }
 
+    public static WebApplication MapAgoraMcp(this WebApplication app)
+    {
         app.MapMcp(McpSetup.Path)
             .WithMetadata(ApiEndpointMetadata.Instance, McpEndpointMetadata.Instance, new RequestSizeLimitAttribute(RequestBodyLimitBytes))
             .RequireAuthorization(ApiTokenDefaults.AgentMcpPolicy)

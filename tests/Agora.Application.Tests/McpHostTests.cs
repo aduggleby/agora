@@ -463,6 +463,20 @@ public sealed class McpHostTests
     }
 
     [Fact]
+    public async Task Foreign_origin_is_refused_before_authentication_without_or_with_bad_credentials()
+    {
+        await using var host = await Host.StartAsync();
+
+        var anonymous = await host.PostMcpAsync("/mcp", origin: "https://evil.example");
+        var badToken = await host.PostMcpAsync("/mcp", bearer: "agora_pat_invalid", origin: "https://evil.example");
+        var anonymousSameOrigin = await host.PostMcpAsync("/mcp", origin: Base);
+
+        Assert.Equal(HttpStatusCode.Forbidden, anonymous.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, badToken.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousSameOrigin.StatusCode);
+    }
+
+    [Fact]
     public async Task Anonymous_mcp_consumes_the_public_upload_bucket_and_token_calls_do_not()
     {
         await using var host = await Host.StartAsync(limits: true);
@@ -612,6 +626,7 @@ public sealed class McpHostTests
 
             var app = builder.Build();
             app.UseAgoraExceptionHandler();
+            app.UseAgoraMcpOrigin();
             app.UseAuthentication();
             app.UseRateLimiter();
             app.UseAuthorization();
