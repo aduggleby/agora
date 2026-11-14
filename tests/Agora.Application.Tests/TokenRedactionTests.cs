@@ -158,4 +158,16 @@ public sealed class TokenRedactionTests
         Assert.Contains("\"size\":3", redacted);
         Assert.Equal(redacted, TokenRedaction.Redact(redacted));
     }
+
+    [Fact]
+    public void Redact_ReplacesSnakeCaseContentBase64Values()
+    {
+        var input = "{\"file_name\":\"a.txt\",\"content_base64\":\"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=\",\"size\":3}";
+
+        var redacted = TokenRedaction.Redact(input);
+
+        Assert.DoesNotContain("QUJDREVG", redacted);
+        Assert.Contains("\"content_base64\":\"tok:", redacted);
+        Assert.Equal(redacted, TokenRedaction.Redact(redacted));
+    }
 }

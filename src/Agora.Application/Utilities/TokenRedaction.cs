@@ -28,9 +28,9 @@ public static partial class TokenRedaction
     [GeneratedRegex(@"agora_pat_(?!tok:)(?<value>[A-Za-z0-9_-]+)", RegexOptions.CultureInvariant)]
     private static partial Regex ApiBearerTokens();
 
-    // "code", "code_verifier", "access_token", "password", "downloadPassword", "download_password" and "contentBase64" in a JSON body
+    // "code", "code_verifier", "access_token", "password", "downloadPassword", "download_password" "contentBase64" and "content_base64" in a JSON body
     // (the value may be long and may contain escaped quotes).
-    [GeneratedRegex(@"(?<key>""(?:code|code_verifier|access_token|password|downloadPassword|download_password|contentBase64)""\s*:\s*"")(?!tok:)(?<value>(?:[^""\\]|\\.)+)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(?<key>""(?:code|code_verifier|access_token|password|downloadPassword|download_password|contentBase64|content_base64)""\s*:\s*"")(?!tok:)(?<value>(?:[^""\\]|\\.)+)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex JsonSecrets();
 
     // token=, uploadToken=, shareToken=, upload=, t=, gate=, code=, code_verifier=, access_token= (any case) followed by the value, up
