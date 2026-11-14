@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Mvc;
 using Agora.Application.Models;
 using Agora.Infrastructure.Auth;
 using Agora.Web.Endpoints;
@@ -14,7 +15,7 @@ public static class AgentDiscoveryEndpoints
     public static IEndpointRouteBuilder MapAgentDiscoveryEndpoints(this IEndpointRouteBuilder app)
     {
         // ApiEndpointMetadata: the CSRF middleware sets no cookie and runs no antiforgery on this route.
-        app.MapGet("/u/{code}/llms.txt", async (string code, HttpContext context, AuthService auth, PublicBaseUrlResolver baseUrls, IOptions<AgoraOptions> options, CancellationToken ct) =>
+        app.MapGet("/u/{code}/llms.txt", async (string code, HttpContext context, [FromServices] AuthService auth, [FromServices] PublicBaseUrlResolver baseUrls, [FromServices] IOptions<AgoraOptions> options, CancellationToken ct) =>
             {
                 var user = await auth.FindByUploadTokenAsync((code ?? string.Empty).Trim(), ct);
                 if (user is null || !user.AllowAgentUploads)
