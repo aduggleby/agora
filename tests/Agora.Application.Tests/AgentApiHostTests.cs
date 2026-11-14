@@ -333,7 +333,7 @@ public sealed class AgentApiHostTests
         Assert.Equal(HttpStatusCode.NotFound, (await host.SendAsync(HttpMethod.Delete, $"/api/v1/shares/{browser}", own)).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await host.SendAsync(HttpMethod.Delete, $"/api/v1/shares/{theirs}", own)).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await host.SendAsync(HttpMethod.Get, $"/api/v1/shares/{browser}", own)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await host.SendAsync(HttpMethod.Get, $"/api/v1/shares/{browser}/files", own)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await host.SendAsync(HttpMethod.Get, $"/api/v1/shares/{browser}/files", own)).StatusCode);
         var download = await host.SendAsync(HttpMethod.Get, $"/api/v1/shares/{mine}/files/{Guid.NewGuid()}", own);
         Assert.Equal(HttpStatusCode.Forbidden, download.StatusCode);
         Assert.Equal("Downloads need All my shares access.", (await download.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("error").GetString());
@@ -371,6 +371,22 @@ public sealed class AgentApiHostTests
         Assert.Contains("no-store", download.Headers.GetValues("Cache-Control").Single());
         Assert.Equal("attachment", download.Content.Headers.ContentDisposition!.DispositionType);
         Assert.Equal(0, (await host.ShareDownloadEventsAsync(shareToken)));
+    }
+
+    [Fact]
+    public async Task The_file_list_follows_the_share_scope_at_both_levels_and_downloads_stay_level_all()
+    {
+        await using var host = await Host.StartAsync();
+        var own = await host.IssueAgentTokenAsync("own");
+        var mine = await host.SeedShareAsync(created: host.LastTokenId);
+        var browser = await host.SeedShareAsync(created: null);
+
+        Assert.Equal(HttpStatusCode.OK, (await host.SendAsync(HttpMethod.Get, $"/api/v1/shares/{mine}/files", own)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await host.SendAsync(HttpMethod.Get, $"/api/v1/shares/{browser}/files", own)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await host.SendAsync(HttpMethod.Get, $"/api/v1/shares/{mine}/files/{Guid.NewGuid()}", own)).StatusCode);
+
+        await host.SetLevelAsync(own, "all");
+        Assert.Equal(HttpStatusCode.OK, (await host.SendAsync(HttpMethod.Get, $"/api/v1/shares/{browser}/files", own)).StatusCode);
     }
 
     [Fact]

@@ -392,11 +392,9 @@ public sealed class AgentShareService(
             : AgentResult<bool>.NotFound(NoSuchShare);
     }
 
-    /// <summary>The files of a share with their ids and the received labeling; level "all" only.</summary>
-    public async Task<AgentResult<AgentShareView>> ListFilesAsync(AgentCaller caller, string baseUrl, string token, CancellationToken ct)
-    {
-        return RequireAll(caller) is { } refusal ? refusal.Refusal<AgentShareView>() : await GetShareAsync(caller, baseUrl, token, ct);
-    }
+    /// <summary>The files of a share with their ids and the received labeling: the same view and scope rule as <see cref="GetShareAsync"/>.</summary>
+    public Task<AgentResult<AgentShareView>> ListFilesAsync(AgentCaller caller, string baseUrl, string token, CancellationToken ct) =>
+        GetShareAsync(caller, baseUrl, token, ct);
 
     public Task<AgentResult<ShareFileContent>> OpenFileAsync(AgentCaller caller, string token, string fileId, CancellationToken ct) =>
         RequireAll(caller) is { } refusal ? Task.FromResult(refusal.Refusal<ShareFileContent>()) : OpenFileAsync(caller.Owner.UserId, token, fileId, ct);

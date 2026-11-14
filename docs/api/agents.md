@@ -110,7 +110,7 @@ per-share, staged-bytes and daily limits.
 | `GET /api/v1/shares?limit=` | list shares: `{"shares": [...]}`, newest first, `limit` default 25, at most 100 |
 | `GET /api/v1/shares/{token}` | share details and readiness |
 | `DELETE /api/v1/shares/{token}` | delete a share within the access level |
-| `GET /api/v1/shares/{token}/files` | level `all`: list the files |
+| `GET /api/v1/shares/{token}/files` | list the files (same answer and scope as `GET /api/v1/shares/{token}`) |
 | `GET /api/v1/shares/{token}/files/{fileId}` | level `all`: download one stored original |
 | `GET /api/v1/download-urls/{ticket}` | one-time download URL |
 
@@ -140,11 +140,14 @@ Details:
   While a share is still being created, `GET /api/v1/shares/{token}` returns only `token, url, ready, state, error`.
 - **Delete**: level `own` deletes only shares created by the calling token, level `all` any share of the account;
   `204` also when it was already deleted, `404` otherwise.
-- **Downloads** (level `all`): `GET /api/v1/shares/{token}/files` returns the share as in the details above (file ids
-  included) and `GET /api/v1/shares/{token}/files/{fileId}` streams the stored original as an attachment under the
-  same content-safety headers as browser downloads (`nosniff`, sandboxing CSP, `Cache-Control: private, no-store`).
-  It is not counted as a download of the share. Files of received shares add `X-Agora-Untrusted: true`. Level `own` gets
-  `403 "Downloads need All my shares access."`.
+- **Files**: `GET /api/v1/shares/{token}/files` returns the share as in the details above (file ids included), at both
+  levels and within the same scope as `GET /api/v1/shares/{token}`: level `own` sees only shares created by the calling
+  token, level `all` any share of the account (`404` otherwise).
+- **Downloads** (level `all`): `GET /api/v1/shares/{token}/files/{fileId}` streams the stored original as an attachment
+  under the same content-safety headers as browser downloads (`nosniff`, sandboxing CSP, `Cache-Control: private,
+  no-store`). It is not counted as a download of the share. Files of received shares add `X-Agora-Untrusted: true`.
+  Level `own` gets `403 "Downloads need All my shares access."`. A one-time download URL is checked again when it is
+  used: it stops working (`404`) once its token is revoked or no longer has level `all`.
 
 ```sh
 # 1. Ask for an upload URL, 2. send the bytes, 3. create the share.
