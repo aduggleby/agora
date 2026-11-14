@@ -206,6 +206,7 @@
     const senderNameNode = dialog.querySelector("[data-share-details-sender-name]");
     const senderEmailNode = dialog.querySelector("[data-share-details-sender-email]");
     const senderMessageNode = dialog.querySelector("[data-share-details-sender-message]");
+    const sentByAgentNode = dialog.querySelector("[data-share-details-sent-by-agent]");
     const listNode = dialog.querySelector("[data-share-details-list]");
     const closeButton = dialog.querySelector("[data-share-details-close]");
     if (!listNode) return;
@@ -285,6 +286,9 @@
         }
         if (senderEmailNode) {
           senderEmailNode.textContent = senderEmail.length > 0 ? `Sender email: ${senderEmail}` : "";
+        }
+        if (sentByAgentNode) {
+          sentByAgentNode.textContent = button.getAttribute("data-share-sent-by-agent") === "true" ? "Sent through the agent interface" : "";
         }
         if (senderMessageNode) {
           if (senderMessage.trim().length > 0) {

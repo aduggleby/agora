@@ -11,6 +11,7 @@ public class IndexModel(AuthService authService, IOptions<AgoraOptions> options)
     private readonly AgoraOptions _options = options.Value;
 
     public bool IsInvalidToken { get; private set; }
+    public bool AllowAgentUploads { get; private set; }
     public bool IsSubmissionSuccess { get; private set; }
     public string UploadToken { get; private set; } = string.Empty;
     public string DraftShareId { get; private set; } = string.Empty;
@@ -39,6 +40,7 @@ public class IndexModel(AuthService authService, IOptions<AgoraOptions> options)
         }
 
         UploadToken = uploadToken;
+        AllowAgentUploads = user.AllowAgentUploads;
         RecipientDisplayName = string.IsNullOrWhiteSpace(user.DisplayName)
             ? "this recipient"
             : user.DisplayName.Trim();

@@ -1,3 +1,5 @@
+using Agora.Web.Agents;
+
 namespace Agora.Web.Startup;
 
 /// <summary>
@@ -13,6 +15,7 @@ public static class AgentSetup
 
     public static WebApplication MapAgoraAgents(this WebApplication app)
     {
+        app.MapAgentDiscoveryEndpoints();
         return app;
     }
 }

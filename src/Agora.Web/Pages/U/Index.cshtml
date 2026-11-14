@@ -10,6 +10,13 @@
   }
 }
 
+@section Head {
+  @if (Model.AllowAgentUploads && !Model.IsInvalidToken)
+  {
+    <link rel="alternate" type="text/markdown" href="/u/@Uri.EscapeDataString(Model.UploadToken)/llms.txt" title="Instructions for AI agents" />
+  }
+}
+
 @if (Model.IsInvalidToken)
 {
   <section class="mb-10">
@@ -85,6 +92,10 @@ else
           </div>
         </form>
       </div>
+      @if (Model.AllowAgentUploads)
+      {
+        <p class="mt-4 text-xs text-ink-muted" data-agent-instructions-hint>Are you an AI agent? <a href="/u/@Uri.EscapeDataString(Model.UploadToken)/llms.txt" class="text-terra hover:underline">Read the instructions for agents.</a></p>
+      }
     </section>
   }
 

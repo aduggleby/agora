@@ -408,6 +408,23 @@ public sealed class QueuedShareCreationJob(
 
     internal static AuthEmailMessage BuildCompletionEmailCore(Payload payload, string shareUrl, string recipientEmail, string configuredSenderDisplayName)
     {
+        var message = BuildCompletionEmailBase(payload, shareUrl, recipientEmail, configuredSenderDisplayName);
+        if (!payload.SentByAgent)
+        {
+            return message;
+        }
+
+        const string AgentNote = "Sent through Agora's agent interface. The sender name and email were given by the agent and are not verified.";
+        return message with
+        {
+            Subject = "Files were sent to you by an AI agent",
+            Headline = "Files were sent to you by an AI agent",
+            SecondaryText = string.IsNullOrWhiteSpace(message.SecondaryText) ? AgentNote : $"{message.SecondaryText} {AgentNote}"
+        };
+    }
+
+    private static AuthEmailMessage BuildCompletionEmailBase(Payload payload, string shareUrl, string recipientEmail, string configuredSenderDisplayName)
+    {
         var senderIdentity = BuildSenderIdentity(payload);
         var senderMessage = (payload.SenderMessage ?? string.Empty).Trim();
         if (!string.IsNullOrWhiteSpace(senderIdentity))

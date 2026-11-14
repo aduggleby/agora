@@ -58,6 +58,7 @@ type ShareFileLike = Record<string, unknown>;
   const senderNameNode = dialog.querySelector<HTMLElement>('[data-share-details-sender-name]');
   const senderEmailNode = dialog.querySelector<HTMLElement>('[data-share-details-sender-email]');
   const senderMessageNode = dialog.querySelector<HTMLElement>('[data-share-details-sender-message]');
+  const sentByAgentNode = dialog.querySelector<HTMLElement>('[data-share-details-sent-by-agent]');
   const listNode = dialog.querySelector<HTMLElement>('[data-share-details-list]');
   const closeButton = dialog.querySelector<HTMLButtonElement>('[data-share-details-close]');
   if (!listNode) return;
@@ -157,6 +158,9 @@ type ShareFileLike = Record<string, unknown>;
       }
       if (senderEmailNode) {
         senderEmailNode.textContent = senderEmail.length > 0 ? `Sender email: ${senderEmail}` : '';
+      }
+      if (sentByAgentNode) {
+        sentByAgentNode.textContent = button.getAttribute('data-share-sent-by-agent') === 'true' ? 'Sent through the agent interface' : '';
       }
       if (senderMessageNode) {
         if (senderMessage.trim().length > 0) {

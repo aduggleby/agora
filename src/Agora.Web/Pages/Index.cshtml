@@ -145,7 +145,7 @@
                 <input type="checkbox" name="shareIds" value="@share.ShareId" data-received-select />
               </td>
               <td class="px-3 py-3 text-sm"><span class="block truncate" title="@share.ZipDisplayName">@share.ZipDisplayName</span></td>
-              <td class="px-3 py-3 text-xs text-ink-muted"><span class="block truncate" title="@share.SenderName">@(string.IsNullOrWhiteSpace(share.SenderName) ? "-" : share.SenderName)</span></td>
+              <td class="px-3 py-3 text-xs text-ink-muted"><span class="block truncate" title="@share.SenderName">@(string.IsNullOrWhiteSpace(share.SenderName) ? "-" : share.SenderName)@if (share.SentByAgent) { <span class="ml-1 px-2 py-0.5 text-xs font-medium text-ink-muted border border-border rounded-md bg-white" data-share-sent-by-agent>Agent</span> }</span></td>
               <td class="px-3 py-3 text-xs text-ink-muted"><span class="block truncate" title="@share.SenderEmail">@(string.IsNullOrWhiteSpace(share.SenderEmail) ? "-" : share.SenderEmail)</span></td>
               <td class="px-3 py-3 text-xs text-ink-muted">
                 <button type="button"
@@ -155,6 +155,7 @@
                         data-share-files='@filesJson'
                         data-share-sender-name="@share.SenderName"
                         data-share-sender-email="@share.SenderEmail"
+                        data-share-sent-by-agent="@(share.SentByAgent ? "true" : "false")"
                         data-share-sender-message='@JsonSerializer.Serialize(share.SenderMessage ?? string.Empty)'>@share.FileCount file(s) - @size</button>
               </td>
               <td class="px-3 py-3"><span class="text-xs text-ink-muted" data-local-datetime="@share.CreatedAtUtc.ToString("O")" data-local-datetime-style="compact"></span></td>
@@ -230,6 +231,7 @@ else
     <div class="mt-2 space-y-1 text-xs text-ink-muted">
       <p data-share-details-sender-name></p>
       <p data-share-details-sender-email></p>
+      <p data-share-details-sent-by-agent></p>
       <p class="whitespace-pre-wrap" data-share-details-sender-message></p>
     </div>
     <div class="mt-4 rounded-lg border border-border overflow-hidden">
