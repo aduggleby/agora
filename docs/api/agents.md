@@ -88,6 +88,18 @@ cannot be shown again. Use it as `Authorization: Bearer agora_pat_...` on `/api/
 agent (kind **Agent sign-in** or **Agent token**; the macOS capture app shows as **Capture app**), lets the owner change its
 access level and revokes it. A level change and a revocation apply on the next call.
 
+Keep the token in one file readable only by you (for example `~/.config/agora/token`, mode 600) and let each client
+read it, so it never sits in a shared config file:
+
+- Claude Code: `claude mcp add-json --scope user agora '{"type":"http","url":"https://files.example.com/mcp","headersHelper":"/path/to/agora-headers.sh"}'`,
+  where the script prints `{"Authorization":"Bearer <token>"}` (for example with `printf` and `cat` of the token file).
+- Codex (`~/.codex/config.toml`): `[mcp_servers.agora]` with `url = "https://files.example.com/mcp"` and
+  `bearer_token_env_var = "AGORA_TOKEN"`; export `AGORA_TOKEN` from the token file in your shell profile.
+- opencode (`~/.config/opencode/opencode.json`): under `mcp`, `"agora": {"type": "remote", "url": "https://files.example.com/mcp", "headers": {"Authorization": "Bearer {file:~/.config/agora/token}"}}`.
+- Gemini CLI (`~/.gemini/settings.json`): under `mcpServers`, `"agora": {"httpUrl": "https://files.example.com/mcp", "headers": {"Authorization": "Bearer $AGORA_TOKEN"}}`.
+
+Clients read their MCP configuration at start, so sessions that were already running pick up a new server only after a restart.
+
 ## 3. Access levels
 
 | Level | Label | Shares the agent can list and delete | Downloads |
