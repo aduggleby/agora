@@ -15,7 +15,9 @@ public sealed class OAuthClientCodec(IDataProtectionProvider provider, IConfigur
 
     /// <summary>Hosts allowed for <c>https</c> redirects in addition to the built-in ones (<c>Agora:Agents:AllowedRedirectHosts</c>).</summary>
     public IReadOnlyList<string> AllowedRedirectHosts { get; } =
-        configuration.GetSection("Agora:Agents:AllowedRedirectHosts").Get<string[]>() ?? [];
+        (configuration.GetSection("Agora:Agents:AllowedRedirectHosts").Get<string[]>() ?? [])
+            .SelectMany(x => x.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+            .ToArray();
 
     public string Encode(OAuthClientRegistration registration) =>
         OAuthClients.ClientIdPrefix + _protector.Protect(JsonSerializer.Serialize(registration));

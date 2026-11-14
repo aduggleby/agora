@@ -573,7 +573,7 @@ In `Production` it warns when `Agora__TrustedProxies` is empty or `AllowedHosts`
 
 | Setting | Default | What it controls |
 | --- | --- | --- |
-| `Agora__Agents__AllowedRedirectHosts__0`, `__1`, ... | empty | Extra `https` host names allowed as OAuth redirect URIs of MCP clients, in addition to `claude.ai` and `claude.com`: one variable per host (`Agora__Agents__AllowedRedirectHosts__0=agents.example.org`). A comma separated list in a single variable is not read. A trust list, not a limit: it keeps a self-chosen client name from pairing with an arbitrary redirect. Loopback redirects are always allowed |
+| `Agora__Agents__AllowedRedirectHosts__0`, `__1`, ... | empty | Extra `https` host names allowed as OAuth redirect URIs of MCP clients, in addition to `claude.ai` and `claude.com`: one variable per host (`Agora__Agents__AllowedRedirectHosts__0=agents.example.org`) or one comma separated list in `Agora__Agents__AllowedRedirectHosts`. A trust list, not a limit: it keeps a self-chosen client name from pairing with an arbitrary redirect. Loopback redirects are always allowed |
 
 ### `Agora__Previews__*`
 
@@ -740,7 +740,7 @@ of 120 requests per minute per account; anonymous agents share the upload page's
 
 **Redirect hosts.** OAuth clients may register loopback redirects and `https://claude.ai` and `https://claude.com`
 callbacks. More trusted `https` hosts go in `Agora__Agents__AllowedRedirectHosts__0`, `__1` and so on (one variable per
-host; a comma separated value is ignored).
+host) or one comma separated value in `Agora__Agents__AllowedRedirectHosts`.
 
 **Operations.** Registered MCP client ids are protected with the DataProtection keys in `keys/` (see
 [Backups](#backups)); without them agents must register again, existing tokens keep working. One-time URL files

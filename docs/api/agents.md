@@ -60,8 +60,9 @@ starts the standard MCP authorization flow (OAuth 2.1 authorization code with S2
   redirect URIs) or `invalid_client_metadata` (not JSON, name over 200 characters).
 - **Redirect URIs**: loopback (`http://127.0.0.1`, `http://[::1]`, `http://localhost`, any port and path; the port is
   ignored when matching, [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252)) or `https` with an exact match on a host
-  of `claude.ai`, `claude.com` or one listed in `Agora__Agents__AllowedRedirectHosts` (one environment variable per host:
-  `Agora__Agents__AllowedRedirectHosts__0=agents.example.org`, `...__1=...`; a single comma separated value is not read).
+  of `claude.ai`, `claude.com` or one listed in `Agora__Agents__AllowedRedirectHosts` (either one comma separated
+  value, `Agora__Agents__AllowedRedirectHosts=a.example.org,b.example.org`, or one variable per host:
+  `Agora__Agents__AllowedRedirectHosts__0=agents.example.org`, `...__1=...`).
   A redirect URI has no query, fragment or user info and is at most 200 characters. Everything else is refused at
   registration, and an invalid client or redirect URI shows an error page and never redirects.
 - **Authorization request**: `client_id`, `redirect_uri`, `state`, `code_challenge` and `code_challenge_method=S256` are

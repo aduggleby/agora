@@ -129,9 +129,16 @@ public sealed class OAuthClientCodecConfigurationTests
     }
 
     [Fact]
-    public void A_single_comma_separated_value_does_not_bind_as_a_list()
+    public void A_single_comma_separated_value_is_split_into_hosts()
     {
-        // Documented in the README: the setting takes one indexed variable per host, not a comma separated string.
-        Assert.Empty(Codec(new() { ["Agora:Agents:AllowedRedirectHosts"] = "a.example.org,b.example.org" }).AllowedRedirectHosts);
+        var codec = Codec(new() { ["Agora:Agents:AllowedRedirectHosts"] = " a.example.org,b.example.org,, " });
+        Assert.Equal(["a.example.org", "b.example.org"], codec.AllowedRedirectHosts);
+    }
+
+    [Fact]
+    public void Comma_separated_entries_inside_indexed_keys_are_split_too()
+    {
+        var codec = Codec(new() { ["Agora:Agents:AllowedRedirectHosts:0"] = "a.example.org, b.example.org", ["Agora:Agents:AllowedRedirectHosts:1"] = "c.example.org" });
+        Assert.Equal(["a.example.org", "b.example.org", "c.example.org"], codec.AllowedRedirectHosts);
     }
 }
