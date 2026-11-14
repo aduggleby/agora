@@ -1,4 +1,3 @@
-using System.Text;
 using System.Security.Claims;
 using Agora.Application.Abstractions;
 using Agora.Application.Models;
@@ -34,7 +33,6 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Serilog;
 using System.Data;
-using System.Net.Mail;
 using System.Security.Cryptography;
 
 // Composes the web host, infrastructure services, middleware pipeline, and startup data/bootstrap routines.
@@ -788,42 +786,8 @@ app.MapGet("/api/shares/{token}/status", async (string token, HttpContext contex
         return Results.Unauthorized();
     }
 
-    var share = await manager.FindByTokenAsync(token, ct);
-    if (share is not null)
-    {
-        if (!owner.Owns(share.OwnerUserId))
-        {
-            return Results.NotFound();
-        }
-
-        return Results.Ok(new
-        {
-            state = "completed",
-            ready = true,
-            steps = Array.Empty<object>()
-        });
-    }
-
-    var status = statusStore.Read(token);
-    if (status is null || status.OwnerUserId != owner.UserId)
-    {
-        return Results.NotFound();
-    }
-
-    return Results.Ok(new
-    {
-        state = status.State,
-        ready = string.Equals(status.State, "completed", StringComparison.OrdinalIgnoreCase),
-        error = status.Error,
-        steps = status.Steps.Select(step => new
-        {
-            key = step.Key,
-            label = step.Label,
-            state = step.State,
-            detail = step.Detail,
-            updatedAtUtc = step.UpdatedAtUtc
-        }).ToArray()
-    });
+    var view = await ShareCreationStatusView.ReadAsync(manager, statusStore, owner, token, ct);
+    return view is null ? Results.NotFound() : Results.Ok(view.ToBrowserJson());
 }).RequireAuthorization();
 
 app.MapPost("/api/account/template", async (HttpContext context, ShareManager manager, IOptions<AgoraOptions> agoraOptions, ScratchSpaceMonitor scratchSpace, UploadConcurrency concurrency, HttpRequest request, CancellationToken ct) =>
@@ -1083,187 +1047,29 @@ app.MapPost("/api/public-uploads/create-share", async (
 
     var form = await request.ReadFormAsync(ct);
     var uploadToken = form["uploadToken"].ToString().Trim();
-    var draftShareId = form["draftShareId"].ToString().Trim();
-    // Sender text is stored (SenderName 200, SenderEmail 320 columns) and shown on the page and in mail.
-    var senderName = NormalizeSenderText(form["senderName"].ToString());
-    var senderEmail = EmailAddress.Normalize(NormalizeSenderText(form["senderEmail"].ToString()));
-    var senderMessage = form["senderMessage"].ToString().Trim();
-    if (string.IsNullOrWhiteSpace(uploadToken) || string.IsNullOrWhiteSpace(draftShareId))
+    var prepared = await PublicShareSubmission.PrepareAsync(
+        authService,
+        manager,
+        scratchSpace,
+        options.Value,
+        new PublicShareRequest(
+            uploadToken,
+            form["draftShareId"].ToString(),
+            form["senderName"].ToString(),
+            form["senderEmail"].ToString(),
+            form["senderMessage"].ToString(),
+            form["uploadedFileIds"],
+            isE2E ? form["e2eShareTokenOverride"].ToString() : null),
+        ct);
+    if (prepared.Refusal is not null)
     {
-        return Results.BadRequest("uploadToken and draftShareId are required.");
+        return prepared.Refusal.ToResult();
     }
 
-    if (string.IsNullOrWhiteSpace(senderName))
+    var refusal = await PublicShareSubmission.SealAndQueueAsync(manager, queuedShareCreationJob, prepared.Payload!, ct);
+    if (refusal is not null)
     {
-        return Results.BadRequest("senderName is required.");
-    }
-
-    if (senderName.Length > 200)
-    {
-        return Results.BadRequest("senderName must be at most 200 characters.");
-    }
-
-    if (senderMessage.Length > 2000)
-    {
-        return Results.BadRequest("senderMessage must be at most 2000 characters.");
-    }
-
-    if (senderEmail.Length > 320 || !IsValidEmailAddress(senderEmail))
-    {
-        return Results.BadRequest("senderEmail must be a valid email address.");
-    }
-
-    var user = await authService.FindByUploadTokenAsync(uploadToken, ct);
-    if (user is null)
-    {
-        return Results.NotFound("Upload link not found.");
-    }
-
-    var uploadedFileIds = form["uploadedFileIds"]
-        .Select(x => x?.Trim())
-        .Where(x => !string.IsNullOrWhiteSpace(x))
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .Cast<string>()
-        .ToArray();
-
-    // Refused before the draft is opened or looked at.
-    if (uploadedFileIds.Length == 0)
-    {
-        return Results.BadRequest("At least one file is required.");
-    }
-
-    try
-    {
-        // Lookup only: submitting never opens a draft (and never counts against the open-draft caps).
-        draftShareId = await manager.FindPublicUploadDraftAsync(user.Id, draftShareId, ct);
-    }
-    catch (InvalidOperationException ex)
-    {
-        return Results.BadRequest(ex.Message);
-    }
-    catch (UploadLimitException ex)
-    {
-        return UploadLimitText(ex);
-    }
-
-    IReadOnlyList<ShareManager.StagedUploadFile> stagedUploads;
-    try
-    {
-        stagedUploads = await manager.ResolveStagedUploadsAsync(user.Id, uploadedFileIds, draftShareId, ct);
-    }
-    catch (InvalidOperationException ex)
-    {
-        return Results.BadRequest(ex.Message);
-    }
-
-    if (stagedUploads.Count == 0)
-    {
-        return Results.BadRequest("At least one file is required.");
-    }
-
-    var cfg = options.Value;
-    if (stagedUploads.Count > cfg.MaxFilesPerShare)
-    {
-        return Results.BadRequest($"Too many files. Max {cfg.MaxFilesPerShare}.");
-    }
-
-    var total = 0L;
-    foreach (var staged in stagedUploads)
-    {
-        if (staged.OriginalSizeBytes > cfg.MaxFileSizeBytes)
-        {
-            return Results.BadRequest($"File '{staged.OriginalFileName}' exceeds max size.");
-        }
-
-        total += staged.OriginalSizeBytes;
-    }
-
-    if (total > cfg.MaxTotalUploadBytes)
-    {
-        return Results.BadRequest("Total upload size exceeds limit.");
-    }
-
-    // The queued job builds the archive; refuse now rather than fail the job later (the job reserves the space).
-    try
-    {
-        scratchSpace.EnsureCanAdmit(scratchSpace.ArchiveDemand(total, passwordProtected: false));
-    }
-    catch (UploadLimitException ex)
-    {
-        return UploadLimitText(ex);
-    }
-
-    // Fast path for the daily budget of received shares (counted per owner account, so rotating the code does not
-    // reset it); the job re-checks it under a per-owner lock before the share is committed.
-    var nowUtc = DateTime.UtcNow;
-    var usage = await manager.GetReceivedShareUsageAsync(ShareOwner.For(user.Id, user.Email), nowUtc.AddHours(-24), ct);
-    var quotaError = PublicUploadPolicy.CheckDailyQuota(usage.Count, usage.Bytes, total, cfg.PublicUploads);
-    if (quotaError is not null)
-    {
-        return Results.Text(quotaError, statusCode: StatusCodes.Status429TooManyRequests);
-    }
-
-    var shareToken = await manager.GenerateUniqueShareTokenAsync(8, ct);
-    if (isE2E)
-    {
-        var e2eShareTokenOverride = form["e2eShareTokenOverride"].ToString().Trim();
-        if (IsValidShareToken(e2eShareTokenOverride))
-        {
-            shareToken = e2eShareTokenOverride;
-        }
-    }
-
-    // Received shares follow the owner's default expiry; "indefinite" only when the owner chose it explicitly.
-    var ownerExpiryMode = await authService.GetDefaultExpiryModeAsync(user.Id, ct);
-    var expiry = PublicUploadPolicy.ResolveExpiry(ownerExpiryMode, cfg.PublicUploads.DefaultExpiryDays, nowUtc);
-    var expiryModeRaw = expiry.Mode;
-    var expiresAtUtc = expiry.ExpiresAtUtc;
-
-    var notifyMode = await authService.GetDefaultNotifyModeAsync(user.Id, ct);
-    if (notifyMode is not ("none" or "once" or "every_time"))
-    {
-        notifyMode = "once";
-    }
-
-    var publicUploadSubtitle = $"by {senderName} ({senderEmail})";
-    var publicUploadDescription = string.IsNullOrWhiteSpace(senderMessage) ? null : senderMessage;
-
-    var queued = new QueuedShareCreationJob.Payload(
-        UploaderEmail: user.Email,
-        DraftShareId: draftShareId,
-        ShareToken: shareToken,
-        Message: null,
-        SenderName: senderName,
-        SenderEmail: senderEmail,
-        SenderMessage: string.IsNullOrWhiteSpace(senderMessage) ? null : senderMessage,
-        DownloadPassword: null,
-        ShowPreviews: true,
-        ZipFileName: null,
-        NotifyMode: notifyMode,
-        ExpiryMode: expiryModeRaw,
-        ExpiresAtUtc: expiresAtUtc,
-        TemplateMode: "per_upload",
-        TemplateTitle: publicUploadSubtitle,
-        TemplateH1: null,
-        TemplateDescription: publicUploadDescription,
-        TemplateBackgroundColorHex: null,
-        TemplateContainerPosition: null,
-        TemplateBackgroundUploadId: null,
-        UploadedFileIds: uploadedFileIds,
-        OwnerUserId: user.Id);
-
-    // Sealing stops further staging into this draft and makes a second submission of it a 409; a failed enqueue
-    // unseals it again and reports 503 so the sender can retry.
-    try
-    {
-        if (!await manager.SealDraftForSubmissionAsync(user.Id, draftShareId, () => { queuedShareCreationJob.Queue(queued); return Task.CompletedTask; }, ct))
-        {
-            return Results.Text("This upload was already submitted.", statusCode: StatusCodes.Status409Conflict);
-        }
-    }
-    catch (UploadLimitException ex)
-    {
-        return UploadLimitText(ex);
+        return refusal.ToResult();
     }
 
     return Results.Redirect($"/u/{Uri.EscapeDataString(uploadToken)}?submitted=1");
@@ -1364,236 +1170,48 @@ app.MapPost("/api/shares", async (
         return Results.Unauthorized();
     }
 
-    var uploaderEmail = owner.Email;
-    var cfg = options.Value;
     // Files are staged first (/api/uploads/stage); this request carries only form fields, within the small app-wide
     // body and form limits.
     var form = await request.ReadFormAsync(ct);
-    var draftShareId = form["draftShareId"].ToString().Trim();
-    if (string.IsNullOrWhiteSpace(draftShareId))
+    var prepared = await OwnerShareSubmission.PrepareAsync(
+        manager,
+        authService,
+        scratchSpace,
+        creationStatus,
+        options.Value,
+        owner,
+        new OwnerShareRequest(
+            DraftShareId: form["draftShareId"].ToString(),
+            ShareToken: form["shareToken"].ToString(),
+            InlineFileCount: form.Files.Count,
+            UploadedFileIds: form["uploadedFileIds"],
+            ExpiryMode: form["expiryMode"].ToString(),
+            ExpiresAtUtc: form["expiresAtUtc"].ToString(),
+            NotifyMode: form["notifyMode"].ToString(),
+            DownloadPassword: form["downloadPassword"].ToString(),
+            ShowPreviews: form["showPreviews"].ToString(),
+            Message: form["message"].ToString(),
+            ZipFileName: form["zipFileName"].ToString(),
+            TemplateMode: form["templateMode"].ToString(),
+            TemplateBackgroundUploadId: form["template.backgroundUploadId"].ToString(),
+            TemplateTitle: form["template.title"].ToString(),
+            TemplateH1: form["template.h1"].ToString(),
+            TemplateDescription: form["template.description"].ToString(),
+            TemplateBackgroundColorHex: form["template.backgroundColorHex"].ToString(),
+            TemplateContainerPosition: form["template.containerPosition"].ToString()),
+        ct);
+    if (prepared.Refusal is not null)
     {
-        return Results.BadRequest("draftShareId is required");
+        return prepared.Refusal.ToResult();
     }
 
-    try
+    var refusal = await OwnerShareSubmission.ClaimAndSealAsync(manager, queuedShareCreationJob, prepared.Payload!, ct);
+    if (refusal is not null)
     {
-        draftShareId = await manager.EnsureDraftShareAsync(owner.UserId, draftShareId, ct);
-    }
-    catch (InvalidOperationException ex)
-    {
-        return Results.BadRequest(ex.Message);
-    }
-    catch (UploadLimitException ex)
-    {
-        return UploadLimitText(ex);
+        return refusal.ToResult();
     }
 
-    var shareToken = form["shareToken"].ToString().Trim();
-    if (string.IsNullOrWhiteSpace(shareToken))
-    {
-        shareToken = await manager.GenerateUniqueShareTokenAsync(8, ct);
-    }
-
-    // Refused as plain text, not a redirect: the page keeps the typed token, and no URL can preset a share's token.
-    var shareTokenRefusal = await ShareSubmission.RefuseRequestedTokenAsync(manager, creationStatus, shareToken, owner.UserId, draftShareId, ct);
-    if (shareTokenRefusal is not null)
-    {
-        return Results.Text(shareTokenRefusal, statusCode: StatusCodes.Status400BadRequest);
-    }
-
-    var files = form.Files;
-    if (files.Count > 0)
-    {
-        return Results.BadRequest("Please wait for file uploads to finish before creating the share.");
-    }
-
-    var uploadedFileIds = form["uploadedFileIds"]
-        .Select(x => x?.Trim())
-        .Where(x => !string.IsNullOrWhiteSpace(x))
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .Cast<string>()
-        .ToArray();
-
-    IReadOnlyList<ShareManager.StagedUploadFile> stagedUploads;
-    try
-    {
-        stagedUploads = await manager.ResolveStagedUploadsAsync(owner.UserId, uploadedFileIds, draftShareId, ct);
-    }
-    catch (InvalidOperationException ex)
-    {
-        return Results.BadRequest(ex.Message);
-    }
-
-    if (files.Count == 0 && stagedUploads.Count == 0)
-    {
-        return Results.BadRequest("At least one file is required");
-    }
-
-    if (files.Count + stagedUploads.Count > cfg.MaxFilesPerShare)
-    {
-        return Results.BadRequest($"Too many files. Max {cfg.MaxFilesPerShare}");
-    }
-
-    long total = 0;
-    foreach (var file in files)
-    {
-        if (file.Length > cfg.MaxFileSizeBytes)
-        {
-            return Results.BadRequest($"File '{file.FileName}' exceeds max size");
-        }
-
-        total += file.Length;
-    }
-
-    foreach (var staged in stagedUploads)
-    {
-        if (staged.OriginalSizeBytes > cfg.MaxFileSizeBytes)
-        {
-            return Results.BadRequest($"File '{staged.OriginalFileName}' exceeds max size");
-        }
-
-        total += staged.OriginalSizeBytes;
-    }
-
-    if (total > cfg.MaxTotalUploadBytes)
-    {
-        return Results.BadRequest("Total upload size exceeds limit");
-    }
-
-    var expiryModeRaw = form["expiryMode"].ToString().Trim().ToLowerInvariant();
-    if (expiryModeRaw == "account_default")
-    {
-        expiryModeRaw = await authService.GetDefaultExpiryModeAsync(owner.UserId, ct);
-    }
-    var nowUtc = DateTime.UtcNow;
-    DateTime? expiresAtUtc = expiryModeRaw switch
-    {
-        "1_hour" => nowUtc.AddHours(1),
-        "24_hours" => nowUtc.AddHours(24),
-        "7_days" => nowUtc.AddDays(7),
-        "30_days" => nowUtc.AddDays(30),
-        "1_year" => nowUtc.AddYears(1),
-        "indefinite" => null,
-        _ => null
-    };
-
-    if (expiryModeRaw == "date")
-    {
-        var value = form["expiresAtUtc"].ToString();
-        if (!DateTime.TryParse(value, out var parsed))
-        {
-            return Results.BadRequest("expiresAtUtc is required for date mode");
-        }
-
-        expiresAtUtc = DateTime.SpecifyKind(parsed, DateTimeKind.Local).ToUniversalTime();
-        if (expiresAtUtc <= nowUtc)
-        {
-            return Results.BadRequest("expiresAtUtc must be in the future");
-        }
-    }
-    else if (expiryModeRaw is not ("1_hour" or "24_hours" or "7_days" or "30_days" or "1_year" or "indefinite"))
-    {
-        return Results.BadRequest("expiryMode must be 1_hour|24_hours|7_days|30_days|1_year|date|indefinite");
-    }
-
-    var notifyModeRaw = form["notifyMode"].ToString().Trim().ToLowerInvariant();
-    var notifyMode = notifyModeRaw == "account_default"
-        ? await authService.GetDefaultNotifyModeAsync(owner.UserId, ct)
-        : notifyModeRaw;
-    if (notifyMode is not ("none" or "once" or "every_time"))
-    {
-        return Results.BadRequest("notifyMode must be account_default|none|once|every_time");
-    }
-
-    var downloadPasswordRaw = form["downloadPassword"].ToString();
-    if (!TryNormalizeOptionalSharePassword(downloadPasswordRaw, out var downloadPassword))
-    {
-        return Results.BadRequest("downloadPassword must be at least 8 characters when provided");
-    }
-
-    var showPreviews = IsTruthy(form["showPreviews"].ToString());
-
-    var templateModeRaw = form["templateMode"].ToString();
-    var templateMode = string.Equals(templateModeRaw, "per_upload", StringComparison.OrdinalIgnoreCase)
-        ? TemplateMode.PerUpload
-        : TemplateMode.AccountDefault;
-
-    var templateBackgroundUploadId = form["template.backgroundUploadId"].ToString().Trim();
-    long templateBackgroundBytes = 0;
-    if (!string.IsNullOrWhiteSpace(templateBackgroundUploadId))
-    {
-        try
-        {
-            var stagedBackground = await manager.ResolveStagedUploadsAsync(
-                owner.UserId,
-                [templateBackgroundUploadId],
-                draftShareId,
-                ct,
-                ShareManager.UploadPurposeTemplateBackground);
-            templateBackgroundBytes = stagedBackground.Sum(x => x.OriginalSizeBytes);
-        }
-        catch (InvalidOperationException ex)
-        {
-            return Results.BadRequest(ex.Message);
-        }
-    }
-
-    // The queued job builds the archive; refuse now rather than fail the job later (the job reserves the space).
-    try
-    {
-        scratchSpace.EnsureCanAdmit(scratchSpace.ArchiveDemand(total, passwordProtected: downloadPassword is not null, backgroundBytes: templateBackgroundBytes));
-    }
-    catch (UploadLimitException ex)
-    {
-        return UploadLimitText(ex);
-    }
-
-    var queued = new QueuedShareCreationJob.Payload(
-        UploaderEmail: uploaderEmail,
-        DraftShareId: draftShareId,
-        ShareToken: shareToken,
-        Message: form["message"].ToString(),
-        SenderName: null,
-        SenderEmail: null,
-        SenderMessage: null,
-        DownloadPassword: downloadPassword,
-        ShowPreviews: showPreviews,
-        ZipFileName: form["zipFileName"].ToString(),
-        NotifyMode: notifyMode,
-        ExpiryMode: expiryModeRaw,
-        ExpiresAtUtc: expiresAtUtc,
-        TemplateMode: templateMode == TemplateMode.PerUpload ? "per_upload" : "account_default",
-        TemplateTitle: form["template.title"].ToString(),
-        TemplateH1: form["template.h1"].ToString(),
-        TemplateDescription: form["template.description"].ToString(),
-        TemplateBackgroundColorHex: NormalizeHexColor(form["template.backgroundColorHex"].ToString()),
-        TemplateContainerPosition: NormalizeContainerPosition(form["template.containerPosition"].ToString()),
-        TemplateBackgroundUploadId: templateBackgroundUploadId,
-        UploadedFileIds: uploadedFileIds,
-        OwnerUserId: owner.UserId);
-
-    // The link is claimed just before sealing (after every refusal above) so only a submission that is queued holds it.
-    // Sealing stops further staging into this draft and makes a second submission of it a 409; a failed enqueue
-    // unseals it again and reports 503 so the user can retry.
-    try
-    {
-        var submission = await ShareSubmission.ClaimAndSealAsync(manager, shareToken, owner.UserId, draftShareId, () => { queuedShareCreationJob.Queue(queued); return Task.CompletedTask; }, ct);
-        if (submission.Refused)
-        {
-            return Results.Text(submission.Text!, statusCode: StatusCodes.Status400BadRequest);
-        }
-
-        if (!submission.Sealed)
-        {
-            return Results.Text("This share was already submitted.", statusCode: StatusCodes.Status409Conflict);
-        }
-    }
-    catch (UploadLimitException ex)
-    {
-        return UploadLimitText(ex);
-    }
-
-    return Results.Redirect($"/shares/created/{Uri.EscapeDataString(shareToken)}");
+    return Results.Redirect($"/shares/created/{Uri.EscapeDataString(prepared.Payload!.ShareToken)}");
 }).RequireAuthorization()
   .WithMetadata(new UploadEndpointMetadata(RequiresHeaderCsrfToken: true), new RequestSizeLimitAttribute(createRequestBodyLimit));
 
@@ -1653,100 +1271,7 @@ static string ClientAddress(HttpContext context) => UploadStagingEndpoints.Clien
 // Custom share tokens: at least 8 ASCII letters, digits, '-' or '_' so short, guessable links cannot be enumerated.
 static bool IsValidShareToken(string token) => ShareTokens.IsValid(token);
 
-// Strips control characters and collapses whitespace runs; sender text ends up in page markup and mail.
-static string NormalizeSenderText(string? raw)
-{
-    var builder = new StringBuilder((raw ?? string.Empty).Length);
-    var pendingSpace = false;
-    foreach (var ch in raw ?? string.Empty)
-    {
-        if (char.IsWhiteSpace(ch))
-        {
-            pendingSpace = builder.Length > 0;
-            continue;
-        }
-
-        if (char.IsControl(ch))
-        {
-            continue;
-        }
-
-        if (pendingSpace)
-        {
-            builder.Append(' ');
-            pendingSpace = false;
-        }
-
-        builder.Append(ch);
-    }
-
-    return builder.ToString();
-}
-
-static bool IsTruthy(string? raw)
-{
-    var value = (raw ?? string.Empty).Trim().ToLowerInvariant();
-    return value is "1" or "true" or "on" or "yes";
-}
-
-static bool IsValidEmailAddress(string? value)
-{
-    try
-    {
-        var normalized = (value ?? string.Empty).Trim();
-        var parsed = new MailAddress(normalized);
-        return string.Equals(parsed.Address, normalized, StringComparison.OrdinalIgnoreCase);
-    }
-    catch
-    {
-        return false;
-    }
-}
-
-static bool TryNormalizeOptionalSharePassword(string? raw, out string? password)
-{
-    password = string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
-    if (password is null)
-    {
-        return true;
-    }
-
-    return password.Length >= 8 && password.Length <= 256;
-}
-
-
-static string? NormalizeHexColor(string? value)
-{
-    var trimmed = (value ?? string.Empty).Trim();
-    if (trimmed.Length == 0)
-    {
-        return null;
-    }
-
-    if (trimmed[0] != '#')
-    {
-        trimmed = "#" + trimmed;
-    }
-
-    if (trimmed.Length != 7)
-    {
-        return null;
-    }
-
-    for (var i = 1; i < trimmed.Length; i++)
-    {
-        var c = trimmed[i];
-        var isHex = (c >= '0' && c <= '9') ||
-                    (c >= 'a' && c <= 'f') ||
-                    (c >= 'A' && c <= 'F');
-        if (!isHex)
-        {
-            return null;
-        }
-    }
-
-    return trimmed.ToLowerInvariant();
-}
+static string? NormalizeHexColor(string? value) => OwnerShareSubmission.NormalizeHexColor(value);
 
 static string NormalizeContainerPosition(string? value)
 {

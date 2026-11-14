@@ -76,3 +76,33 @@ public static class ShareSubmission
         }
     }
 }
+
+/// <summary>
+/// A refused share submission. <paramref name="PlainText"/> keeps the browser routes' exact response shapes: text
+/// bodies for the refusals that were plain text, a JSON string for the 400 and 404 ones that were not.
+/// </summary>
+public sealed record ShareRefusal(int Status, string Message, bool PlainText = false)
+{
+    public static ShareRefusal BadRequest(string message) => new(StatusCodes.Status400BadRequest, message);
+
+    public static ShareRefusal Text(int status, string message) => new(status, message, PlainText: true);
+
+    public static ShareRefusal From(UploadLimitException ex) => Text(ex.StatusCode, ex.Message);
+
+    public IResult ToResult() => PlainText
+        ? Results.Text(Message, statusCode: Status)
+        : Status switch
+        {
+            StatusCodes.Status400BadRequest => Results.BadRequest(Message),
+            StatusCodes.Status404NotFound => Results.NotFound(Message),
+            _ => Results.Json(Message, statusCode: Status)
+        };
+}
+
+/// <summary>A prepared share payload, or the refusal that stopped it.</summary>
+public sealed record PreparedShare(QueuedShareCreationJob.Payload? Payload, ShareRefusal? Refusal)
+{
+    public static PreparedShare Ok(QueuedShareCreationJob.Payload payload) => new(payload, null);
+
+    public static PreparedShare Refuse(ShareRefusal refusal) => new(null, refusal);
+}
