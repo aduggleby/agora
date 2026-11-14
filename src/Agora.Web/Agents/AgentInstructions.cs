@@ -10,9 +10,6 @@ namespace Agora.Web.Agents;
 /// </summary>
 public static partial class AgentInstructions
 {
-    /// <summary>The most one inline MCP call carries (the sum of its files).</summary>
-    public const long InlineLimitBytes = 1024 * 1024;
-
     public static string Build(string baseUrl, string code, string? ownerDisplayName, AgoraOptions options)
     {
         var name = EscapeMarkdown(ownerDisplayName);
@@ -32,13 +29,13 @@ public static partial class AgentInstructions
         sb.AppendLine();
         sb.AppendLine($"Connect to `{baseUrl}/mcp?upload={encodedCode}` without signing in. It offers two tools:");
         sb.AppendLine();
-        sb.AppendLine($"- `send_files`: sends files inline in one call (at most {FormatBytes(InlineLimitBytes)} per call in total).");
-        sb.AppendLine("- `get_upload_url`: returns an upload URL and a `draftId` for larger files (see the HTTP steps below).");
+        sb.AppendLine($"- `send_files`: sends files inline in one call (at most {FormatBytes(AgentLimits.InlineMaxBytes)} per call in total): `files` (each with `file_name` and exactly one of `text` or `content_base64`) and/or a `draft_id` from `get_upload_url`, plus the sender fields below.");
+        sb.AppendLine("- `get_upload_url`: returns an upload URL (`uploadUrl`) and a `draftId` for larger files. Arguments: `file_name`, `size_bytes` and, for each more file, the `draft_id` it returned. Upload the bytes with an HTTP `PUT`, then pass the `draftId` as `draft_id` to `send_files`.");
         sb.AppendLine();
-        sb.AppendLine("## Sender fields");
+        sb.AppendLine("## Sender fields (MCP argument names; the HTTP API calls them `senderName`, `senderEmail` and `message`)");
         sb.AppendLine();
-        sb.AppendLine("- `senderName`: required, up to 200 characters. Say who you are, for example the agent and the person it acts for.");
-        sb.AppendLine("- `senderEmail`: required, a valid address, up to 320 characters. The owner sees it and may reply to it.");
+        sb.AppendLine("- `sender_name`: required, up to 200 characters. Say who you are, for example the agent and the person it acts for.");
+        sb.AppendLine("- `sender_email`: required, a valid address, up to 320 characters. The owner sees it and may reply to it.");
         sb.AppendLine("- `message`: optional, up to 2000 characters. Explain what the files are.");
         sb.AppendLine();
         sb.AppendLine("The owner is told that an AI agent sent the files and that the name and email are not verified.");
@@ -76,7 +73,7 @@ public static partial class AgentInstructions
         sb.AppendLine();
         sb.AppendLine($"- At most {options.MaxFilesPerShare} files per send.");
         sb.AppendLine($"- At most {FormatBytes(options.MaxFileSizeBytes)} per file and {FormatBytes(options.MaxTotalUploadBytes)} in total.");
-        sb.AppendLine($"- Inline MCP calls: at most {FormatBytes(InlineLimitBytes)} per call.");
+        sb.AppendLine($"- Inline MCP calls: at most {FormatBytes(AgentLimits.InlineMaxBytes)} per call.");
         sb.AppendLine("- Requests are rate limited; on HTTP 429 wait and retry later.");
         return sb.ToString();
     }
@@ -103,7 +100,7 @@ public static partial class AgentInstructions
         return MarkdownSpecials().Replace(value, "\\$&");
     }
 
-    [GeneratedRegex(@"[\p{C}  ]+")]
+    [GeneratedRegex(@"[\p{C}\u2028\u2029]+")]
     private static partial Regex ControlCharacters();
 
     [GeneratedRegex(@"[\\`*_{}\[\]()<>#+\-.!|~&]")]

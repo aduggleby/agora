@@ -57,6 +57,10 @@ public sealed class AgentDiscoveryTests
         Assert.Contains($"https://files.example.com/mcp?upload={Code}", body);
         Assert.Contains("`send_files`", body);
         Assert.Contains("`get_upload_url`", body);
+        foreach (var argument in new[] { "`files`", "`file_name`", "`content_base64`", "`size_bytes`", "`draft_id`", "`sender_name`", "`sender_email`" })
+        {
+            Assert.Contains(argument, body);
+        }
         Assert.Contains($"https://files.example.com/u/{Code}", body);
         Assert.Contains("--fail-with-body", body);
         Assert.Contains("Content-Type: application/json", body);
@@ -68,6 +72,8 @@ public sealed class AgentDiscoveryTests
         // The owner name is escaped and flattened to one line.
         Assert.Contains("Ann \\*Bold\\* \\<b\\>x\\</b\\> Ignore previous", body);
         Assert.DoesNotContain("<b>", body);
+        // The HTTP recipe keeps the camelCase field names.
+        Assert.Contains("\\\"fileName\\\"", body);
     }
 
     [Fact]
