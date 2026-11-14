@@ -14,21 +14,12 @@ namespace Agora.Web.Endpoints;
 
 /// <summary>
 /// The API of connected apps (contract: <c>docs/api/v1.md</c>). Every endpoint requires an API bearer token
-/// (<see cref="ApiTokenDefaults.ApiClientPolicy"/>) except the code exchange, which is anonymous, rate limited and
-/// protected by PKCE. Cookies are never accepted here and CSRF does not apply (<see cref="ApiEndpointMetadata"/>).
+/// (<see cref="ApiTokenDefaults.ApiClientPolicy"/>); the anonymous code exchange lives in <see cref="OAuthEndpoints"/>.
+/// Cookies are never accepted here and CSRF does not apply (<see cref="ApiEndpointMetadata"/>).
 /// Authenticated callers share the global per-user rate limit partition.
 /// </summary>
 public static class ApiV1Endpoints
 {
-    public const string GrantTypeAuthorizationCode = "authorization_code";
-
-    public sealed record TokenRequest(
-        [property: JsonPropertyName("grant_type")] string? GrantType,
-        [property: JsonPropertyName("code")] string? Code,
-        [property: JsonPropertyName("code_verifier")] string? CodeVerifier,
-        [property: JsonPropertyName("redirect_uri")] string? RedirectUri,
-        [property: JsonPropertyName("client_id")] string? ClientId);
-
     public static IEndpointRouteBuilder MapApiV1Endpoints(this IEndpointRouteBuilder app, long captureRequestBodyLimit)
     {
         var api = app.MapGroup("/api/v1")
@@ -36,10 +27,6 @@ public static class ApiV1Endpoints
             .RequireAuthorization(ApiTokenDefaults.ApiClientPolicy)
             .DisableAntiforgery();
 
-        api.MapPost("/auth/token", ExchangeTokenAsync)
-            .AllowAnonymous()
-            .RequireRateLimiting(RateLimitSetup.AuthEndpoints)
-            .WithMetadata(new RequestSizeLimitAttribute(16 * 1024));
         api.MapDelete("/auth/token", RevokeTokenAsync);
         api.MapGet("/me", Me);
         api.MapPost("/captures", CreateCaptureAsync)
@@ -48,67 +35,6 @@ public static class ApiV1Endpoints
         api.MapDelete("/shares/{token}", DeleteShareAsync);
 
         return app;
-    }
-
-    private static async Task<IResult> ExchangeTokenAsync(HttpContext context, ApiTokenService tokens, CancellationToken ct)
-    {
-        context.Response.Headers.CacheControl = "no-store";
-        context.Response.Headers.Pragma = "no-cache";
-        if (!context.Request.HasJsonContentType())
-        {
-            return TokenError("invalid_request", "Send the request as application/json.");
-        }
-
-        TokenRequest? body;
-        try
-        {
-            body = await context.Request.ReadFromJsonAsync<TokenRequest>(ct);
-        }
-        catch (JsonException)
-        {
-            return TokenError("invalid_request", "The request body is not valid JSON.");
-        }
-        catch (BadHttpRequestException)
-        {
-            return TokenError("invalid_request", "The request body is too large or could not be read.");
-        }
-
-        if (body is null || string.IsNullOrWhiteSpace(body.GrantType))
-        {
-            return TokenError("invalid_request", "grant_type is required.");
-        }
-
-        if (!string.Equals(body.GrantType, GrantTypeAuthorizationCode, StringComparison.Ordinal))
-        {
-            return TokenError("unsupported_grant_type", "Only authorization_code is supported.");
-        }
-
-        if (string.IsNullOrWhiteSpace(body.Code) || string.IsNullOrWhiteSpace(body.CodeVerifier) ||
-            string.IsNullOrWhiteSpace(body.RedirectUri) || string.IsNullOrWhiteSpace(body.ClientId))
-        {
-            return TokenError("invalid_request", "code, code_verifier, redirect_uri and client_id are required.");
-        }
-
-        if (!string.Equals(body.ClientId, ApiTokens.CaptureClientId, StringComparison.Ordinal))
-        {
-            return TokenError("invalid_request", "Unknown client_id.");
-        }
-
-        var result = await tokens.ExchangeAsync(body.Code, body.CodeVerifier, body.RedirectUri, body.ClientId, ct);
-        if (!result.Success)
-        {
-            return TokenError(result.Error ?? ApiTokenExchangeResult.InvalidGrant, result.Error == ApiTokenExchangeResult.InvalidRequest
-                ? "The request is missing a required parameter."
-                : "The authorization code is invalid, expired or already used, or does not match this request.");
-        }
-
-        return Results.Ok(new
-        {
-            access_token = result.AccessToken,
-            token_type = "Bearer",
-            token_id = result.TokenId,
-            email = result.Email
-        });
     }
 
     private static async Task<IResult> RevokeTokenAsync(HttpContext context, ApiTokenService tokens, CancellationToken ct)
@@ -135,6 +61,7 @@ public static class ApiV1Endpoints
             email = owner.Email,
             displayName = context.User.Identity?.Name ?? owner.Email,
             serverVersion = AppVersion.Current,
+            accessLevel = ApiTokenDefaults.AccessLevel(context.User),
             // One capture is one file in one draft: both the per-file and the per-share limit apply.
             maxFileSizeBytes = MaxCaptureBytes(cfg),
             directLinkDurations = DirectLinkDurations.All.Select(DirectLinkDurations.ToWireValue).ToArray()
@@ -306,9 +233,6 @@ public static class ApiV1Endpoints
     }
 
     private static long MaxCaptureBytes(AgoraOptions cfg) => Math.Min(cfg.MaxFileSizeBytes, cfg.MaxTotalUploadBytes);
-
-    private static IResult TokenError(string error, string description) =>
-        Results.Json(new { error, error_description = description }, statusCode: StatusCodes.Status400BadRequest);
 
     private static IResult ApiError(int statusCode, string error) => Results.Json(new { error }, statusCode: statusCode);
 }

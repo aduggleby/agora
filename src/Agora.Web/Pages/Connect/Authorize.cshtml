@@ -16,6 +16,48 @@
     </div>
     <p class="text-sm text-ink-muted mt-6 text-center"><a href="/" class="text-terra font-medium hover:underline">Back to Agora</a></p>
   }
+  else if (Model.IsMcpClient)
+  {
+    <div class="bg-white rounded-2xl border border-border p-6">
+      <p class="text-sm text-ink-light">
+        Allow <span class="font-medium text-ink break-words" data-connect-device>@Model.DeviceName</span> to use your Agora account?
+      </p>
+      <p class="text-xs text-ink-muted mt-2" data-connect-unverified>The name is chosen by the app and is not verified. Approving returns you to <span class="font-medium text-ink break-all" data-connect-redirect-host>@Model.RedirectHost</span>.</p>
+
+      <div class="rounded-xl border border-border bg-cream-dark/40 p-4 mt-4">
+        <p class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1">Signed in as</p>
+        <p class="text-sm text-ink-light break-all" data-connect-email>@Model.Email</p>
+      </div>
+
+      <form method="post" action="/connect/authorize" class="mt-5" data-connect-form>
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="client_id" value="@Model.ClientId" />
+        <input type="hidden" name="redirect_uri" value="@Model.RedirectUri" />
+        <input type="hidden" name="state" value="@Model.State" />
+        <input type="hidden" name="code_challenge" value="@Model.CodeChallenge" />
+        <input type="hidden" name="code_challenge_method" value="@Model.CodeChallengeMethod" />
+        <input type="hidden" name="resource" value="@Model.Resource" />
+        <input type="hidden" name="scope" value="@Model.Scope" />
+        <fieldset>
+          <legend class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-2">What it can reach</legend>
+          <label class="flex items-start gap-3 text-sm text-ink-light mb-2">
+            <input type="radio" name="accessLevel" value="own" checked class="mt-1" data-connect-access="own" />
+            <span>Only shares it creates</span>
+          </label>
+          <label class="flex items-start gap-3 text-sm text-ink-light">
+            <input type="radio" name="accessLevel" value="all" class="mt-1" data-connect-access="all" />
+            <span>All my shares (it can also download files, including files people sent you)</span>
+          </label>
+        </fieldset>
+        <p class="text-xs text-ink-muted mt-3">Either way it can upload files, create shares and list or delete the shares it can reach. You can change this or disconnect it at any time in Account settings.</p>
+        <div class="mt-6 flex gap-2">
+          <button type="submit" name="decision" value="@Agora.Web.Pages.Connect.AuthorizeModel.DenyDecision" class="flex-1 px-4 py-2.5 text-sm font-medium border border-border rounded-lg bg-cream hover:bg-cream-dark/70 transition-colors">Deny</button>
+          <button type="submit" name="decision" value="@Agora.Web.Pages.Connect.AuthorizeModel.ApproveDecision" class="flex-1 px-4 py-2.5 bg-terra text-white text-sm font-medium rounded-lg hover:bg-terra/90 transition-colors">Approve</button>
+        </div>
+      </form>
+    </div>
+    <p class="text-xs text-ink-muted mt-4 text-center">Not you? <a href="/" class="text-terra font-medium hover:underline">Go to Agora</a> and sign out first.</p>
+  }
   else
   {
     <div class="bg-white rounded-2xl border border-border p-6">

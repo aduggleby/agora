@@ -1,4 +1,5 @@
 using Agora.Web.Agents;
+using Agora.Web.Endpoints;
 
 namespace Agora.Web.Startup;
 
@@ -10,12 +11,14 @@ public static class AgentSetup
 {
     public static IServiceCollection AddAgoraAgents(this IServiceCollection services)
     {
+        services.AddSingleton<OAuthClientCodec>();
         return services;
     }
 
     public static WebApplication MapAgoraAgents(this WebApplication app)
     {
         app.MapAgentDiscoveryEndpoints();
+        app.MapOAuthEndpoints();
         return app;
     }
 }

@@ -535,6 +535,8 @@ public sealed class ApiV1HostTests
             builder.Services.AddSingleton<IPublicOriginProvider>(new FixedOrigin());
             builder.Services.AddScoped<ShareManager>();
             builder.Services.AddScoped<ApiTokenService>();
+            builder.Services.AddSingleton(new Agora.Web.Services.PublicBaseUrlResolver("https://files.example.test", allowRequestHostFallback: false));
+            builder.Services.AddAgoraAgents();
             builder.Services.AddDataProtection().UseEphemeralDataProtectionProvider();
             builder.Services.AddAgoraAuthentication(new AgoraAuthOptions(), CookieSecurePolicy.None);
             builder.Services.AddAuthorization(AuthSetup.ConfigureAuthorization);
@@ -572,6 +574,7 @@ public sealed class ApiV1HostTests
             var probes = app.MapGroup("/test").WithMetadata(ApiEndpointMetadata.Instance);
             probes.MapGet("/access", (HttpContext context) => ApiTokenDefaults.AccessLevel(context.User)).RequireAuthorization(ApiTokenDefaults.ApiClientPolicy);
             probes.MapGet("/agent-only", () => "ok").RequireAuthorization(ApiTokenDefaults.AgentPolicy);
+            app.MapAgoraAgents();
             app.MapApiV1Endpoints(captureRequestBodyLimit: maxFileSizeBytes is { } maxFile ? maxFile + 1024 * 1024 : 10 * 1024 * 1024);
             await app.StartAsync();
 

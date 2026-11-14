@@ -74,9 +74,15 @@ public sealed class ApiTokenService(AgoraDbContext db, TimeProvider? timeProvide
             throw new ArgumentException("The code challenge is not a valid S256 challenge.", nameof(codeChallenge));
         }
 
-        if (!ApiTokens.IsValidRedirectUri(redirectUri))
+        // The capture app's rule is a fixed loopback callback; MCP clients' redirects were already checked against their
+        // registration (and the https trust list) by the consent page, so only the shape and the column width remain.
+        var redirectOk = isCapture
+            ? ApiTokens.IsValidRedirectUri(redirectUri)
+            : redirectUri.Length <= OAuthClients.MaxRedirectUriLength &&
+              Uri.TryCreate(redirectUri, UriKind.Absolute, out var parsed) && parsed.Scheme is "http" or "https";
+        if (!redirectOk)
         {
-            throw new ArgumentException("The redirect URI is not a loopback callback.", nameof(redirectUri));
+            throw new ArgumentException("The redirect URI is not an allowed callback.", nameof(redirectUri));
         }
 
         var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == userId, cancellationToken);
@@ -173,8 +179,11 @@ public sealed class ApiTokenService(AgoraDbContext db, TimeProvider? timeProvide
         string? clientId,
         CancellationToken cancellationToken)
     {
+        // MCP clients may omit redirect_uri at the token endpoint (RFC 6749 section 4.1.3 requires it only when it was
+        // sent at authorization, which the stored row always has); the capture app must always send it.
+        var redirectOptional = clientId is not null && clientId.StartsWith(McpClientIdPrefix, StringComparison.Ordinal);
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(codeVerifier) ||
-            string.IsNullOrWhiteSpace(redirectUri) || string.IsNullOrWhiteSpace(clientId))
+            (string.IsNullOrWhiteSpace(redirectUri) && !redirectOptional) || string.IsNullOrWhiteSpace(clientId))
         {
             return ApiTokenExchangeResult.Failed(ApiTokenExchangeResult.InvalidRequest);
         }
@@ -196,7 +205,7 @@ public sealed class ApiTokenService(AgoraDbContext db, TimeProvider? timeProvide
                     row.TokenHash is null &&
                     row.AuthCodeExpiresAtUtc is { } expiresAt && now < expiresAt &&
                     string.Equals(row.ClientId, clientId, StringComparison.Ordinal) &&
-                    string.Equals(row.RedirectUri, redirectUri, StringComparison.Ordinal) &&
+                    (string.IsNullOrWhiteSpace(redirectUri) || string.Equals(row.RedirectUri, redirectUri, StringComparison.Ordinal)) &&
                     ApiTokens.VerifyPkce(codeVerifier, row.CodeChallenge) &&
                     IsIssuerStampLive(row, user);
         if (!valid)
