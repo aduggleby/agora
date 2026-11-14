@@ -126,6 +126,103 @@ public sealed class McpHostTests
         Assert.Contains("upload link", client.ServerInstructions);
     }
 
+    private static string ResultText(ModelContextProtocol.Protocol.CallToolResult result) =>
+        string.Concat(result.Content.OfType<TextContentBlock>().Select(x => x.Text));
+
+    [Fact]
+    public async Task Anonymous_send_files_is_refused_with_the_exact_message_while_the_switch_is_off()
+    {
+        await using var host = await Host.StartAsync();
+        await using var client = await host.ConnectAsync($"/mcp?upload={host.UploadCode}");
+
+        var send = await client.CallToolAsync("send_files", new Dictionary<string, object?>
+        {
+            ["sender_name"] = "Bot",
+            ["sender_email"] = "bot@example.com",
+            ["files"] = new object[] { new Dictionary<string, object?> { ["file_name"] = "a.txt", ["text"] = "a" } }
+        });
+        var url = await client.CallToolAsync("get_upload_url", new Dictionary<string, object?> { ["file_name"] = "a.txt", ["size_bytes"] = 1 });
+
+        var expected = $"Refused (403): The owner of this upload link does not accept uploads from AI agents. A person can still send files at {Base}/u/{host.UploadCode} in a browser.";
+        Assert.True(send.IsError);
+        Assert.Equal(expected, ResultText(send));
+        Assert.True(url.IsError);
+        Assert.Equal(expected, ResultText(url));
+        Assert.Empty(await host.SharesAsync());
+    }
+
+    [Fact]
+    public async Task Anonymous_send_files_with_inline_files_creates_a_received_share_sent_by_the_agent()
+    {
+        await using var host = await Host.StartAsync();
+        await host.SetAllowAgentUploadsAsync(true);
+        await using var client = await host.ConnectAsync($"/mcp?upload={host.UploadCode}");
+
+        var send = await client.CallToolAsync("send_files", new Dictionary<string, object?>
+        {
+            ["sender_name"] = "Report Bot",
+            ["sender_email"] = "bot@example.com",
+            ["message"] = "Weekly report",
+            ["files"] = new object[] { new Dictionary<string, object?> { ["file_name"] = "report.txt", ["text"] = "numbers" } }
+        });
+
+        Assert.True(send.IsError != true, ResultText(send));
+        Assert.Equal("queued", send.StructuredContent!.Value.GetProperty("state").GetString());
+        await host.RunQueuedJobAsync();
+        var share = Assert.Single(await host.SharesAsync());
+        Assert.True(share.SentByAgent);
+        Assert.Equal("Report Bot", share.SenderName);
+        Assert.Equal("bot@example.com", share.SenderEmail);
+        Assert.Equal("Weekly report", share.SenderMessage);
+    }
+
+    [Fact]
+    public async Task Anonymous_upload_url_then_put_then_send_files_with_the_draft_id_works()
+    {
+        await using var host = await Host.StartAsync();
+        await host.SetAllowAgentUploadsAsync(true);
+        await using var client = await host.ConnectAsync($"/mcp?upload={host.UploadCode}");
+
+        var issued = (await client.CallToolAsync("get_upload_url", new Dictionary<string, object?> { ["file_name"] = "big.bin", ["size_bytes"] = 4 })).StructuredContent!.Value;
+        var put = await host.PutAsync(new Uri(issued.GetProperty("uploadUrl").GetString()!).AbsolutePath, [1, 2, 3, 4]);
+        Assert.Equal(HttpStatusCode.Created, put.StatusCode);
+
+        var send = await client.CallToolAsync("send_files", new Dictionary<string, object?>
+        {
+            ["sender_name"] = "Bot",
+            ["sender_email"] = "bot@example.com",
+            ["draft_id"] = issued.GetProperty("draftId").GetString()
+        });
+
+        Assert.True(send.IsError != true, ResultText(send));
+        await host.RunQueuedJobAsync();
+        Assert.True(Assert.Single(await host.SharesAsync()).SentByAgent);
+    }
+
+    [Fact]
+    public async Task Anonymous_send_files_refuses_a_client_chosen_draft_id_and_takes_the_code_only_from_the_query()
+    {
+        await using var host = await Host.StartAsync();
+        await host.SetAllowAgentUploadsAsync(true);
+        await using var client = await host.ConnectAsync($"/mcp?upload={host.UploadCode}");
+
+        var chosen = await client.CallToolAsync("send_files", new Dictionary<string, object?>
+        {
+            ["sender_name"] = "Bot",
+            ["sender_email"] = "bot@example.com",
+            ["draft_id"] = "0123456789abcdef0123456789abcdef"
+        });
+        Assert.True(chosen.IsError);
+        Assert.StartsWith("Refused (400): Unknown draftId", ResultText(chosen));
+
+        // The tools have no code parameter: a wrong code in the query is simply an unknown link.
+        await using var wrong = await host.ConnectAsync("/mcp?upload=nosuchcode");
+        var unknown = await wrong.CallToolAsync("get_upload_url", new Dictionary<string, object?> { ["file_name"] = "a.txt", ["size_bytes"] = 1 });
+        Assert.Equal("Refused (404): Upload link not found.", ResultText(unknown));
+        var tools = await client.ListToolsAsync();
+        Assert.DoesNotContain(tools, t => t.JsonSchema.ToString().Contains("upload_code", StringComparison.OrdinalIgnoreCase));
+    }
+
     [Fact]
     public async Task Own_token_lists_the_owner_tools_without_read_share_file_and_all_adds_it()
     {
@@ -539,7 +636,7 @@ public sealed class McpHostTests
                 await db.SaveChangesAsync();
             }
 
-            var host = new Host(app, connection, storageRoot, user.Id, user.SecurityStamp);
+            var host = new Host(app, connection, storageRoot, user.Id, user.SecurityStamp) { UploadCode = user.UploadToken };
             host._heldHolder = holder;
             host.Jobs = jobs;
             return host;
@@ -548,6 +645,23 @@ public sealed class McpHostTests
         private HeldRequests? _heldHolder;
 
         public RecordingJobs Jobs { get; private set; } = null!;
+        public string UploadCode { get; private init; } = string.Empty;
+
+        public async Task SetAllowAgentUploadsAsync(bool allow)
+        {
+            await using var scope = _app.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<AgoraDbContext>();
+            (await db.Users.SingleAsync()).AllowAgentUploads = allow;
+            await db.SaveChangesAsync();
+        }
+
+        public async Task<List<Agora.Domain.Entities.Share>> SharesAsync()
+        {
+            await using var scope = _app.Services.CreateAsyncScope();
+            return await scope.ServiceProvider.GetRequiredService<AgoraDbContext>().Shares.AsNoTracking().ToListAsync();
+        }
+
+        public Task<HttpResponseMessage> PutAsync(string path, byte[] body) => _client.PutAsync(path, new ByteArrayContent(body));
         public Guid UserId => _userId;
 
         public Task<HttpResponseMessage> StartHeldRequest(string? bearer, string query = "") =>
