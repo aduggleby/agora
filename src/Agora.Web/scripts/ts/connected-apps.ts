@@ -26,3 +26,27 @@
     dialog.close();
   });
 })();
+
+
+// Settings > Connected apps: copy button of the one-time agent token panel.
+(() => {
+  const button = document.querySelector<HTMLButtonElement>('[data-copy-agent-token]');
+  const input = document.querySelector<HTMLInputElement>('[data-agent-token-value]');
+  const status = document.querySelector<HTMLElement>('[data-copy-agent-token-status]');
+  if (!button || !input || !status) return;
+
+  button.addEventListener('click', async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(input.value);
+      } else {
+        input.select();
+        if (!document.execCommand('copy')) throw new Error('copy failed');
+      }
+      status.textContent = 'Copied token.';
+    } catch {
+      input.select();
+      status.textContent = 'Unable to copy automatically. Select the token and copy it manually.';
+    }
+  });
+})();

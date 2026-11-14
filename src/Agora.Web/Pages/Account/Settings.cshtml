@@ -67,7 +67,19 @@
 <section id="connected-apps" class="mb-10 scroll-mt-24" data-connected-apps>
   <div class="bg-white rounded-2xl border border-border p-6">
     <h3 class="font-display text-xl mb-2">Connected apps</h3>
-    <p class="text-sm text-ink-muted mb-4">Apps you approved, such as the capture app, can create temporary direct links in your account. Changing your password disconnects all of them.</p>
+    <p class="text-sm text-ink-muted mb-4">Apps and AI agents you approved can use your account. The capture app creates temporary direct links. Agents can upload files and create shares, within the access you choose. Changing your password disconnects all of them.</p>
+    @if (Model.NewAgentToken is { } newToken)
+    {
+      <div class="mb-4 rounded-lg border border-border bg-cream p-3" data-agent-token-panel role="status">
+        <p class="text-sm font-medium text-ink">Agent token created: <span class="break-words">@Model.NewAgentTokenName</span></p>
+        <p class="text-xs text-ink-muted mt-0.5">Copy it now. It is shown only once and cannot be shown again.</p>
+        <div class="mt-2 flex items-center gap-2">
+          <input type="text" readonly value="@newToken" class="min-w-0 flex-1 px-3 py-2 text-sm font-mono border border-border rounded-lg bg-white focus:outline-none focus:border-terra" data-agent-token-value aria-label="Agent token" />
+          <button type="button" class="px-3 py-1.5 bg-ink text-white text-xs font-medium rounded-md hover:bg-ink/90 transition-colors" data-copy-agent-token>Copy token</button>
+        </div>
+        <p class="mt-2 text-xs text-ink-muted" data-copy-agent-token-status aria-live="polite"></p>
+      </div>
+    }
     @if (Model.ConnectedApps.Count == 0)
     {
       <p class="rounded-lg border border-border bg-cream p-3 text-sm text-ink-muted" data-connected-apps-empty>No apps connected.</p>
@@ -77,9 +89,9 @@
       <ul class="divide-y divide-border rounded-lg border border-border bg-cream">
         @foreach (var app in Model.ConnectedApps)
         {
-          <li class="flex items-center justify-between gap-4 px-3 py-3" data-connected-app="@app.Id">
+          <li class="flex flex-wrap items-center justify-between gap-4 px-3 py-3" data-connected-app="@app.Id">
             <div class="min-w-0">
-              <p class="text-sm font-medium text-ink break-words" data-connected-app-name>@app.DeviceName</p>
+              <p class="text-sm font-medium text-ink break-words"><span data-connected-app-name>@app.DeviceName</span> <span class="ml-1 px-2 py-0.5 text-xs font-medium text-ink-muted border border-border rounded-md bg-white" data-connected-app-kind>@Agora.Web.Pages.Account.SettingsModel.KindLabel(app)</span></p>
               <p class="text-xs text-ink-muted mt-0.5">
                 <span class="font-mono">@(Agora.Application.Utilities.ApiTokens.TokenPrefix)@(app.TokenPrefix)&hellip;</span>
                 &middot; Connected <span data-local-datetime="@app.ConnectedAtUtc.ToString("O")" data-local-datetime-style="compact"></span>
@@ -94,15 +106,46 @@
                 }
               </p>
             </div>
-            <form method="post" asp-page-handler="RevokeApp" class="m-0 shrink-0" data-revoke-app-form data-app-name="@app.DeviceName">
-              @Html.AntiForgeryToken()
-              <input type="hidden" name="tokenId" value="@app.Id" />
-              <button type="button" class="px-3 py-1.5 text-xs font-medium text-danger border border-border rounded-md bg-white hover:bg-danger-wash transition-colors" data-revoke-app-trigger>Revoke</button>
-            </form>
+            <div class="flex items-center gap-2 shrink-0">
+              @if (app.AccessLevel is not null)
+              {
+                <form method="post" asp-page-handler="SetAppAccess" class="m-0 flex items-center gap-2" data-app-access-form>
+                  @Html.AntiForgeryToken()
+                  <input type="hidden" name="tokenId" value="@app.Id" />
+                  <select name="accessLevel" aria-label="Access of @app.DeviceName" class="px-3 py-1.5 text-xs border border-border rounded-md bg-white focus:outline-none focus:border-terra">
+                    <option value="own" selected="@(app.AccessLevel == "own")">Only shares it creates</option>
+                    <option value="all" selected="@(app.AccessLevel == "all")">All my shares</option>
+                  </select>
+                  <button type="submit" class="px-3 py-1.5 bg-ink text-white text-xs font-medium rounded-md hover:bg-ink/90 transition-colors">Save</button>
+                </form>
+              }
+              <form method="post" asp-page-handler="RevokeApp" class="m-0" data-revoke-app-form data-app-name="@app.DeviceName">
+                @Html.AntiForgeryToken()
+                <input type="hidden" name="tokenId" value="@app.Id" />
+                <button type="button" class="px-3 py-1.5 text-xs font-medium text-danger border border-border rounded-md bg-white hover:bg-danger-wash transition-colors" data-revoke-app-trigger>Revoke</button>
+              </form>
+            </div>
           </li>
         }
       </ul>
     }
+    <h4 class="font-display text-lg mt-6 mb-2">Create agent token</h4>
+    <p class="text-sm text-ink-muted mb-4">For agents that cannot sign in through a browser. The token is shown once and can be revoked above.</p>
+    <form method="post" asp-page-handler="CreateAgentToken" class="space-y-4" data-create-agent-token-form>
+      @Html.AntiForgeryToken()
+      <div>
+        <label for="agentName" class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5 block">Name</label>
+        <input id="agentName" type="text" name="agentName" required maxlength="100" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-cream focus:outline-none focus:border-terra" />
+      </div>
+      <fieldset>
+        <legend class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5">Access</legend>
+        <label class="flex items-center gap-2 text-sm text-ink"><input type="radio" name="accessLevel" value="own" checked /> Only shares it creates</label>
+        <label class="flex items-center gap-2 text-sm text-ink mt-1"><input type="radio" name="accessLevel" value="all" /> All my shares (it can also download files, including files people sent you)</label>
+      </fieldset>
+      <div class="flex justify-end">
+        <button type="submit" class="px-5 py-2 bg-ink text-white text-sm font-medium rounded-lg hover:bg-ink/90 transition-colors">Create agent token</button>
+      </div>
+    </form>
   </div>
 </section>
 
@@ -144,6 +187,24 @@
       </div>
       <p class="mt-2 text-xs text-ink-muted" data-copy-upload-url-status aria-live="polite"></p>
     </div>
+    <form method="post" asp-page-handler="SetAgentUploads" class="mt-4 space-y-3" data-agent-uploads-form>
+      @Html.AntiForgeryToken()
+      <label class="flex items-center gap-2 text-sm text-ink">
+        <input type="checkbox" name="allowAgentUploads" value="true" checked="@Model.AllowAgentUploads" data-allow-agent-uploads />
+        Let AI agents send files to my upload link
+      </label>
+      <p class="text-xs text-ink-muted">Off by default. Anyone with the link can still send files in a browser.</p>
+      @if (Model.AgentInstructionsUrl.Length > 0)
+      {
+        <div class="rounded-lg border border-border bg-cream p-3">
+          <p class="text-xs font-medium text-ink-muted uppercase tracking-wider mb-1.5">Agent instructions URL</p>
+          <p class="text-sm text-ink-light font-mono break-all" data-agent-instructions-url>@Model.AgentInstructionsUrl</p>
+        </div>
+      }
+      <div class="flex justify-end">
+        <button type="submit" class="px-5 py-2 bg-ink text-white text-sm font-medium rounded-lg hover:bg-ink/90 transition-colors">Save</button>
+      </div>
+    </form>
   </div>
 </section>
 
