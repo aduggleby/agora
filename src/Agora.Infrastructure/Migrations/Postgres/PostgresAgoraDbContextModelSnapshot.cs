@@ -79,6 +79,10 @@ namespace Agora.Infrastructure.Migrations.Postgres
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("AccessLevel")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
                     b.Property<DateTime?>("AuthCodeExpiresAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -206,6 +210,9 @@ namespace Agora.Infrastructure.Migrations.Postgres
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid?>("CreatedByApiTokenId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTime?>("DeletedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -259,6 +266,11 @@ namespace Agora.Infrastructure.Migrations.Postgres
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
+                    b.Property<bool>("SentByAgent")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
                     b.Property<string>("ShareExperienceType")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -290,6 +302,8 @@ namespace Agora.Infrastructure.Migrations.Postgres
                         .HasColumnType("bigint");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CreatedByApiTokenId");
 
                     b.HasIndex("OwnerUserId");
 
@@ -393,6 +407,11 @@ namespace Agora.Infrastructure.Migrations.Postgres
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
+
+                    b.Property<bool>("AllowAgentUploads")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");

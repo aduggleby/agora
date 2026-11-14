@@ -22,6 +22,8 @@ public sealed class UserAccount
     public string DefaultNotifyMode { get; set; } = "once";
     public string DefaultExpiryMode { get; set; } = "7_days";
     public bool IsEnabled { get; set; } = true;
+    /// <summary>Whether anonymous AI agents may send files to this account's upload link through the agent interface.</summary>
+    public bool AllowAgentUploads { get; set; }
     /// <summary>
     /// Random value embedded in every sign-in cookie and compared on revalidation. Rotating it signs the user out of
     /// all sessions; empty means the row predates stamps and gets one at the next sign-in.

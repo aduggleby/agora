@@ -48,6 +48,8 @@ public class AgoraDbContext : DbContext
             // ShareToken is now the canonical lookup key for public links.
             builder.HasIndex(x => x.ShareToken).IsUnique();
             builder.HasIndex(x => x.OwnerUserId);
+            builder.HasIndex(x => x.CreatedByApiTokenId);
+            builder.Property(x => x.SentByAgent).HasDefaultValue(false);
             builder.Property(x => x.UploaderEmail).HasMaxLength(320);
             builder.Property(x => x.ShareToken).HasMaxLength(120);
             builder.Property(x => x.NotifyMode).HasMaxLength(20);
@@ -119,6 +121,7 @@ public class AgoraDbContext : DbContext
             builder.Property(x => x.PendingPasswordTokenHash).HasMaxLength(64);
             builder.Property(x => x.PasswordResetTokenHash).HasMaxLength(64);
             builder.Property(x => x.FailedLoginCount).HasDefaultValue(0);
+            builder.Property(x => x.AllowAgentUploads).HasDefaultValue(false);
         });
 
         modelBuilder.Entity<ApiToken>(builder =>
@@ -138,6 +141,7 @@ public class AgoraDbContext : DbContext
             builder.Property(x => x.CodeChallenge).HasMaxLength(128);
             builder.Property(x => x.RedirectUri).HasMaxLength(200);
             builder.Property(x => x.IssuedSecurityStamp).HasMaxLength(64);
+            builder.Property(x => x.AccessLevel).HasMaxLength(16);
         });
 
         modelBuilder.Entity<SystemSetting>(builder =>

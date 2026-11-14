@@ -79,6 +79,10 @@ namespace Agora.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("AccessLevel")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
                     b.Property<DateTime?>("AuthCodeExpiresAtUtc")
                         .HasColumnType("datetime2");
 
@@ -208,6 +212,9 @@ namespace Agora.Infrastructure.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<Guid?>("CreatedByApiTokenId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<DateTime?>("DeletedAtUtc")
                         .HasColumnType("datetime2");
 
@@ -261,6 +268,11 @@ namespace Agora.Infrastructure.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<bool>("SentByAgent")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
                     b.Property<string>("ShareExperienceType")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -292,6 +304,8 @@ namespace Agora.Infrastructure.Migrations
                         .HasColumnType("bigint");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CreatedByApiTokenId");
 
                     b.HasIndex("OwnerUserId");
 
@@ -395,6 +409,11 @@ namespace Agora.Infrastructure.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("AllowAgentUploads")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("datetime2");

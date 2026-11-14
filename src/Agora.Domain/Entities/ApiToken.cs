@@ -27,4 +27,9 @@ public sealed class ApiToken
     public DateTime? ExchangedAtUtc { get; set; }
     public DateTime? LastUsedAtUtc { get; set; }
     public DateTime? RevokedAtUtc { get; set; }
+    /// <summary>
+    /// What an agent token may reach: <c>own</c> (only shares it created) or <c>all</c> (every share of the account).
+    /// Null for the capture app, whose tokens predate access levels.
+    /// </summary>
+    public string? AccessLevel { get; set; }
 }

@@ -33,6 +33,10 @@ public sealed class Share
     public string? SenderEmail { get; set; }
     public string? SenderMessage { get; set; }
     public string NotifyMode { get; set; } = "none";
+    /// <summary>The API token (agent) that created this share; null for browser shares. Not a foreign key: token rows are cleaned up.</summary>
+    public Guid? CreatedByApiTokenId { get; set; }
+    /// <summary>True when the files were sent through the anonymous agent interface of an upload link.</summary>
+    public bool SentByAgent { get; set; }
     public DateTime? ExpiresAtUtc { get; set; }
     public DateTime? FirstDownloadedAtUtc { get; set; }
     public DateTime CreatedAtUtc { get; set; }
