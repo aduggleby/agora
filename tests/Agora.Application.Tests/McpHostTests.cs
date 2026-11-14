@@ -285,6 +285,8 @@ public sealed class McpHostTests
         Assert.Equal("correct horse battery", view.GetProperty("password").GetString());
         Assert.StartsWith($"{Base}/s/", view.GetProperty("url").GetString());
         Assert.Equal(JsonDocument.Parse(Text(result)).RootElement.GetRawText(), view.GetRawText());
+        Assert.EndsWith("Z", view.GetProperty("createdAtUtc").GetString());
+        Assert.EndsWith("Z", view.GetProperty("expiresAtUtc").GetString());
 
         var token = view.GetProperty("token").GetString()!;
         var again = await client.CallToolAsync("get_share", Args(("token", token)));

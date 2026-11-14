@@ -462,8 +462,9 @@ public sealed class AgentShareService(
         Title: x.Title,
         ArchiveName: x.ZipDisplayName,
         Files: x.Files.Select(f => new AgentFileView(f.Id.ToString(), f.Name, f.SizeBytes)).ToList(),
-        CreatedAtUtc: x.CreatedAtUtc,
-        ExpiresAtUtc: x.ExpiresAtUtc,
+        // SQL Server and SQLite read timestamps back as Kind=Unspecified; they are stored as UTC and must serialize with the Z.
+        CreatedAtUtc: DateTime.SpecifyKind(x.CreatedAtUtc, DateTimeKind.Utc),
+        ExpiresAtUtc: x.ExpiresAtUtc is { } expires ? DateTime.SpecifyKind(expires, DateTimeKind.Utc) : null,
         DownloadCount: x.DownloadCount,
         Received: x.Received,
         SentByAgent: x.SentByAgent,
