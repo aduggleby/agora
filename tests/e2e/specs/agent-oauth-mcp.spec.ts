@@ -209,7 +209,7 @@ test.describe('Agent OAuth and MCP', () => {
     expect(refused.isError).toBe(true);
     expect(refused.text).toMatch(/^Refused \(404\): /);
     expect((await request.delete(`/api/v1/shares/${browserShare}`, { headers: bearer(token) })).status()).toBe(404);
-    expect((await request.get(`/api/v1/shares/${browserShare}/files`, { headers: bearer(token) })).status()).toBe(403);
+    expect((await request.get(`/api/v1/shares/${browserShare}/files`, { headers: bearer(token) })).status()).toBe(404);
 
     // Settings > Connected apps: the client is listed; raise it to "All my shares" (AE7).
     await page.goto('/account/settings');
