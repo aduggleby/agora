@@ -237,6 +237,19 @@ public sealed class AgentApiHostTests
     }
 
     [Fact]
+    public async Task A_refused_seal_discards_the_inline_draft_it_just_created()
+    {
+        await using var host = await Host.StartAsync();
+        var token = await host.IssueAgentTokenAsync("own");
+        host.Jobs.FailEnqueue = true;
+
+        var create = await host.PostJsonAsync("/api/v1/shares", token, new { files = new[] { new { fileName = "a.txt", text = "a" } }, expiry = "1_hour", notify = "none", waitSeconds = 0 });
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, create.StatusCode);
+        Assert.Equal(0, host.StagedPayloadCount());
+    }
+
+    [Fact]
     public async Task Second_put_and_expired_urls_are_404()
     {
         await using var host = await Host.StartAsync();
@@ -727,8 +740,16 @@ public sealed class AgentApiHostTests
     {
         public List<Job> Jobs { get; } = [];
 
+        /// <summary>Makes the next enqueues fail, like an unreachable job store.</summary>
+        public bool FailEnqueue { get; set; }
+
         public string Create(Job job, IState state)
         {
+            if (FailEnqueue)
+            {
+                throw new InvalidOperationException("The job store is down.");
+            }
+
             Jobs.Add(job);
             return Guid.NewGuid().ToString("N");
         }

@@ -166,6 +166,23 @@ public sealed class AgentUploadLinkHostTests
         Assert.Equal(2, (await host.ShareFilesAsync(Assert.Single(await host.SharesAsync()).ShareToken)).Count);
     }
 
+    [Fact]
+    public async Task A_refused_queue_discards_the_inline_draft_the_send_created()
+    {
+        await using var host = await Host.StartAsync();
+        host.Jobs.FailEnqueue = true;
+
+        var send = await host.PostAnonymousAsync(Api(host, "/send"), new
+        {
+            files = new object[] { new { fileName = "a.txt", text = "alpha" } },
+            senderName = "Report Bot",
+            senderEmail = "bot@example.com"
+        });
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, send.StatusCode);
+        Assert.Equal(0, host.StagedPayloadCount());
+    }
+
     [Theory]
     [InlineData("", "bot@example.com", "senderName is required.")]
     [InlineData("Bot", "not-an-email", "senderEmail must be a valid email address.")]

@@ -345,6 +345,11 @@ public sealed class AgentShareService(
         var sealRefusal = await OwnerShareSubmission.ClaimAndSealAsync(manager, queuedShareCreationJob, payload, ct);
         if (sealRefusal is not null)
         {
+            if (createdDraft)
+            {
+                await DiscardDraftAsync(caller.Owner.UserId, draftId!);
+            }
+
             return AgentResult<AgentShareView>.Refuse(sealRefusal.Status, sealRefusal.Message);
         }
 

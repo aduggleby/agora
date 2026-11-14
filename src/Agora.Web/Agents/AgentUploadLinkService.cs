@@ -220,9 +220,13 @@ public sealed class AgentUploadLinkService(
 
         var payload = prepared.Payload! with { SentByAgent = true };
         var sealRefusal = await PublicShareSubmission.SealAndQueueAsync(manager, queuedShareCreationJob, payload, ct);
-        return sealRefusal is null
-            ? AgentResult<SendFilesResult>.Ok(new SendFilesResult("queued"), StatusCodes.Status202Accepted)
-            : AgentResult<SendFilesResult>.Refuse(sealRefusal.Status, sealRefusal.Message);
+        if (sealRefusal is not null)
+        {
+            await DiscardIfCreatedAsync(user, draft!, created);
+            return AgentResult<SendFilesResult>.Refuse(sealRefusal.Status, sealRefusal.Message);
+        }
+
+        return AgentResult<SendFilesResult>.Ok(new SendFilesResult("queued"), StatusCodes.Status202Accepted);
     }
 
     /// <summary>
