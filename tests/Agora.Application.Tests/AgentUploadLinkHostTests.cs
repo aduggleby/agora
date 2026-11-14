@@ -167,6 +167,27 @@ public sealed class AgentUploadLinkHostTests
     }
 
     [Fact]
+    public async Task Staging_into_a_draft_keeps_its_marker_fresh_for_inline_and_ticket_uploads()
+    {
+        await using var host = await Host.StartAsync();
+        var first = await (await host.PostAnonymousAsync(Api(host, "/uploads"), new { fileName = "a.txt", text = "a" })).Content.ReadFromJsonAsync<JsonElement>();
+        var draftId = first.GetProperty("draftId").GetString()!;
+        var marker = host.DraftMarkerPath(draftId);
+        var old = DateTime.UtcNow.AddDays(-2);
+
+        File.SetLastWriteTimeUtc(marker, old);
+        Assert.Equal(HttpStatusCode.Created, (await host.PostAnonymousAsync(Api(host, "/uploads"), new { draftId, fileName = "b.txt", text = "b" })).StatusCode);
+        Assert.True(File.GetLastWriteTimeUtc(marker) > DateTime.UtcNow.AddMinutes(-5));
+
+        File.SetLastWriteTimeUtc(marker, old);
+        var issued = await (await host.PostAnonymousAsync(Api(host, "/upload-urls"), new { draftId, fileName = "c.txt", sizeBytes = 1 })).Content.ReadFromJsonAsync<JsonElement>();
+        File.SetLastWriteTimeUtc(marker, old);
+        var put = await host.PutAsync(new Uri(issued.GetProperty("uploadUrl").GetString()!).AbsolutePath, [1]);
+        Assert.Equal(HttpStatusCode.Created, put.StatusCode);
+        Assert.True(File.GetLastWriteTimeUtc(marker) > DateTime.UtcNow.AddMinutes(-5));
+    }
+
+    [Fact]
     public async Task A_refused_queue_discards_the_inline_draft_the_send_created()
     {
         await using var host = await Host.StartAsync();

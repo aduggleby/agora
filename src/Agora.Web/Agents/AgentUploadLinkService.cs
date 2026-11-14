@@ -255,7 +255,9 @@ public sealed class AgentUploadLinkService(
 
         try
         {
-            return AgentResult<PublicTicketAdmission>.Ok(new PublicTicketAdmission(user.Id, await manager.FindPublicUploadDraftAsync(user.Id, ticket.DraftId, ct)));
+            var draft = await manager.FindPublicUploadDraftAsync(user.Id, ticket.DraftId, ct);
+            TouchDraft(user.UploadToken, draft);
+            return AgentResult<PublicTicketAdmission>.Ok(new PublicTicketAdmission(user.Id, draft));
         }
         catch (UploadLimitException ex)
         {
@@ -351,6 +353,7 @@ public sealed class AgentUploadLinkService(
                 }
 
                 var existing = await manager.EnsurePublicUploadDraftAsync(user.Id, requested, user.UploadToken, clientAddress, ct);
+                TouchDraft(user.UploadToken, existing);
                 return AgentResult<(string, bool)>.Ok((existing, false));
             }
 
@@ -394,8 +397,35 @@ public sealed class AgentUploadLinkService(
     private void RememberDraft(string code, string draftId)
     {
         var path = MarkerPath(code, draftId);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllBytes(path, []);
+        // The sweep may remove the (empty) per-code directory between the two calls; one retry covers that.
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllBytes(path, []);
+                return;
+            }
+            catch (DirectoryNotFoundException) when (attempt == 0)
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// Marks the draft as active: the marker is swept by its write time, so a draft staged into for longer than the
+    /// sweep window must keep its marker fresh or it would stop being accepted while it still exists.
+    /// </summary>
+    private void TouchDraft(string code, string draftId)
+    {
+        try
+        {
+            File.SetLastWriteTimeUtc(MarkerPath(code, draftId), DateTime.UtcNow);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // No marker (or a sweep right now): the draft is simply not accepted again, as before.
+        }
     }
 
     /// <summary>True only for a 32-character hex id this interface minted for this code (a regenerated code starts over).</summary>

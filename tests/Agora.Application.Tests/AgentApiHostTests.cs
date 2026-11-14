@@ -618,6 +618,10 @@ public sealed class AgentApiHostTests
         }
 
         /// <summary>Runs the most recently queued share creation job, like the Hangfire worker.</summary>
+        /// <summary>The marker file of an anonymous agent draft (one per upload code and draft).</summary>
+        public string DraftMarkerPath(string draftId) =>
+            Directory.EnumerateFiles(Path.Combine(_storageRoot, "uploads", "agent-drafts"), draftId, SearchOption.AllDirectories).Single();
+
         public async Task WaitForJobsAsync(int count)
         {
             for (var i = 0; i < 400 && Jobs.Jobs.Count < count; i++)

@@ -2388,6 +2388,7 @@ public sealed partial class ShareManager(
         };
 
         var removed = 0;
+        var agentDraftsRoot = candidates[2].Root;
         foreach (var (root, pattern) in candidates)
         {
             if (!Directory.Exists(root))
@@ -2402,6 +2403,21 @@ public sealed partial class ShareManager(
                 {
                     ScratchFiles.TryDelete(path);
                     removed++;
+                }
+            }
+
+            if (root == agentDraftsRoot)
+            {
+                // One directory per upload code: remove the ones that no longer hold a marker (Delete refuses a non-empty one).
+                foreach (var directory in Directory.EnumerateDirectories(root))
+                {
+                    try
+                    {
+                        Directory.Delete(directory, recursive: false);
+                    }
+                    catch (IOException)
+                    {
+                    }
                 }
             }
         }

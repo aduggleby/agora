@@ -857,6 +857,25 @@ public sealed class UploadQuotaTests
     }
 
     [Fact]
+    public async Task CleanupZombieUploadsAsync_RemovesAgentDraftMarkersByAgeAndTheEmptyCodeDirectories()
+    {
+        await using var harness = await Harness.CreateAsync(o => o.ZombieUploadRetentionHours = 1);
+        var root = Path.Combine(harness.StorageRoot, "uploads", "agent-drafts");
+        var oldDirectory = Directory.CreateDirectory(Path.Combine(root, "aaaa")).FullName;
+        var oldMarker = Path.Combine(oldDirectory, NewId());
+        await File.WriteAllBytesAsync(oldMarker, []);
+        File.SetLastWriteTimeUtc(oldMarker, DateTime.UtcNow.AddHours(-2));
+        var liveDirectory = Directory.CreateDirectory(Path.Combine(root, "bbbb")).FullName;
+        var liveMarker = Path.Combine(liveDirectory, NewId());
+        await File.WriteAllBytesAsync(liveMarker, []);
+
+        await harness.Manager.CleanupZombieUploadsAsync(CancellationToken.None);
+
+        Assert.False(Directory.Exists(oldDirectory));
+        Assert.True(File.Exists(liveMarker));
+    }
+
+    [Fact]
     public async Task DeleteStagedUploadAsync_RefusesTraversalIntoAnotherStagingRoot()
     {
         await using var harness = await Harness.CreateAsync();
