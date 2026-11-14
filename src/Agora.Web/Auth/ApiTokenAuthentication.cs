@@ -2,6 +2,8 @@ using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Agora.Application.Utilities;
 using Agora.Infrastructure.Auth;
+using Agora.Web.Endpoints;
+using Agora.Web.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Options;
 
@@ -22,6 +24,8 @@ public static class ApiTokenDefaults
     public const string CapturePolicy = "Capture";
     /// <summary>Policy of the agent endpoints: agent tokens (levels own and all) only.</summary>
     public const string AgentPolicy = "Agent";
+    /// <summary>Policy of <c>/mcp</c>: an agent token (own or all), or no credential with exactly one <c>upload</c> query value.</summary>
+    public const string AgentMcpPolicy = "AgentMcp";
 
     private const string BearerPrefix = "Bearer ";
 
@@ -65,10 +69,21 @@ public static class ApiTokenDefaults
         IsApiTokenPrincipal(principal) ? principal.FindFirstValue(AccessClaim) : null;
 
     /// <summary>A JSON 401 with <c>WWW-Authenticate: Bearer</c>, never a redirect.</summary>
-    public static Task WriteUnauthorizedAsync(HttpResponse response, string error, bool invalidToken = false)
+    public static Task WriteUnauthorizedAsync(HttpResponse response, string error, bool invalidToken = false, string? resourceMetadataUrl = null)
     {
         response.StatusCode = StatusCodes.Status401Unauthorized;
-        response.Headers.WWWAuthenticate = invalidToken ? "Bearer error=\"invalid_token\"" : "Bearer";
+        var parameters = new List<string>();
+        if (invalidToken)
+        {
+            parameters.Add("error=\"invalid_token\"");
+        }
+
+        if (resourceMetadataUrl is not null)
+        {
+            parameters.Add($"resource_metadata=\"{resourceMetadataUrl}\"");
+        }
+
+        response.Headers.WWWAuthenticate = parameters.Count == 0 ? "Bearer" : "Bearer " + string.Join(", ", parameters);
         response.Headers.CacheControl = "no-store";
         return response.WriteAsJsonAsync(new { error });
     }
@@ -76,11 +91,17 @@ public static class ApiTokenDefaults
     /// <summary>The 401 for an <c>/api/v1</c> request without a working token: "required", or "invalid" when one was sent.</summary>
     public static Task ChallengeAsync(HttpContext context)
     {
-        var sentToken = ReadBearerToken(context.Request) is not null;
+        // Only /mcp points clients at the OAuth metadata (RFC 9728); the /api/v1 header stays exactly as it was.
+        var isMcp = context.GetEndpoint()?.Metadata.GetMetadata<McpEndpointMetadata>() is not null;
+        var sentToken = isMcp ? HasBearerHeader(context.Request) : ReadBearerToken(context.Request) is not null;
+        var resourceMetadata = isMcp
+            ? context.RequestServices.GetRequiredService<PublicBaseUrlResolver>().Resolve(context.Request) + "/.well-known/oauth-protected-resource/mcp"
+            : null;
         return WriteUnauthorizedAsync(
             context.Response,
             sentToken ? "The API token is invalid, revoked or expired; reconnect the app." : "An API token is required.",
-            invalidToken: sentToken);
+            invalidToken: sentToken,
+            resourceMetadataUrl: resourceMetadata);
     }
 
     public static Task WriteForbiddenAsync(HttpResponse response)

@@ -3,6 +3,8 @@ using System.Security.Claims;
 using System.Threading.RateLimiting;
 using Agora.Application.Models;
 using Agora.Application.Utilities;
+using Agora.Web.Auth;
+using Agora.Web.Endpoints;
 using Microsoft.AspNetCore.RateLimiting;
 
 namespace Agora.Web.Startup;
@@ -18,6 +20,8 @@ public static class RateLimitSetup
     public const string AuthEndpoints = "AuthEndpoints";
     public const string DownloadEndpoints = "DownloadEndpoints";
     public const string PublicUploadEndpoints = "PublicUploadEndpoints";
+    /// <summary>Concurrent requests one caller may have in flight on <c>/mcp</c>; its body is parsed before draft admission.</summary>
+    public const int McpConcurrentRequests = 2;
 
     public static void Configure(RateLimiterOptions options, AgoraRateLimitOptions limits, bool isE2E)
     {
@@ -35,7 +39,7 @@ public static class RateLimitSetup
             return ValueTask.CompletedTask;
         };
 
-        options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        var budget = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
         {
             if (httpContext.User.Identity?.IsAuthenticated != true)
             {
@@ -73,6 +77,24 @@ public static class RateLimitSetup
                     AutoReplenishment = true
                 });
         });
+
+        // /mcp also admits at most two concurrent requests per caller (per account for agent tokens, else per address).
+        // This runs in the middleware, before the endpoint reads any body.
+        var mcpConcurrency = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        {
+            if (httpContext.GetEndpoint()?.Metadata.GetMetadata<McpEndpointMetadata>() is null)
+            {
+                return RateLimitPartition.GetNoLimiter("mcp:none");
+            }
+
+            var caller = ApiTokenDefaults.IsApiTokenPrincipal(httpContext.User)
+                ? $"account:{httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier)}"
+                : $"ip:{ClientIp(httpContext)}";
+            return RateLimitPartition.GetConcurrencyLimiter(
+                partitionKey: $"mcp:{caller}",
+                factory: _ => new ConcurrencyLimiterOptions { PermitLimit = McpConcurrentRequests, QueueLimit = 0 });
+        });
+        options.GlobalLimiter = PartitionedRateLimiter.CreateChained(budget, mcpConcurrency);
 
         options.AddPolicy(AuthEndpoints, httpContext =>
         {
@@ -119,6 +141,13 @@ public static class RateLimitSetup
             if (isE2E)
             {
                 return RateLimitPartition.GetNoLimiter("public-upload:e2e");
+            }
+
+            // /mcp: anonymous callers share the browser's per-address bucket; agent tokens act as the signed-in owner.
+            if (httpContext.GetEndpoint()?.Metadata.GetMetadata<McpEndpointMetadata>() is not null &&
+                ApiTokenDefaults.IsApiTokenPrincipal(httpContext.User))
+            {
+                return RateLimitPartition.GetNoLimiter("public-upload:mcp-token");
             }
 
             return RateLimitPartition.GetFixedWindowLimiter(

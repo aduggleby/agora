@@ -1,5 +1,6 @@
 using Agora.Application.Models;
 using Agora.Application.Utilities;
+using Agora.Web.Agents;
 using Agora.Web.Auth;
 using Agora.Web.Endpoints;
 using Microsoft.AspNetCore.Authentication;
@@ -97,6 +98,14 @@ public static class AuthSetup
             .AddAuthenticationSchemes(ApiTokenDefaults.AuthenticationScheme)
             .RequireAuthenticatedUser()
             .RequireAssertion(context => ApiTokenDefaults.AccessLevel(context.User) == ApiTokens.AccessLevels.Capture));
+        // /mcp: a bearer means an agent token (own or all; a capture token is refused with 403, an invalid one challenged
+        // with 401). Without a bearer the only way in is anonymous upload-link mode: exactly one non-empty `upload` value.
+        options.AddPolicy(ApiTokenDefaults.AgentMcpPolicy, policy => policy
+            .AddAuthenticationSchemes(ApiTokenDefaults.AuthenticationScheme)
+            .RequireAssertion(context => context.Resource is HttpContext http &&
+                (ApiTokenDefaults.HasBearerHeader(http.Request)
+                    ? ApiTokens.AccessLevels.IsAgentLevel(ApiTokenDefaults.AccessLevel(context.User))
+                    : McpCaller.UploadCode(http.Request) is not null)));
         options.AddPolicy(ApiTokenDefaults.AgentPolicy, policy => policy
             .AddAuthenticationSchemes(ApiTokenDefaults.AuthenticationScheme)
             .RequireAuthenticatedUser()
