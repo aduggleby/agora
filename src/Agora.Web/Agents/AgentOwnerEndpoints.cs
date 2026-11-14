@@ -321,7 +321,11 @@ public static class AgentOwnerEndpoints
             return Refuse(StatusCodes.Status404NotFound, invalid);
         }
 
-        if (!await TokenStillWorksAsync(context, t, ct))
+        // Downloads need level all at redemption too: a ticket issued before a downgrade stops working with it.
+        var level = t.TokenId is { } issuer
+            ? await context.RequestServices.GetRequiredService<Agora.Infrastructure.Auth.ApiTokenService>().ActiveAccessLevelAsync(issuer, t.OwnerUserId, ct)
+            : null;
+        if (level != ApiTokens.AccessLevels.All)
         {
             return Refuse(StatusCodes.Status404NotFound, invalid);
         }

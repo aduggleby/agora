@@ -392,6 +392,24 @@ public sealed class AgentApiHostTests
     }
 
     [Fact]
+    public async Task A_download_url_stops_working_when_its_token_is_downgraded_below_all()
+    {
+        await using var host = await Host.StartAsync();
+        var token = await host.IssueAgentTokenAsync("all");
+        var created = await host.CreateShareAndRunJobAsync(token, new { files = new[] { new { fileName = "a.txt", text = "payload" } }, expiry = "indefinite", notify = "none", waitSeconds = 10 });
+        var shareToken = (await created.Response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("token").GetString()!;
+        var fileId = (await host.ShareFilesAsync(shareToken)).Single().Id;
+        var url = await host.IssueDownloadUrlAsync(token, shareToken, fileId);
+
+        await host.SetLevelAsync(token, "own");
+
+        Assert.Equal(HttpStatusCode.NotFound, (await host.SendAsync(HttpMethod.Get, url, null)).StatusCode);
+        // The refusal did not spend the ticket: restoring the level makes it work again.
+        await host.SetLevelAsync(token, "all");
+        Assert.Equal(HttpStatusCode.OK, (await host.SendAsync(HttpMethod.Get, url, null)).StatusCode);
+    }
+
+    [Fact]
     public async Task Public_upload_tickets_of_an_unknown_upload_code_are_404()
     {
         await using var host = await Host.StartAsync();

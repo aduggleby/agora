@@ -280,6 +280,16 @@ public sealed class ApiTokenService(AgoraDbContext db, TimeProvider? timeProvide
         return match is not null && IsActive(match.Token, match.User, NowUtc);
     }
 
+    /// <summary>The token's current access level while it is working (see <see cref="IsTokenActiveAsync"/>), else null.</summary>
+    public async Task<string?> ActiveAccessLevelAsync(Guid tokenId, Guid userId, CancellationToken cancellationToken)
+    {
+        var match = await db.ApiTokens.AsNoTracking()
+            .Where(x => x.Id == tokenId && x.UserId == userId)
+            .Join(db.Users.AsNoTracking(), t => t.UserId, u => u.Id, (t, u) => new { Token = t, User = u })
+            .SingleOrDefaultAsync(cancellationToken);
+        return match is not null && IsActive(match.Token, match.User, NowUtc) ? match.Token.AccessLevel : null;
+    }
+
     /// <summary>
     /// Revokes one of the user's tokens (or pending consents). True when the token belongs to the user, including when
     /// it was already revoked; false for someone else's or an unknown id.
