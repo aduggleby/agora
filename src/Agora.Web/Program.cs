@@ -98,8 +98,7 @@ if (string.IsNullOrWhiteSpace(connectionString))
 // Throws for unsupported values so a typo can never silently fall back to the wrong database.
 var databaseProvider = DatabaseSetup.ParseProvider(builder.Configuration[DatabaseSetup.ProviderKey]);
 builder.Services.AddAgoraDbContext(databaseProvider, connectionString);
-var healthChecks = builder.Services.AddHealthChecks()
-    .AddCheck<DatabaseHealthCheck>("database", tags: [DatabaseHealthCheck.ReadyTag], timeout: TimeSpan.FromSeconds(5));
+var healthChecks = builder.Services.AddAgoraDatabaseHealthCheck();
 
 // Durable content (share files, archives, backgrounds, previews): Storage:Provider=FileSystem (default, rooted at
 // StorageRoot) or S3. Scratch (staging, drafts, tmp/, preview locks) always stays under StorageRoot.

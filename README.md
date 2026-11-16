@@ -818,6 +818,12 @@ The confirmation page returns you to Agora Capture, where Settings shows the con
 Both are anonymous, not rate limited, set no cookies and do not depend on DataProtection. Point your container
 health check and your load balancer at them.
 
+Each `/ready` check answers within about 2 seconds (the database and bucket checks have their own 2 s timeouts),
+so give probes a timeout of 3 seconds or more. A slow or failing dependency is logged as an `Unhealthy` health check
+at Error level and answered with `503`. A probe that hangs up before the answer (a client timeout, or a reverse proxy
+that reloads its configuration and cancels its in-flight health check) is not a dependency failure: it is logged only
+at Debug level ("The request was aborted by the client").
+
 ### Logs
 
 Logs always go to the console (stdout). In addition, unless `Agora__Logging__File__Enabled=false`, a daily rolling
