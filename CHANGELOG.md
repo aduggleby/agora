@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-16
+
 ### Fixed
 - `GET /ready` no longer logs `Health check database with status "Unhealthy" ... 'Database check failed.'` at Error level when the prober hangs up before the answer (for example a reverse proxy that reloads its configuration and cancels its in-flight health check). That case is now logged only at Debug level. The database check has its own 2 s timeout, so a slow database is answered with `503` within a 3 s probe budget.
 
