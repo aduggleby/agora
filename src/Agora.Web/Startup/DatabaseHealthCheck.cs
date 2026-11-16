@@ -8,7 +8,7 @@ namespace Agora.Web.Startup;
 /// GET /live runs no checks (process up only). The check is bounded by its own 2 s timeout so a slow database
 /// yields a real Unhealthy (503) within the reverse proxy's 3 s probe budget instead of an aborted probe.
 /// </summary>
-public sealed class DatabaseHealthCheck(Func<CancellationToken, Task<bool>> canConnect) : IHealthCheck
+public sealed class DatabaseHealthCheck(Func<CancellationToken, Task<bool>> canConnect, TimeProvider timeProvider) : IHealthCheck
 {
     /// <summary>Tag used to select this check for /ready.</summary>
     public const string ReadyTag = "ready";
@@ -17,7 +17,7 @@ public sealed class DatabaseHealthCheck(Func<CancellationToken, Task<bool>> canC
 
     public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
     {
-        using var timeout = new CancellationTokenSource(CheckTimeout);
+        using var timeout = new CancellationTokenSource(CheckTimeout, timeProvider);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         try
         {
@@ -40,7 +40,8 @@ public static class DatabaseHealthCheckSetup
     /// <summary>Registers the health check service with the database readiness check (tag <see cref="DatabaseHealthCheck.ReadyTag"/>).</summary>
     public static IHealthChecksBuilder AddAgoraDatabaseHealthCheck(this IServiceCollection services)
     {
-        services.AddScoped(sp => new DatabaseHealthCheck(sp.GetRequiredService<AgoraDbContext>().Database.CanConnectAsync));
+        services.AddScoped(sp => new DatabaseHealthCheck(
+            sp.GetRequiredService<AgoraDbContext>().Database.CanConnectAsync, sp.GetService<TimeProvider>() ?? TimeProvider.System));
         return services.AddHealthChecks()
             .AddCheck<DatabaseHealthCheck>("database", tags: [DatabaseHealthCheck.ReadyTag], timeout: TimeSpan.FromSeconds(5));
     }

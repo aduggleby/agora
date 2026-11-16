@@ -3,6 +3,7 @@ using Agora.Web.Startup;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 namespace Agora.Application.Tests;
@@ -22,7 +23,7 @@ public sealed class DatabaseHealthCheckTests
     [Fact]
     public async Task Reachable_IsHealthy()
     {
-        var check = new DatabaseHealthCheck(CancellationAware);
+        var check = new DatabaseHealthCheck(CancellationAware, TimeProvider.System);
 
         Assert.Equal(HealthStatus.Healthy, (await check.CheckHealthAsync(Context)).Status);
     }
@@ -30,7 +31,7 @@ public sealed class DatabaseHealthCheckTests
     [Fact]
     public async Task NotReachable_IsUnhealthy()
     {
-        var check = new DatabaseHealthCheck(_ => Task.FromResult(false));
+        var check = new DatabaseHealthCheck(_ => Task.FromResult(false), TimeProvider.System);
 
         Assert.Equal(HealthStatus.Unhealthy, (await check.CheckHealthAsync(Context)).Status);
     }
@@ -38,7 +39,7 @@ public sealed class DatabaseHealthCheckTests
     [Fact]
     public async Task Failure_IsUnhealthy_WithException()
     {
-        var check = new DatabaseHealthCheck(_ => throw new InvalidOperationException("boom"));
+        var check = new DatabaseHealthCheck(_ => throw new InvalidOperationException("boom"), TimeProvider.System);
 
         var result = await check.CheckHealthAsync(Context);
 
@@ -50,7 +51,7 @@ public sealed class DatabaseHealthCheckTests
     public async Task CallerCanceled_PropagatesCancellation_InsteadOfUnhealthy()
     {
         // A reverse proxy that reloads its config hangs up on its in-flight /ready probe: not a database failure.
-        var check = new DatabaseHealthCheck(CancellationAware);
+        var check = new DatabaseHealthCheck(CancellationAware, TimeProvider.System);
         using var caller = new CancellationTokenSource();
         await caller.CancelAsync();
 
@@ -58,21 +59,40 @@ public sealed class DatabaseHealthCheckTests
     }
 
     [Fact]
-    public async Task SlowDatabase_IsUnhealthy_AfterOwnTimeout()
+    public async Task CallerCancelsWhileChecking_PropagatesCancellation()
     {
+        using var caller = new CancellationTokenSource();
         var check = new DatabaseHealthCheck(async ct =>
         {
             await Task.Delay(Timeout.InfiniteTimeSpan, ct);
             return true;
-        });
-        using var caller = new CancellationTokenSource();
+        }, new FakeTimeProvider());
 
-        var started = DateTime.UtcNow;
-        var result = await check.CheckHealthAsync(Context, caller.Token);
+        var pending = check.CheckHealthAsync(Context, caller.Token);
+        await caller.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+    }
+
+    [Fact]
+    public async Task SlowDatabase_IsUnhealthy_AfterOwnTimeout()
+    {
+        var time = new FakeTimeProvider();
+        var check = new DatabaseHealthCheck(async ct =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            return true;
+        }, time);
+
+        var pending = check.CheckHealthAsync(Context);
+        time.Advance(DatabaseHealthCheck.CheckTimeout - TimeSpan.FromMilliseconds(1));
+        Assert.False(pending.IsCompleted);
+        time.Advance(TimeSpan.FromMilliseconds(1));
+        var result = await pending;
 
         Assert.Equal(HealthStatus.Unhealthy, result.Status);
         Assert.IsAssignableFrom<OperationCanceledException>(result.Exception);
-        Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(3), "the check must answer within the proxy's 3 s probe budget");
+        Assert.True(DatabaseHealthCheck.CheckTimeout < TimeSpan.FromSeconds(3), "the check must answer within the proxy's 3 s probe budget");
     }
 }
 
