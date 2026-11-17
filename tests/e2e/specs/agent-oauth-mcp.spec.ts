@@ -342,5 +342,45 @@ test.describe('Agent OAuth and MCP', () => {
     expect((await request.delete(`/api/v1/shares/${share.token}`, { headers: bearer(token) })).status()).toBe(204);
     expect((await request.get(`/api/v1/shares/${share.token}`, { headers: bearer(token) })).status()).toBe(404);
   });
+  test('an agent token creates direct links: a PDF opens inline, an HTML file downloads', async ({ page, request }) => {
+    const user = await createE2EUser(request, 'agent-direct-link');
+    await login(page, user.email, user.password);
+    await page.goto('/account/settings');
+    await page.locator('[data-create-agent-token-form] input[name="agentName"]').fill('Direct link bot');
+    await page.locator('[data-create-agent-token-form]').getByRole('button', { name: 'Create agent token' }).click();
+    const token = await page.locator('[data-agent-token-value]').inputValue();
+
+    const pdf = await request.post('/api/v1/shares', {
+      headers: bearer(token),
+      data: { files: [{ fileName: 'report.pdf', contentBase64: Buffer.from('%PDF-1.4\n%%EOF\n').toString('base64') }], directLink: true },
+    });
+    expect(pdf.status()).toBe(201);
+    const pdfLink = await pdf.json() as { token: string; url: string; kind: string; expiresAtUtc: string };
+    expect(pdfLink.kind).toBe('direct_link');
+    const days = (Date.parse(pdfLink.expiresAtUtc) - Date.now()) / 86_400_000;
+    expect(days).toBeGreaterThan(6.9);
+    expect(days).toBeLessThanOrEqual(7);
+    const pdfResponse = await request.get(`/s/${pdfLink.token}`);
+    expect(pdfResponse.status()).toBe(200);
+    expect(pdfResponse.headers()['content-type']).toContain('application/pdf');
+    expect(pdfResponse.headers()['content-disposition'] ?? '').not.toContain('attachment');
+
+    const html = await request.post('/api/v1/shares', {
+      headers: bearer(token),
+      data: { files: [{ fileName: 'report.html', text: '<h1>Report</h1><script>alert(1)</script>' }], directLink: true, directLinkExpiry: '1d' },
+    });
+    expect(html.status()).toBe(201);
+    const htmlLink = await html.json() as { token: string };
+    const htmlResponse = await request.get(`/s/${htmlLink.token}`);
+    expect(htmlResponse.status()).toBe(200);
+    expect(htmlResponse.headers()['content-type']).toContain('application/octet-stream');
+    expect(htmlResponse.headers()['content-disposition']).toContain('attachment');
+    expect(htmlResponse.headers()['content-disposition']).toContain('report.html');
+    expect(htmlResponse.headers()['content-security-policy']).toContain('sandbox');
+
+    const listed = await (await request.get('/api/v1/shares', { headers: bearer(token) })).json() as { shares: Array<{ token: string; kind: string }> };
+    expect(listed.shares.map((x) => x.kind)).toEqual(['direct_link', 'direct_link']);
+    expect((await request.delete(`/api/v1/shares/${htmlLink.token}`, { headers: bearer(token) })).status()).toBe(204);
+  });
 });
 
