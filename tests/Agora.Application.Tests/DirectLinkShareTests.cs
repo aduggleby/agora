@@ -102,12 +102,12 @@ public sealed class DirectLinkShareTests
             CancellationToken.None));
         Assert.Contains("only one file", tooMany.Message, StringComparison.OrdinalIgnoreCase);
 
-        var htmlDraft = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
-        var html = await harness.StageAsync(htmlDraft, "page.html", "<html></html>");
-        var notInline = await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Manager.CreateDirectLinkShareAsync(
-            new CreateDirectLinkCommand(OwnerId, OwnerEmail, html.UploadId, htmlDraft, DirectLinkDuration.OneDay),
+        var svgDraft = await harness.Manager.EnsureDraftShareAsync(OwnerId, null, CancellationToken.None);
+        var svg = await harness.StageAsync(svgDraft, "image.svg", "<svg/>");
+        var notAllowed = await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Manager.CreateDirectLinkShareAsync(
+            new CreateDirectLinkCommand(OwnerId, OwnerEmail, svg.UploadId, svgDraft, DirectLinkDuration.OneDay),
             CancellationToken.None));
-        Assert.Contains("only be downloaded", notInline.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cannot be a direct link", notAllowed.Message, StringComparison.OrdinalIgnoreCase);
 
         Assert.Empty(await harness.Db.Shares.ToListAsync());
         Assert.False(Directory.Exists(Path.Combine(harness.StorageRoot, "shares")), "nothing durable was written");

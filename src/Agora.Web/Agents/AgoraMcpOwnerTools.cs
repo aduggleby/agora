@@ -49,7 +49,9 @@ public sealed class AgoraMcpOwnerTools(IHttpContextAccessor accessor, AgentShare
         Caller() is not { } caller ? Unauthorized() : Map(await service.IssueUploadUrlAsync(caller, BaseUrl(), draft_id, file_name, size_bytes, purpose, ct));
 
     [McpServerTool(Name = "create_share", Title = "Create a share", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false)]
-    [Description("Creates a share link and waits until it is ready. Give draft_id (files staged earlier) or files (small files passed inline), not both. Options left out take the owner's defaults. The download password is returned here once.")]
+    [Description("Creates a share link and waits until it is ready. Give draft_id (files staged earlier) or files (small files passed inline), not both. Options left out take the owner's defaults. The download password is returned here once. " +
+                 "When sharing exactly one PDF or HTML file, set direct_link: true: the link opens the PDF straight in the browser or downloads the HTML file, with no download page, and expires after direct_link_expiry (default 7d, at most 7d). " +
+                 "Use a normal share instead when the person asks for a password, a longer lifetime, a message or several files.")]
     public async Task<CallToolResult> CreateShare(
         [Description("Draft with the staged files.")] string? draft_id = null,
         [Description("Small files passed inline (1 MiB decoded in total): each has file_name and exactly one of text or content_base64.")] McpInlineFile[]? files = null,
@@ -69,6 +71,8 @@ public sealed class AgoraMcpOwnerTools(IHttpContextAccessor accessor, AgentShare
         [Description("Page container position.")] string? container_position = null,
         [Description("Staged file id (purpose background) to use as page background. Needs draft_id: stage the files and the background into one draft, then create with that draft_id (inline files open a new draft and cannot use a background staged elsewhere).")] string? background_file_id = null,
         [Description("Seconds to wait for the share to become ready (default 20, at most 50).")] int? wait_seconds = null,
+        [Description("Create a temporary direct link of exactly one file instead of a share page. Use it for a single PDF or HTML file. Cannot be combined with share_code, message, zip_file_name, expiry, expires_at, notify, download_password, show_previews or the page options.")] bool? direct_link = null,
+        [Description("Lifetime of the direct link: 30m, 6h, 1d or 7d (default 7d). Only with direct_link.")] string? direct_link_expiry = null,
         CancellationToken ct = default)
     {
         if (Caller() is not { } caller)
@@ -92,7 +96,9 @@ public sealed class AgoraMcpOwnerTools(IHttpContextAccessor accessor, AgentShare
             download_password,
             show_previews,
             page,
-            wait_seconds);
+            wait_seconds,
+            direct_link,
+            direct_link_expiry);
         return Map(await service.CreateShareAsync(caller, BaseUrl(), request, ct));
     }
 

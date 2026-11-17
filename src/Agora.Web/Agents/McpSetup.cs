@@ -21,7 +21,10 @@ namespace Agora.Web.Agents;
 public sealed class McpToolSets
 {
     public const string OwnerInstructions =
-        "Agora shares files. Use upload_file (small files) or get_upload_url (larger files) to stage files, then create_share to get a link.";
+        "Agora shares files. Use upload_file (small files) or get_upload_url (larger files) to stage files, then create_share to get a link. " +
+        "When you share exactly one PDF or HTML file, call create_share with direct_link: true, so the link opens the PDF or downloads the HTML file directly " +
+        "without a download page (it expires after direct_link_expiry, default 7d). Use a normal share for several files, other file types, or when a password, " +
+        "message or longer lifetime is asked for.";
     public const string AnonymousInstructions =
         "This server accepts files for the owner of one upload link. Stage large files with get_upload_url or pass small ones to send_files. " +
         "Give a real sender name and email address.";

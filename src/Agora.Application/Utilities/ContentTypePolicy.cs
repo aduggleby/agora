@@ -103,6 +103,14 @@ public static class ContentTypePolicy
             : new ServePlan(OctetStream, Inline: false);
     }
 
+    /// <summary>
+    /// True when the file may be a temporary direct link: every inline-safe type (opened in the browser) plus HTML,
+    /// which <see cref="Resolve"/> still serves as an <c>application/octet-stream</c> attachment, so the link
+    /// downloads the file and never renders it in the site origin.
+    /// </summary>
+    public static bool AllowsDirectLink(string? fileName) =>
+        Resolve(fileName).Inline || FromFileName(fileName) == "text/html";
+
     /// <summary>True when the extension denotes a raster image that may be rendered inline (SVG excluded).</summary>
     public static bool IsRasterImage(string? fileName)
     {

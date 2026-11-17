@@ -386,7 +386,7 @@ public sealed partial class ShareManager(
     /// <summary>
     /// Creates a temporary direct link: the one file staged into the draft is persisted under the usual content root
     /// and served as raw bytes at <c>/s/{token}</c>; no archive is built and no notification is ever sent. Refuses
-    /// drafts that hold anything but exactly that one file and files the content policy would not serve inline.
+    /// drafts that hold anything but exactly that one file and files the content policy does not allow as a direct link.
     /// </summary>
     public async Task<CreateShareResult> CreateDirectLinkShareAsync(CreateDirectLinkCommand command, CancellationToken cancellationToken)
     {
@@ -432,6 +432,7 @@ public sealed partial class ShareManager(
                     ZipSizeBytes = stored.SizeBytes,
                     ShareExperienceType = ShareModes.ToStorageValue(ShareExperienceType.Archive),
                     AccessMode = ShareModes.ToStorageValue(ShareAccessMode.DirectLink),
+                    CreatedByApiTokenId = command.CreatedByApiTokenId,
                     ContentRootPath = shareContentRelativePath,
                     NotifyMode = "none",
                     ExpiresAtUtc = expiresAtUtc,
@@ -501,7 +502,8 @@ public sealed partial class ShareManager(
 
     /// <summary>
     /// The single share file of a draft, for a direct link: the draft must hold exactly one staged share file, it
-    /// must be the one the client named, and its extension must be one the content policy serves inline.
+    /// must be the one the client named, and its extension must be one the content policy allows as a direct link
+    /// (<see cref="ContentTypePolicy.AllowsDirectLink"/>: inline-safe types, plus HTML served as a download).
     /// </summary>
     public async Task<StagedUploadFile> ResolveDirectLinkUploadAsync(Guid ownerUserId, string draftShareId, string uploadId, CancellationToken cancellationToken)
     {
@@ -524,9 +526,9 @@ public sealed partial class ShareManager(
             throw new InvalidOperationException("Uploaded file does not belong to this draft share.");
         }
 
-        if (!ContentTypePolicy.Resolve(file.OriginalFileName).Inline)
+        if (!ContentTypePolicy.AllowsDirectLink(file.OriginalFileName))
         {
-            throw new InvalidOperationException("This file type can only be downloaded, not opened directly; create a share link instead.");
+            throw new InvalidOperationException("This file type cannot be a direct link; create a share link instead.");
         }
 
         return file;

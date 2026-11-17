@@ -148,6 +148,20 @@ Details:
     draft, so a background staged earlier in another draft is refused.
   - `downloadPassword`: 8 to 256 characters. `showPreviews` is `true` or left out. Giving `page` sets the page design of
     this share from the fields you give instead of the account's design.
+- **Direct link** (`POST /api/v1/shares` with `directLink: true`, `directLinkExpiry?`): turns exactly one file (inline or
+  the only file of the draft) into a temporary direct link instead of a share page, like "Create temporary direct link"
+  in the browser. `https://files.example.com/s/{token}` is the file itself: a PDF (and every other type the browser may
+  open: images, video, audio, plain text) opens in the browser; an HTML file is downloaded as an attachment and never
+  rendered. **Agents should use it whenever they share a single PDF or HTML file**, unless the person asks for a
+  password, a message, several files or a lifetime over 7 days.
+  - `directLinkExpiry`: `30m`, `6h`, `1d` or `7d` (default `7d`; the API default is longer than the browser's `1d`).
+  - Refused with `400`: any share-page option (`shareCode`, `message`, `zipFileName`, `expiry`, `expiresAt`, `notify`,
+    `downloadPassword`, `showPreviews`, `page`), more than one file, `directLinkExpiry` without `directLink`, and file
+    types that cannot be a direct link (for example SVG, XHTML, ZIP: create a share link for those).
+  - The link is created at once (no queue, `ready: true`) and sends no "ready" email and no download notifications. It
+    answers `410 Gone` once it expires; the stored file is removed by the next cleanup run, at most 30 minutes later.
+  - The answer is the share view with `kind: "direct_link"` and `expiresAtUtc`; level `own` tokens list and delete
+    their own direct links like their shares.
 - **Readiness**: creation is queued like in the browser. The call waits up to `waitSeconds` (default 20, maximum 50) and
   answers `201` with `Location: /api/v1/shares/{token}` and
   `{"token","url","ready","state":"queued|processing|completed|failed","error","password"}`. When `ready` is false, poll
@@ -260,7 +274,7 @@ Owner tools (`AgoraMcpOwnerTools`):
 | --- | --- | --- |
 | `upload_file` | `file_name`, `text?` or `content_base64?` (exactly one), `draft_id?`, `purpose?` | one file per call, at most 1 MiB decoded; returns `{draftId, fileId, fileName, sizeBytes}`; call again with `draft_id` for more files |
 | `get_upload_url` | `file_name`, `size_bytes`, `draft_id?`, `purpose?` | returns `{draftId, uploadUrl, expiresAtUtc}` |
-| `create_share` | `draft_id?` or `files?` (`[{file_name, text?, content_base64?}]`), `file_ids?`, `share_code?`, `message?`, `zip_file_name?`, `expiry?`, `expires_at?`, `notify?`, `download_password?`, `show_previews?`, `title?`, `h1?`, `description?`, `background_color_hex?`, `container_position?`, `background_file_id?`, `wait_seconds?` | same options and values as [section 4](#4-owner-api); the password is returned once |
+| `create_share` | `draft_id?` or `files?` (`[{file_name, text?, content_base64?}]`), `file_ids?`, `share_code?`, `message?`, `zip_file_name?`, `expiry?`, `expires_at?`, `notify?`, `download_password?`, `show_previews?`, `title?`, `h1?`, `description?`, `background_color_hex?`, `container_position?`, `background_file_id?`, `wait_seconds?`, `direct_link?`, `direct_link_expiry?` | same options and values as [section 4](#4-owner-api); the password is returned once. `direct_link: true` makes a single PDF or HTML file a direct link (the server instructions tell agents to do this) |
 | `get_share` | `token` | details and readiness |
 | `list_shares` | `limit?` | read-only; `{"shares": [...]}`, default 25 |
 | `delete_share` | `token` | destructive; `{deleted: true, token}` |

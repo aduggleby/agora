@@ -315,6 +315,109 @@ public sealed class McpHostTests
     }
 
     [Fact]
+    public async Task Create_share_with_direct_link_turns_one_inline_pdf_into_a_seven_day_direct_link_of_this_token()
+    {
+        await using var host = await Host.StartAsync();
+        await using var client = await host.ConnectAsync("/mcp", await host.IssueAgentTokenAsync("own"));
+
+        var before = DateTime.UtcNow;
+        var result = await client.CallToolAsync("create_share", Args(
+            ("files", new object[] { new Dictionary<string, object?> { ["file_name"] = "report.pdf", ["content_base64"] = Convert.ToBase64String("%PDF-1.4"u8.ToArray()) } }),
+            ("direct_link", true)));
+
+        Assert.True(result.IsError != true, Text(result));
+        var view = Structured(result);
+        Assert.Equal("direct_link", view.GetProperty("kind").GetString());
+        Assert.True(view.GetProperty("ready").GetBoolean());
+        var token = view.GetProperty("token").GetString()!;
+        Assert.Equal($"{Base}/s/{token}", view.GetProperty("url").GetString());
+        var expires = view.GetProperty("expiresAtUtc").GetDateTime().ToUniversalTime();
+        Assert.InRange(expires, before.AddDays(7).AddMinutes(-1), DateTime.UtcNow.AddDays(7).AddMinutes(1));
+        Assert.Empty(host.Jobs.Jobs);
+
+        var share = Assert.Single(await host.SharesAsync());
+        Assert.Equal(ShareModes.ToStorageValue(ShareAccessMode.DirectLink), share.AccessMode);
+        Assert.NotNull(share.CreatedByApiTokenId);
+
+        // Level own sees and deletes its own direct link.
+        var listed = Structured(await client.CallToolAsync("list_shares", Args()));
+        Assert.Equal(token, Assert.Single(listed.GetProperty("shares").EnumerateArray()).GetProperty("token").GetString());
+        var deleted = await client.CallToolAsync("delete_share", Args(("token", token)));
+        Assert.True(deleted.IsError != true, Text(deleted));
+    }
+
+    [Fact]
+    public async Task Create_share_with_direct_link_accepts_one_staged_html_file_with_a_chosen_expiry()
+    {
+        await using var host = await Host.StartAsync();
+        await using var client = await host.ConnectAsync("/mcp", await host.IssueAgentTokenAsync("own"));
+
+        var staged = Structured(await client.CallToolAsync("upload_file", Args(("file_name", "page.html"), ("text", "<html></html>"))));
+        var draft = staged.GetProperty("draftId").GetString()!;
+        var before = DateTime.UtcNow;
+        var result = await client.CallToolAsync("create_share", Args(("draft_id", draft), ("direct_link", true), ("direct_link_expiry", "1d")));
+
+        Assert.True(result.IsError != true, Text(result));
+        var view = Structured(result);
+        Assert.Equal("direct_link", view.GetProperty("kind").GetString());
+        Assert.InRange(view.GetProperty("expiresAtUtc").GetDateTime().ToUniversalTime(), before.AddDays(1).AddMinutes(-1), DateTime.UtcNow.AddDays(1).AddMinutes(1));
+        var read = Structured(await client.CallToolAsync("get_share", Args(("token", view.GetProperty("token").GetString()))));
+        Assert.Equal("page.html", Assert.Single(read.GetProperty("files").EnumerateArray()).GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task Create_share_with_direct_link_refuses_share_options_bad_expiry_several_files_and_other_types()
+    {
+        await using var host = await Host.StartAsync();
+        await using var client = await host.ConnectAsync("/mcp", await host.IssueAgentTokenAsync("own"));
+
+        var withMessage = await client.CallToolAsync("create_share", Args(("files", Inline(("a.pdf", "x"))), ("direct_link", true), ("message", "hi")));
+        var expiryOnly = await client.CallToolAsync("create_share", Args(("files", Inline(("a.pdf", "x"))), ("direct_link_expiry", "1d")));
+        var badExpiry = await client.CallToolAsync("create_share", Args(("files", Inline(("a.pdf", "x"))), ("direct_link", true), ("direct_link_expiry", "30d")));
+        var twoFiles = await client.CallToolAsync("create_share", Args(("files", Inline(("a.pdf", "x"), ("b.pdf", "y"))), ("direct_link", true)));
+        var zip = await client.CallToolAsync("create_share", Args(("files", Inline(("a.zip", "x"))), ("direct_link", true)));
+
+        Assert.Equal("Refused (400): directLink cannot be combined with message; leave it out or create a share link instead.", Text(withMessage));
+        Assert.Equal("Refused (400): directLinkExpiry needs directLink: true.", Text(expiryOnly));
+        Assert.Equal("Refused (400): directLinkExpiry must be 30m, 6h, 1d or 7d.", Text(badExpiry));
+        Assert.Equal("Refused (400): A direct link can hold only one file; create a share link instead.", Text(twoFiles));
+        Assert.Equal("Refused (400): This file type cannot be a direct link; create a share link instead.", Text(zip));
+        Assert.Empty(await host.SharesAsync());
+        // The draft the refused inline call opened is removed again.
+        var drafts = Path.Combine(host.StorageRoot, "uploads", "drafts");
+        Assert.True(!Directory.Exists(drafts) || Directory.GetFileSystemEntries(drafts).Length == 0);
+    }
+
+    [Fact]
+    public async Task A_second_own_token_cannot_see_or_delete_another_tokens_direct_link()
+    {
+        await using var host = await Host.StartAsync();
+        await using var first = await host.ConnectAsync("/mcp", await host.IssueAgentTokenAsync("own"));
+        await using var second = await host.ConnectAsync("/mcp", await host.IssueAgentTokenAsync("own"));
+        var created = Structured(await first.CallToolAsync("create_share", Args(("files", Inline(("a.pdf", "x"))), ("direct_link", true))));
+        var token = created.GetProperty("token").GetString()!;
+
+        Assert.Equal("Refused (404): No such share.", Text(await second.CallToolAsync("get_share", Args(("token", token)))));
+        Assert.Empty(Structured(await second.CallToolAsync("list_shares", Args())).GetProperty("shares").EnumerateArray());
+        Assert.Equal("Refused (404): No such share.", Text(await second.CallToolAsync("delete_share", Args(("token", token)))));
+        Assert.Null(Assert.Single(await host.SharesAsync()).DeletedAtUtc);
+    }
+
+    [Fact]
+    public async Task Create_share_with_direct_link_refuses_a_public_upload_draft_even_with_file_ids()
+    {
+        await using var host = await Host.StartAsync();
+        await using var client = await host.ConnectAsync("/mcp", await host.IssueAgentTokenAsync("own"));
+        var publicDraft = await host.CreatePublicDraftAsync();
+
+        var result = await client.CallToolAsync("create_share", Args(
+            ("draft_id", publicDraft), ("file_ids", new[] { Guid.NewGuid().ToString("N") }), ("direct_link", true)));
+
+        Assert.Equal("Refused (400): Draft share does not belong to the current user.", Text(result));
+        Assert.Empty(await host.SharesAsync());
+    }
+
+    [Fact]
     public async Task Inline_content_over_1_MiB_is_refused_with_the_http_status_text()
     {
         await using var host = await Host.StartAsync();
@@ -572,6 +675,8 @@ public sealed class McpHostTests
         private readonly SqliteConnection _connection;
         private readonly HttpClient _client;
         private readonly string _storageRoot;
+
+        public string StorageRoot => _storageRoot;
         private readonly Guid _userId;
         private readonly string _stamp;
         private readonly SemaphoreSlim _held = new(0);
@@ -670,6 +775,14 @@ public sealed class McpHostTests
             var db = scope.ServiceProvider.GetRequiredService<AgoraDbContext>();
             (await db.Users.SingleAsync()).AllowAgentUploads = allow;
             await db.SaveChangesAsync();
+        }
+
+        /// <summary>A public upload-link draft of the owner (what the anonymous upload page opens).</summary>
+        public async Task<string> CreatePublicDraftAsync()
+        {
+            await using var scope = _app.Services.CreateAsyncScope();
+            var manager = scope.ServiceProvider.GetRequiredService<Agora.Infrastructure.Services.ShareManager>();
+            return await manager.EnsureDraftShareAsync(UserId, null, CancellationToken.None, publicUpload: true);
         }
 
         public async Task<List<Agora.Domain.Entities.Share>> SharesAsync()

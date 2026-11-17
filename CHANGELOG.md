@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Agents can create temporary direct links: `create_share` (MCP) and `POST /api/v1/shares` take `direct_link: true` / `directLink: true` for exactly one file, with `direct_link_expiry` / `directLinkExpiry` of `30m`, `6h`, `1d` or `7d` (default `7d`). The MCP server instructions and tool description tell agents to use a direct link whenever they share a single PDF or HTML file. See `docs/api/agents.md`.
+- HTML files can be direct links. The link downloads the file as an attachment and never renders it in the browser. The new-share page still offers direct links only for types that open in the browser.
+
 ## [0.11.1] - 2026-11-16
 
 ### Fixed

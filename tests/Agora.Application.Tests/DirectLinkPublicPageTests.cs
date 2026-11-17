@@ -59,6 +59,10 @@ public sealed class DirectLinkPublicPageTests
 
         const string liveKey = "shares/2026/10/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/photo.png";
         await objectStore.PutBytesAsync(liveKey, "png-bytes"u8.ToArray(), "image/png", CancellationToken.None);
+        const string htmlKey = "shares/2026/10/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/report.html";
+        await objectStore.PutBytesAsync(htmlKey, "<script>alert(1)</script>"u8.ToArray(), "text/html", CancellationToken.None);
+        const string pdfKey = "shares/2026/10/cccccccccccccccccccccccccccccccc/report.pdf";
+        await objectStore.PutBytesAsync(pdfKey, "%PDF-1.4"u8.ToArray(), "application/pdf", CancellationToken.None);
         var now = DateTime.UtcNow;
         Guid liveId;
         using (var scope = app.Services.CreateScope())
@@ -72,7 +76,9 @@ public sealed class DirectLinkPublicPageTests
                 DirectLink("expiredl", now.AddMinutes(-1), deletedAtUtc: null, null),
                 DirectLink("deletedl", now.AddHours(1), deletedAtUtc: now.AddMinutes(-5), null),
                 DirectLink("purgedlk", now.AddMinutes(-1), deletedAtUtc: now.AddMinutes(-5), null),
-                Ordinary("deletedo", deletedAtUtc: now.AddMinutes(-5)));
+                Ordinary("deletedo", deletedAtUtc: now.AddMinutes(-5)),
+                DirectLink("htmllink", now.AddHours(1), deletedAtUtc: null, htmlKey, "report.html"),
+                DirectLink("pdflink1", now.AddHours(1), deletedAtUtc: null, pdfKey, "report.pdf"));
             await db.SaveChangesAsync();
         }
 
@@ -97,6 +103,21 @@ public sealed class DirectLinkPublicPageTests
         Assert.Equal(Agora.Web.Endpoints.ObjectResults.UserContentCsp, live.Headers["Content-Security-Policy"].ToString());
         Assert.False(live.Headers.ContainsKey("Content-Disposition"));
         Assert.Equal("private, no-store", live.Headers.CacheControl.ToString());
+
+        // An HTML direct link is always a download: never served as HTML, and sandboxed.
+        var html = await GetAsync("htmllink");
+        Assert.Equal((int)HttpStatusCode.OK, html.Status);
+        Assert.Equal("application/octet-stream", html.ContentType);
+        Assert.StartsWith("attachment", html.Headers.ContentDisposition.ToString());
+        Assert.Contains("report.html", html.Headers.ContentDisposition.ToString());
+        Assert.Equal(Agora.Web.Endpoints.ObjectResults.UserContentCsp, html.Headers["Content-Security-Policy"].ToString());
+        Assert.Equal("nosniff", html.Headers["X-Content-Type-Options"].ToString());
+
+        // A PDF direct link opens inline in the browser's viewer.
+        var pdf = await GetAsync("pdflink1");
+        Assert.Equal((int)HttpStatusCode.OK, pdf.Status);
+        Assert.Equal("application/pdf", pdf.ContentType);
+        Assert.False(pdf.Headers.ContainsKey("Content-Disposition"));
 
         // HEAD answers with the headers but is not a download.
         var head = await GetAsync("livelink", HttpMethods.Head);
@@ -124,7 +145,7 @@ public sealed class DirectLinkPublicPageTests
         }
     }
 
-    private static Share DirectLink(string token, DateTime expiresAtUtc, DateTime? deletedAtUtc, string? storedKey) => new()
+    private static Share DirectLink(string token, DateTime expiresAtUtc, DateTime? deletedAtUtc, string? storedKey, string fileName = "photo.png") => new()
     {
         Id = Guid.NewGuid(),
         OwnerUserId = OwnerId,
@@ -144,7 +165,7 @@ public sealed class DirectLinkPublicPageTests
         CreatedAtUtc = DateTime.UtcNow,
         Files = storedKey is null
             ? []
-            : [new ShareFile { Id = Guid.NewGuid(), OriginalFilename = "photo.png", StoredRelativePath = storedKey, RenderType = "image", OriginalSizeBytes = 9, DetectedContentType = "image/png" }]
+            : [new ShareFile { Id = Guid.NewGuid(), OriginalFilename = fileName, StoredRelativePath = storedKey, RenderType = "image", OriginalSizeBytes = 9, DetectedContentType = ContentTypePolicy.FromFileName(fileName) }]
     };
 
     private static Share Ordinary(string token, DateTime? deletedAtUtc) => new()

@@ -17,7 +17,8 @@ with one data volume, a SQL Server or PostgreSQL database, and optionally an S3-
   password is entered the share page shows only a generic password card (no name, size, title or background)
 - Public upload links (`/u/{code}`): anyone can send files to your account without signing in, with server-side quotas
 - Temporary direct links: one image, video, audio file, PDF or text file served raw at `/s/{token}` for 30 minutes
-  to 7 days, for chats, forums or `<img src>`
+  to 7 days, for chats, forums or `<img src>`; AI agents also create them for a single HTML file, which the link
+  downloads instead of rendering
 - Connected apps: a macOS capture app signs in through the browser and uploads annotated screenshots as direct links
   ([API](docs/api/v1.md))
 - Share history with a separate "Received" section for files that arrived through your upload link
@@ -648,8 +649,10 @@ of a share link. The link uses the normal `/s/{token}` format, but opening it re
 an image, a PDF as a PDF) with the usual user-content headers (`nosniff`, sandbox CSP), so it can be pasted into chats,
 forums or an `<img src>`.
 
-- Eligible files are the ones the content policy serves inline: raster images, common video and audio, PDF and plain
-  text. Other types keep the button disabled with the reason as a tooltip.
+- Eligible files on the new-share page are the ones the content policy serves inline: raster images, common video and
+  audio, PDF and plain text. Other types keep the button disabled with the reason as a tooltip. The server additionally
+  accepts a single HTML file (used by the agent API, `docs/api/agents.md`): that link always downloads the file as an
+  attachment and never renders it.
 - Durations are fixed: 30 minutes, 6 hours, 1 day (default) or 7 days; the last choice is remembered in the browser.
 - No archive is built and no notification email is ever sent; every view (GET) counts as a download in "My shares"; HEAD requests do not.
 - After the chosen duration the link answers `410 Gone` (the expired page for browsers, the same status for embeds)

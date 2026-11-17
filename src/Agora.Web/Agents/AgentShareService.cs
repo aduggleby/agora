@@ -57,7 +57,8 @@ public sealed record PageOptions(
 /// <summary>
 /// Create-share input. Give <see cref="DraftId"/> (files staged earlier; <see cref="FileIds"/> defaults to all of
 /// them) or <see cref="Files"/> (inline, staged into a new draft), not both. Left-out options take the owner's
-/// share defaults.
+/// share defaults. <see cref="DirectLink"/> creates a temporary direct link of exactly one file instead (expiring
+/// after <see cref="DirectLinkExpiry"/>, default 7d); it takes none of the share-page options.
 /// </summary>
 public sealed record CreateShareRequest(
     string? DraftId = null,
@@ -72,7 +73,9 @@ public sealed record CreateShareRequest(
     string? DownloadPassword = null,
     bool? ShowPreviews = null,
     PageOptions? Page = null,
-    int? WaitSeconds = null);
+    int? WaitSeconds = null,
+    bool? DirectLink = null,
+    string? DirectLinkExpiry = null);
 
 /// <summary>
 /// What an owner's agent can do: stage files (inline or through one-time URLs), create shares with any option the
@@ -88,9 +91,13 @@ public sealed class AgentShareService(
     UploadConcurrency concurrency,
     AgentTicketStore tickets,
     IObjectStore objectStore,
-    IOptions<AgoraOptions> options)
+    IOptions<AgoraOptions> options,
+    ILogger<AgentShareService> logger)
 {
     public static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>Agents get the longest direct-link lifetime unless they ask for a shorter one.</summary>
+    public const string DefaultDirectLinkExpiry = "7d";
 
     private AgoraOptions Cfg => options.Value;
 
@@ -277,6 +284,30 @@ public sealed class AgentShareService(
             return AgentResult<AgentShareView>.BadRequest(hasDraft ? "Give draftId or files, not both." : "draftId or files is required.");
         }
 
+        var directLink = request.DirectLink == true;
+        var directDuration = DirectLinkDuration.SevenDays;
+        if (directLink)
+        {
+            if (DirectLinkConflict(request) is { } conflict)
+            {
+                return AgentResult<AgentShareView>.BadRequest($"directLink cannot be combined with {conflict}; leave it out or create a share link instead.");
+            }
+
+            if (!DirectLinkDurations.TryParse(request.DirectLinkExpiry ?? DefaultDirectLinkExpiry, out directDuration))
+            {
+                return AgentResult<AgentShareView>.BadRequest("directLinkExpiry must be 30m, 6h, 1d or 7d.");
+            }
+
+            if (request.FileIds is { Count: > 1 } || request.Files is { Count: > 1 })
+            {
+                return AgentResult<AgentShareView>.BadRequest("A direct link can hold only one file; create a share link instead.");
+            }
+        }
+        else if (request.DirectLinkExpiry is not null)
+        {
+            return AgentResult<AgentShareView>.BadRequest("directLinkExpiry needs directLink: true.");
+        }
+
         var fileIds = request.FileIds?.ToArray();
         var draftId = request.DraftId;
         var createdDraft = false;
@@ -310,6 +341,29 @@ public sealed class AgentShareService(
         }
 
         admission?.Dispose();
+        if (directLink)
+        {
+            if (!createdDraft)
+            {
+                // Like the browser route: only the caller's own signed-in draft (never a public upload draft) may become
+                // a direct link, also when fileIds skipped the draft lookup above.
+                try
+                {
+                    draftId = await manager.EnsureDraftShareAsync(caller.Owner.UserId, draftId!.Trim(), ct);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return AgentResult<AgentShareView>.BadRequest(ex.Message);
+                }
+                catch (UploadLimitException ex)
+                {
+                    return AgentResult<AgentShareView>.From(ex);
+                }
+            }
+
+            return await CreateDirectLinkAsync(caller, baseUrl, draftId!.Trim(), fileIds?.FirstOrDefault() ?? string.Empty, directDuration, createdDraft, ct);
+        }
+
         var page = request.Page;
         var form = new OwnerShareRequest(
             DraftShareId: draftId!,
@@ -369,6 +423,44 @@ public sealed class AgentShareService(
 
         // The password is shown here and never again: later reads only say it is set.
         return AgentResult<AgentShareView>.Ok(view with { Password = payload.DownloadPassword }, StatusCodes.Status201Created);
+    }
+
+    /// <summary>The first share-page option a direct-link request sets, by its HTTP name; null when there is none.</summary>
+    private static string? DirectLinkConflict(CreateShareRequest r) =>
+        r.ShareCode is not null ? "shareCode" :
+        r.Message is not null ? "message" :
+        r.ZipFileName is not null ? "zipFileName" :
+        r.Expiry is not null ? "expiry (use directLinkExpiry)" :
+        r.ExpiresAt is not null ? "expiresAt (use directLinkExpiry)" :
+        r.Notify is not null ? "notify" :
+        r.DownloadPassword is not null ? "downloadPassword" :
+        r.ShowPreviews is not null ? "showPreviews" :
+        r.Page is not null ? "page" :
+        null;
+
+    /// <summary>
+    /// Creates a direct link from the one file of the draft, through the browser's seal and compensation path. A draft
+    /// this call opened for inline files is removed again on a refusal; a draft the agent staged earlier stays usable.
+    /// </summary>
+    private async Task<AgentResult<AgentShareView>> CreateDirectLinkAsync(
+        AgentCaller caller, string baseUrl, string draftId, string uploadId, DirectLinkDuration duration, bool createdDraft, CancellationToken ct)
+    {
+        var outcome = await DirectLinkEndpoints.CreateCoreAsync(manager, scratchSpace, logger, caller.Owner, draftId, uploadId, duration, caller.TokenId, ct);
+        if (outcome.Share is not { } created)
+        {
+            if (createdDraft)
+            {
+                await DiscardDraftAsync(caller.Owner.UserId, draftId);
+            }
+
+            return AgentResult<AgentShareView>.Refuse(outcome.Status, outcome.Error!);
+        }
+
+        var view = await ReadViewAsync(caller, baseUrl, created.Token, ct) ?? new AgentShareView(
+            created.Token, ShareUrl(baseUrl, created.Token), true, "completed", null,
+            ExpiresAtUtc: created.ExpiresAtUtc is { } expires ? DateTime.SpecifyKind(expires, DateTimeKind.Utc) : null,
+            Kind: "direct_link");
+        return AgentResult<AgentShareView>.Ok(view, StatusCodes.Status201Created);
     }
 
     public async Task<AgentResult<AgentShareView>> GetShareAsync(AgentCaller caller, string baseUrl, string token, CancellationToken ct)

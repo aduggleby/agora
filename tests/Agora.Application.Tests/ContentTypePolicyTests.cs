@@ -44,6 +44,25 @@ public sealed class ContentTypePolicyTests
         Assert.False(plan.Inline);
     }
 
+    [Theory]
+    [InlineData("report.pdf", true)]
+    [InlineData("photo.png", true)]
+    [InlineData("page.html", true)]
+    [InlineData("PAGE.HTM", true)]
+    [InlineData("logo.svg", false)]
+    [InlineData("doc.xhtml", false)]
+    [InlineData("data.zip", false)]
+    [InlineData("noextension", false)]
+    public void AllowsDirectLink_InlineSafeTypesAndHtml(string fileName, bool expected)
+    {
+        Assert.Equal(expected, ContentTypePolicy.AllowsDirectLink(fileName));
+        // HTML stays a download even as a direct link: it is never served inline.
+        if (fileName.EndsWith("htm", StringComparison.OrdinalIgnoreCase) || fileName.EndsWith("html", StringComparison.OrdinalIgnoreCase))
+        {
+            Assert.False(ContentTypePolicy.Resolve(fileName).Inline);
+        }
+    }
+
     [Fact]
     public void FromFileName_IgnoresAnyDeclaredType_ExtensionWins()
     {

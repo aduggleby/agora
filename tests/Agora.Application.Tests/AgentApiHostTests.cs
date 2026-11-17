@@ -211,6 +211,26 @@ public sealed class AgentApiHostTests
     }
 
     [Fact]
+    public async Task Create_with_directLink_answers_201_with_a_direct_link_view_and_location()
+    {
+        await using var host = await Host.StartAsync();
+        var token = await host.IssueAgentTokenAsync("own");
+
+        var created = await host.PostJsonAsync("/api/v1/shares", token, new { files = new[] { new { fileName = "page.html", text = "<p>hi</p>" } }, directLink = true, directLinkExpiry = "6h" });
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var body = await created.Content.ReadFromJsonAsync<JsonElement>();
+        var shareToken = body.GetProperty("token").GetString()!;
+        Assert.Equal("direct_link", body.GetProperty("kind").GetString());
+        Assert.True(body.GetProperty("ready").GetBoolean());
+        Assert.Equal($"/api/v1/shares/{shareToken}", created.Headers.Location!.ToString());
+
+        var withPassword = await host.PostJsonAsync("/api/v1/shares", token, new { files = new[] { new { fileName = "a.pdf", text = "x" } }, directLink = true, downloadPassword = "correct horse battery" });
+        Assert.Equal(HttpStatusCode.BadRequest, withPassword.StatusCode);
+        Assert.Contains("downloadPassword", (await withPassword.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("error").GetString());
+    }
+
+    [Fact]
     public async Task Creates_waiting_for_readiness_do_not_hold_the_accounts_upload_slots()
     {
         await using var host = await Host.StartAsync();
