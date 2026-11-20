@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-20
+
 ### Added
 - New dashboard: a compact "Share files" bar and one card with "My shares" and "Received" tabs (the tab is kept in the URL, `?tab=received`). Rows show the archive, details and downloads with a "..." menu (Show link, Re-enable for 24 hours, Delete; Download and Delete for received files). Expired shares are grouped under "Show expired (n)" below the active ones. Selecting rows shows a batch bar with "Batch actions" (re-enable for 24 hours, delete selected). The 100-newest limit now applies to each tab separately.
 - Batch re-enable: `POST /shares/reenable-batch` re-enables the selected expired shares for 24 hours and reports how many were skipped.
