@@ -49,7 +49,7 @@
           <th class="text-left px-3 py-2 w-32">Created</th>
           <th class="text-left px-3 py-2 w-32">Expires</th>
           <th class="text-left px-3 py-2 w-12" title="Number of times downloaded by others">DLs</th>
-          <th class="text-right px-3 py-2 w-36">Actions</th>
+          <th class="text-right px-3 py-2 w-48">Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -93,7 +93,7 @@
               @if (isExpired && !share.IsDirectLink)
               {
                 <form method="post" action="/shares/@share.ShareId/reenable" class="inline">
-                  <button type="submit" class="text-xs text-sage hover:underline">Re-enable 24h</button>
+                  <button type="submit" class="text-xs text-sage hover:underline" title="Make this share available again for 24 hours">Re-enable</button>
                 </form>
               }
               <form method="post" action="/shares/@share.ShareId/delete" class="inline" data-share-delete-form data-share-name="@share.ZipDisplayName">
@@ -108,8 +108,6 @@
 </section>
 }
 
-@if (Model.ReceivedShares.Count > 0)
-{
 <section>
   <div class="bg-white rounded-2xl border border-border overflow-hidden">
     <form method="post" action="/shares/delete-batch">
@@ -118,8 +116,17 @@
           <h2 class="font-display text-xl">Files sent to me</h2>
           <p class="text-xs text-ink-muted mt-1">Received files expire according to your default share expiry (Settings). Delete them earlier when you no longer need them.</p>
         </div>
-        <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded-md border border-danger/50 text-danger hover:bg-danger-wash" title="Select at least one row to delete.">Delete selected</button>
+        @if (Model.ReceivedShares.Count > 0)
+        {
+          <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded-md border border-danger/50 text-danger hover:bg-danger-wash" title="Select at least one row to delete.">Delete selected</button>
+        }
       </div>
+      @if (Model.ReceivedShares.Count == 0)
+      {
+        <p class="px-5 py-6 text-sm text-ink-muted" data-received-empty>Nothing received yet. Files people send through your upload link appear here. Find and share your link in <a href="/account/settings" class="text-terra hover:underline">Settings</a>.</p>
+      }
+      else
+      {
       <table class="w-full table-fixed">
         <thead>
           <tr class="text-xs font-medium text-ink-muted uppercase tracking-wider border-b border-border whitespace-nowrap">
@@ -181,10 +188,10 @@
           }
         </tbody>
       </table>
+      }
     </form>
   </div>
 </section>
-}
 }
 else
 {

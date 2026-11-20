@@ -841,7 +841,7 @@ Hangfire runs inside the app process with two queues (`default` and `previews`) 
 
 | Job | Schedule | What it does |
 | --- | --- | --- |
-| `cleanup-expired-shares` | every 30 minutes | Deletes the content of shares expired for more than 7 days (the grace period during which the owner can "Re-enable 24h"), and of expired temporary direct links immediately; removes download events older than `Agora__DownloadEventRetentionDays` |
+| `cleanup-expired-shares` | every 30 minutes | Deletes the content of shares expired for more than 7 days (the grace period during which the owner can "Re-enable" it for 24 hours), and of expired temporary direct links immediately; removes download events older than `Agora__DownloadEventRetentionDays` |
 | `cleanup-zombie-uploads` | every 15 minutes | Removes anonymous drafts idle for `Agora__PublicUploads__DraftRetentionHours`, and staged uploads, other drafts, share-creation status files, `tmp/` files and preview `.lock` markers older than `Agora__ZombieUploadRetentionHours` |
 
 On-demand jobs build shares, generate previews (at most two raster decodes and two PDF renders at once, one retry on

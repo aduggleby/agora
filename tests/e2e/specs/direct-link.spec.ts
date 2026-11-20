@@ -113,7 +113,7 @@ test('creates a temporary direct link, serves the file inline and expires it', a
   await page.goto('/');
   const expiredRow = page.locator('tr', { hasText: 'photo.png' }).first();
   await expect(expiredRow.locator('td').nth(2)).toHaveText('Expired');
-  await expect(expiredRow.getByRole('button', { name: 'Re-enable 24h' })).toHaveCount(0);
+  await expect(expiredRow.getByRole('button', { name: 'Re-enable' })).toHaveCount(0);
 
   // A direct link deleted early from My shares answers like an expired one (410), not like a wrong link.
   await page.goto('/shares/new');

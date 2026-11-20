@@ -1173,7 +1173,7 @@ public sealed partial class ShareManager(
     public async Task<int> CleanupExpiredSharesAsync(CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
-        // Ordinary shares keep a 7-day grace after expiry so the owner can "Re-enable 24h"; direct links cannot be
+        // Ordinary shares keep a 7-day grace after expiry so the owner can re-enable it for 24h; direct links cannot be
         // re-enabled and are purged at the first run after they expire.
         var purgeCutoff = now.AddDays(-7);
         var directLinkMode = ShareModes.ToStorageValue(ShareAccessMode.DirectLink);
