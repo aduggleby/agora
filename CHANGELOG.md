@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-11-20
+
+### Fixed
+- On the dashboard, expired shares no longer push their actions out of the table: the button is now "Re-enable" (the tooltip says it re-enables for 24 hours) and the actions column is wider.
+- "Files sent to me" is always shown on the dashboard; without received files it explains that files sent through your upload link appear there and links to Settings.
+
 ## [0.12.0] - 2026-11-17
 
 ### Added
