@@ -91,12 +91,25 @@ test('creates a temporary direct link, serves the file inline and expires it', a
   expect((await request.get(`${url}/download`, { maxRedirects: 0 })).status()).toBe(302);
 
   await page.goto('/');
-  const row = page.locator('tr', { hasText: 'photo.png' }).first();
+  const row = page.locator('[data-active-list] li', { hasText: 'photo.png' }).first();
   await expect(row.locator('[data-direct-link-badge]')).toBeVisible();
-  await expect(row.locator('td').nth(5)).toHaveText('1');
-  await expect(row.locator('td').nth(4).locator('[data-local-datetime]')).not.toHaveText('');
+  await expect(row).toContainText('1 download');
+  await expect(row.locator('[data-local-datetime]').first()).not.toHaveText('');
+
+  // The hidden tooltip must not add horizontal scroll on a phone, also while it is shown.
+  await page.setViewportSize({ width: 375, height: 700 });
+  await page.goto('/');
+  const badge = page.locator('[data-active-list] [data-direct-link-badge]').first();
+  await expect(badge).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await badge.focus();
+  await expect(page.locator('[data-active-list] [role="tooltip"]').first()).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto('/');
 
   // "Show link" opens the same simplified card.
+  await row.getByRole('button', { name: /More actions/ }).click();
   await row.getByRole('button', { name: 'Show link' }).click();
   await page.waitForURL(new RegExp(`/shares/created/${token}$`));
   await expect(page.locator('[data-created-direct-link]')).toContainText(url);
@@ -111,20 +124,26 @@ test('creates a temporary direct link, serves the file inline and expires it', a
   expect(await expired.text()).toContain('This link has expired.');
 
   await page.goto('/');
-  const expiredRow = page.locator('tr', { hasText: 'photo.png' }).first();
-  await expect(expiredRow.locator('td').nth(2)).toHaveText('Expired');
-  await expect(expiredRow.getByRole('button', { name: 'Re-enable' })).toHaveCount(0);
+  // Expired shares sit in a collapsed section below the active ones.
+  await expect(page.locator('[data-active-list] li', { hasText: 'photo.png' })).toHaveCount(0);
+  await page.getByRole('button', { name: /Show expired/ }).click();
+  const expiredRow = page.locator('[data-expired-list] li', { hasText: 'photo.png' }).first();
+  await expect(expiredRow).toBeVisible();
+  await expiredRow.getByRole('button', { name: /More actions/ }).click();
+  await expect(expiredRow.getByRole('button', { name: 'Show link' })).toBeVisible();
+  await expect(expiredRow.getByRole('button', { name: /Re-enable/ })).toHaveCount(0);
 
   // A direct link deleted early from My shares answers like an expired one (410), not like a wrong link.
   await page.goto('/shares/new');
   const secondUrl = await createDirectLink(page, pngPath);
   expect(secondUrl).not.toBe(url);
   await page.goto('/');
-  const activeRow = page.locator('tr', { hasText: 'photo.png' }).filter({ hasText: 'Active' }).first();
+  const activeRow = page.locator('[data-active-list] li', { hasText: 'photo.png' }).first();
+  await activeRow.getByRole('button', { name: /More actions/ }).click();
   await activeRow.locator('[data-share-delete-trigger]').click();
   await page.locator('[data-share-delete-confirm]').click();
   await page.waitForURL(/\/\?msg=/);
-  await expect(page.locator('tr', { hasText: 'photo.png' }).filter({ hasText: 'Active' })).toHaveCount(0);
+  await expect(page.locator('[data-active-list] li', { hasText: 'photo.png' })).toHaveCount(0);
   const deleted = await request.get(secondUrl);
   expect(deleted.status()).toBe(410);
   expect(deleted.headers()['content-type'] || '').toContain('text/html');

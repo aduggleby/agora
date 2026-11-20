@@ -21,7 +21,11 @@ with one data volume, a SQL Server or PostgreSQL database, and optionally an S3-
   downloads instead of rendering
 - Connected apps: a macOS capture app signs in through the browser and uploads annotated screenshots as direct links
   ([API](docs/api/v1.md))
-- Share history with a separate "Received" section for files that arrived through your upload link
+- Dashboard with a compact "Share files" bar and one card with two tabs: "My shares" (expired shares grouped below
+  the active ones, re-enable within 7 days of expiry) and "Received" (files that arrived through your upload link,
+  with a "new" badge until you open the tab). Each row has a "..." menu, and selecting rows shows batch actions
+  (re-enable for 24 hours, delete). A history page (`/received/history`) lists every received share, including
+  deleted and expired ones
 - Accounts with email confirmation, password reset, display name and per-account share defaults
 - Admin page (`/admin`): manage users and roles, enable or disable accounts (a disabled account's share links are
   suspended until it is enabled again), switch registration off
@@ -633,7 +637,8 @@ received public uploads. The provider is chosen by `Email__Provider`:
 
 Every account has an upload link `/u/<code>` (Account > Settings) that anyone can use to send files to that account
 without signing in. The sender fills in a name, an email address and an optional message, which the owner sees in the
-"Received" section of the dashboard and in the "files were sent to you" notification email. Generated codes are 12
+"Received" tab of the dashboard (new files are marked until you have opened the tab; the full list, deleted and
+expired files included, is under "Show history") and in the "files were sent to you" notification email. Generated codes are 12
 alphanumeric characters; a custom code must be 8 to 64 letters or digits (codes set before this minimum existed keep
 working until they are changed). Regenerating the code invalidates the old link.
 

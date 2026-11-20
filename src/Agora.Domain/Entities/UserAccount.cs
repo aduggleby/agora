@@ -35,4 +35,6 @@ public sealed class UserAccount
     public DateTime? LastFailedLoginAtUtc { get; set; }
     public DateTime? LockoutEndUtc { get; set; }
     public DateTime CreatedAtUtc { get; set; }
+    /// <summary>When the owner last opened the Received tab; received shares created after it are "new" (null = never opened).</summary>
+    public DateTime? ReceivedSeenAtUtc { get; set; }
 }

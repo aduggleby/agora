@@ -1,0 +1,142 @@
+@page "/received/history"
+@model Agora.Web.Pages.Received.HistoryModel
+@using System.Text.Json
+@{
+  var nowUtc = DateTime.UtcNow;
+  // Rows read from SQL Server come back with an unspecified kind; without the Z the browser would treat them as local time.
+  string Iso(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc).ToString("O");
+  string RowSize(long bytes) => bytes >= 1024 * 1024 ? $"{bytes / (1024.0 * 1024.0):F1} MB" : $"{bytes / 1024.0:F0} KB";
+}
+<div class="mb-4 flex items-end justify-between gap-3">
+  <div>
+    <h1 class="font-display text-3xl tracking-tight">Received history</h1>
+    <p class="text-sm text-ink-muted mt-1">Every file people sent through your upload link, including deleted and expired ones. Newest first.</p>
+  </div>
+  <a href="/?tab=received" class="text-sm text-terra hover:underline shrink-0">Back to Received</a>
+</div>
+
+<section class="bg-white rounded-2xl border border-border overflow-hidden" data-received-history>
+  @if (Model.Shares.Count == 0)
+  {
+    <p class="px-5 py-6 text-sm text-ink-muted" data-history-empty>Nothing received yet.</p>
+  }
+  else
+  {
+    <ul class="divide-y divide-border/60">
+      @foreach (var share in Model.Shares)
+      {
+        var deleted = share.DeletedAtUtc is not null;
+        var expired = !deleted && share.ExpiresAtUtc is not null && share.ExpiresAtUtc <= nowUtc;
+        var filesJson = JsonSerializer.Serialize(share.Files);
+        <li class="px-3 sm:px-5 py-3 flex gap-3 items-center @(deleted || expired ? "bg-cream-dark/50" : "")" data-history-row data-history-state="@(deleted ? "deleted" : expired ? "expired" : "active")">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-medium truncate @(deleted || expired ? "text-ink-light" : "")" title="@share.ZipDisplayName">@share.ZipDisplayName</div>
+            <div class="text-xs text-ink-muted mt-0.5 truncate">
+              From @(string.IsNullOrWhiteSpace(share.SenderName) ? "-" : share.SenderName)@if (share.SentByAgent) { <span class="ml-1 px-1.5 py-0.5 text-[11px] font-medium text-ink-muted border border-border rounded-md bg-white" data-share-sent-by-agent>Agent</span> }
+              &middot; @share.SenderEmail
+              &middot; <button type="button"
+                      class="text-terra hover:underline"
+                      data-share-details-trigger
+                      data-share-name="@share.ZipDisplayName"
+                      data-share-files='@filesJson'
+                      data-share-sender-name="@share.SenderName"
+                      data-share-sender-email="@share.SenderEmail"
+                      data-share-sent-by-agent="@(share.SentByAgent ? "true" : "false")"
+                      data-share-sender-message='@JsonSerializer.Serialize(share.SenderMessage ?? string.Empty)'>@share.FileCount @(share.FileCount == 1 ? "file" : "files") &middot; @RowSize(share.ZipSizeBytes)</button>
+              @if (!string.IsNullOrWhiteSpace(share.SenderMessage))
+              {
+                <text> &middot; <span class="italic text-ink-light">&ldquo;@share.SenderMessage&rdquo;</span></text>
+              }
+            </div>
+          </div>
+          <div class="shrink-0 flex items-center gap-4">
+            <div class="hidden sm:grid grid-cols-[4.5rem_6.5rem] gap-x-1.5 text-xs text-ink-muted whitespace-nowrap leading-5 [&>*:nth-child(odd)]:text-right">
+              <span>Received:</span>
+              <span data-local-datetime="@Iso(share.CreatedAtUtc)" data-local-datetime-style="compact"></span>
+              @if (deleted)
+              {
+                <span>Deleted:</span>
+                <span data-local-datetime="@Iso(share.DeletedAtUtc!.Value)" data-local-datetime-style="compact"></span>
+              }
+              else if (expired)
+              {
+                <span class="text-danger">Expired:</span>
+                <span class="text-danger" data-local-datetime="@Iso(share.ExpiresAtUtc!.Value)" data-local-datetime-style="compact"></span>
+              }
+              else
+              {
+                <span>Expires:</span>
+                @if (share.ExpiresAtUtc is null)
+                {
+                  <span>Never</span>
+                }
+                else
+                {
+                  <span data-local-datetime="@Iso(share.ExpiresAtUtc.Value)" data-local-datetime-style="compact"></span>
+                }
+              }
+            </div>
+            <span class="text-xs px-2 py-0.5 rounded-md @(deleted ? "bg-danger-wash text-danger" : expired ? "bg-cream-dark text-ink-muted" : "bg-sage-wash text-sage")" data-history-status>@(deleted ? "Deleted" : expired ? "Expired" : "Active")</span>
+            <span class="w-20 text-right text-xs">
+              @if (!deleted && !expired)
+              {
+                <a class="text-terra hover:underline" href="/s/@Uri.EscapeDataString(share.ShareToken)" target="_blank" rel="noopener">Download</a>
+              }
+            </span>
+          </div>
+        </li>
+      }
+    </ul>
+  }
+  @if (Model.PageNumber > 1 || Model.HasNext)
+  {
+    <nav class="px-5 py-3 border-t border-border/60 flex items-center justify-between text-xs text-ink-muted" aria-label="Pages">
+      @if (Model.PageNumber > 1)
+      {
+        <a class="text-terra hover:underline" href="/received/history?page=@(Model.PageNumber - 1)" rel="prev">Previous</a>
+      }
+      else
+      {
+        <span></span>
+      }
+      <span>Page @Model.PageNumber</span>
+      @if (Model.HasNext)
+      {
+        <a class="text-terra hover:underline" href="/received/history?page=@(Model.PageNumber + 1)" rel="next">Next</a>
+      }
+      else
+      {
+        <span></span>
+      }
+    </nav>
+  }
+</section>
+
+<dialog class="rounded-xl border border-border bg-white p-0 w-full max-w-xl backdrop:bg-black/30 m-auto" style="margin: auto;" data-share-details-dialog>
+  <form method="dialog" class="p-5">
+    <h3 class="font-display text-2xl tracking-tight">Share details</h3>
+    <p class="text-sm text-ink-light mt-2" data-share-details-name></p>
+    <div class="mt-2 space-y-1 text-xs text-ink-muted">
+      <p data-share-details-sender-name></p>
+      <p data-share-details-sender-email></p>
+      <p data-share-details-sent-by-agent></p>
+      <p class="whitespace-pre-wrap" data-share-details-sender-message></p>
+    </div>
+    <div class="mt-4 rounded-lg border border-border overflow-hidden">
+      <table class="w-full table-fixed">
+        <thead>
+          <tr class="text-xs font-medium text-ink-muted uppercase tracking-wider border-b border-border bg-cream-dark/40">
+            <th class="text-left px-3 py-2">File</th>
+            <th class="text-right px-3 py-2">Size</th>
+          </tr>
+        </thead>
+        <tbody data-share-details-list></tbody>
+      </table>
+    </div>
+    <div class="mt-5 flex justify-end">
+      <button type="button" class="px-4 py-2 text-sm border border-border rounded-lg bg-cream hover:bg-cream-dark/70" data-share-details-close>Close</button>
+    </div>
+  </form>
+</dialog>
+
+<script nonce="@Html.CspNonce()" src="/js/index.js" asp-append-version="true"></script>

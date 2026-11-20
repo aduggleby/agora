@@ -142,6 +142,7 @@ Razor/HTML:
 - Use `aria-*` only when native semantics are insufficient.
 - Keep inline scripts/styles minimal except where explicitly required (for example public share page portability).
 - Avoid duplicating formatting rules in multiple views; centralize when practical.
+- Razor local functions that contain a `<form>` (tag helper) must be `async Task` and be awaited. Format `DateTime`s for `data-local-datetime` after `DateTime.SpecifyKind(value, DateTimeKind.Utc)`: SQL Server returns an unspecified kind, and without the `Z` the browser treats the value as local time.
 
 CSS/Tailwind:
 - Prefer design tokens and existing utilities over one-off values.

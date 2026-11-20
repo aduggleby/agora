@@ -1,5 +1,6 @@
 import { readLimitsFromElement, validateFileSelection, showLimitDialog } from './upload-limits';
 import { enablePageDrop } from './page-drop';
+import './dashboard';
 
 (() => {
   const nodes = document.querySelectorAll<HTMLElement>('[data-local-datetime]');
@@ -175,37 +176,6 @@ type ShareFileLike = Record<string, unknown>;
   });
 
   closeButton?.addEventListener('click', () => dialog.close());
-})();
-
-(() => {
-  const selectAll = document.querySelector<HTMLInputElement>('[data-received-select-all]');
-  if (!selectAll) return;
-
-  const rowCheckboxes = () => Array.from(document.querySelectorAll<HTMLInputElement>('[data-received-select]'));
-  const syncSelectAllState = (): void => {
-    const checkboxes = rowCheckboxes();
-    if (checkboxes.length === 0) {
-      selectAll.checked = false;
-      selectAll.indeterminate = false;
-      return;
-    }
-
-    const checkedCount = checkboxes.filter((checkbox) => checkbox.checked).length;
-    selectAll.checked = checkedCount === checkboxes.length;
-    selectAll.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
-  };
-
-  selectAll.addEventListener('change', () => {
-    const shouldCheck = selectAll.checked;
-    rowCheckboxes().forEach((checkbox) => {
-      checkbox.checked = shouldCheck;
-    });
-    syncSelectAllState();
-  });
-
-  rowCheckboxes().forEach((checkbox) => {
-    checkbox.addEventListener('change', syncSelectAllState);
-  });
 })();
 
 (() => {

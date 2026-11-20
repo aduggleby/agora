@@ -157,6 +157,261 @@
     });
   }
 
+  // scripts/ts/clipboard.ts
+  async function copyText(value) {
+    if (!value) return false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch {
+    }
+    return fallbackCopy(value);
+  }
+  function fallbackCopy(value) {
+    const input = document.createElement("textarea");
+    input.value = value;
+    input.setAttribute("readonly", "readonly");
+    input.style.position = "absolute";
+    input.style.left = "-9999px";
+    document.body.appendChild(input);
+    input.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    document.body.removeChild(input);
+    return ok;
+  }
+
+  // scripts/ts/dashboard.ts
+  (() => {
+    const root = document.querySelector("[data-dashboard]");
+    if (!root) return;
+    const expiredStorageKey = "agora.dashboard.expiredOpen";
+    const tabs = Array.from(root.querySelectorAll('[role="tab"][data-tab]'));
+    const panels = Array.from(root.querySelectorAll("[data-panel]"));
+    const hints = Array.from(root.querySelectorAll("[data-tab-hint]"));
+    const newCount = Number(root.getAttribute("data-new-count") ?? "0") || 0;
+    let seenSent = false;
+    const isTabName = (value) => value === "mine" || value === "received";
+    const markReceivedSeen = () => {
+      if (seenSent || newCount <= 0) return;
+      seenSent = true;
+      const csrf = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith("agora.csrf.request="))?.slice("agora.csrf.request=".length);
+      const headers = csrf ? { "X-CSRF-TOKEN": decodeURIComponent(csrf) } : {};
+      const seenUpTo = root.getAttribute("data-seen-up-to");
+      if (!seenUpTo) return;
+      const query = `?seenUpTo=${encodeURIComponent(seenUpTo)}`;
+      void fetch(`/account/received-seen${query}`, { method: "POST", credentials: "same-origin", headers }).then((response) => {
+        if (!response.ok) seenSent = false;
+      }).catch(() => {
+        seenSent = false;
+      });
+    };
+    const selectTab = (name, focus = false) => {
+      tabs.forEach((tab) => {
+        const on = tab.dataset.tab === name;
+        tab.setAttribute("aria-selected", on ? "true" : "false");
+        tab.tabIndex = on ? 0 : -1;
+        const active = (tab.dataset.activeClass ?? "").split(" ").filter(Boolean);
+        const idle = (tab.dataset.idleClass ?? "").split(" ").filter(Boolean);
+        tab.classList.remove(...active, ...idle);
+        tab.classList.add(...on ? active : idle);
+        if (on && focus) tab.focus();
+      });
+      panels.forEach((panel) => {
+        panel.hidden = panel.dataset.panel !== name;
+      });
+      hints.forEach((hint) => {
+        hint.hidden = hint.dataset.tabHint !== name;
+      });
+      const url = new URL(window.location.href);
+      url.searchParams.delete("msg");
+      if (name === "received") url.searchParams.set("tab", "received");
+      else url.searchParams.delete("tab");
+      window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+      if (name === "received") markReceivedSeen();
+    };
+    tabs.forEach((tab, index) => {
+      tab.addEventListener("click", () => {
+        if (isTabName(tab.dataset.tab ?? null)) selectTab(tab.dataset.tab);
+      });
+      tab.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+        event.preventDefault();
+        const next = tabs[(index + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+        if (next && isTabName(next.dataset.tab ?? null)) selectTab(next.dataset.tab, true);
+      });
+    });
+    const closeMenu = (menuRoot) => {
+      const list = menuRoot.querySelector("[data-menu-list]");
+      if (list) list.hidden = true;
+      menuRoot.querySelector("[data-menu-button]")?.setAttribute("aria-expanded", "false");
+    };
+    const closeMenus = (except) => {
+      root.querySelectorAll("[data-menu-root]").forEach((menuRoot) => {
+        if (menuRoot !== except) closeMenu(menuRoot);
+      });
+    };
+    const placeMenu = (list, button) => {
+      const needed = list.offsetHeight + 8;
+      const flip = button.getBoundingClientRect().bottom + needed > window.innerHeight && button.getBoundingClientRect().top > needed;
+      list.classList.toggle("bottom-full", flip);
+      list.classList.toggle("mb-1", flip);
+      list.classList.toggle("top-full", !flip);
+      list.classList.toggle("mt-1", !flip);
+    };
+    root.addEventListener("click", (event) => {
+      const target = event.target;
+      if (target?.closest("[data-menu-list] a, [data-menu-list] button")) closeMenus();
+      const button = target?.closest("[data-menu-button]");
+      if (!button) return;
+      const menuRoot = button.closest("[data-menu-root]");
+      const list = menuRoot?.querySelector("[data-menu-list]");
+      if (!menuRoot || !list) return;
+      closeMenus(menuRoot);
+      list.hidden = !list.hidden;
+      button.setAttribute("aria-expanded", list.hidden ? "false" : "true");
+      if (!list.hidden) placeMenu(list, button);
+    });
+    document.addEventListener("click", (event) => {
+      const target = event.target;
+      root.querySelectorAll("[data-menu-root]").forEach((menuRoot) => {
+        if (!target || !menuRoot.contains(target)) closeMenu(menuRoot);
+      });
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      const open = root.querySelector("[data-menu-list]:not([hidden])");
+      if (!open) return;
+      const button = open.closest("[data-menu-root]")?.querySelector("[data-menu-button]");
+      closeMenus();
+      button?.focus();
+    });
+    const batches = Array.from(root.querySelectorAll("[data-batch-bar]")).map((bar) => ({
+      scope: bar.dataset.batchBar ?? "",
+      bar,
+      clear: bar.querySelector("[data-batch-clear]"),
+      count: bar.querySelector("[data-batch-count]"),
+      reenable: bar.querySelector("[data-batch-reenable]"),
+      del: bar.querySelector("[data-batch-delete]")
+    }));
+    const selectedFor = (batch) => Array.from(root.querySelectorAll(`input[data-row-select][form="batch-${batch.scope}"]`)).filter((box) => box.checked);
+    const updateBatch = (batch) => {
+      const selected = selectedFor(batch);
+      batch.bar.hidden = selected.length === 0;
+      if (selected.length === 0) closeMenus();
+      if (batch.count) batch.count.textContent = String(selected.length);
+      if (batch.reenable) {
+        const ok = selected.some((box) => box.dataset.expired === "true" && box.dataset.direct !== "true");
+        batch.reenable.disabled = !ok;
+        batch.reenable.title = ok ? "Re-enables the selected expired shares for 24 hours" : "Select an expired share (direct links cannot be re-enabled)";
+      }
+    };
+    const batchOf = (box) => batches.find((batch) => box.getAttribute("form") === `batch-${batch.scope}`);
+    root.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!target?.matches("input[data-row-select]")) return;
+      const batch = batchOf(target);
+      if (batch) updateBatch(batch);
+    });
+    let returnFocus = null;
+    const rememberTrigger = (from) => {
+      returnFocus = from?.closest("[data-menu-root]")?.querySelector("[data-menu-button]") ?? null;
+    };
+    root.addEventListener(
+      "click",
+      (event) => {
+        const trigger = event.target?.closest("[data-share-delete-trigger]");
+        if (trigger) rememberTrigger(trigger);
+      },
+      true
+    );
+    document.querySelectorAll("[data-share-delete-dialog], [data-batch-delete-dialog]").forEach((dialog) => {
+      dialog.addEventListener("close", () => returnFocus?.focus());
+    });
+    const batchDialog = document.querySelector("[data-batch-delete-dialog]");
+    let pendingBatch = null;
+    batches.forEach((batch) => {
+      batch.clear?.addEventListener("click", () => {
+        root.querySelectorAll(`input[data-row-select][form="batch-${batch.scope}"]`).forEach((box) => {
+          box.checked = false;
+        });
+        updateBatch(batch);
+      });
+      batch.del?.addEventListener("click", () => {
+        rememberTrigger(batch.del);
+        closeMenus();
+        pendingBatch = batch;
+        const summary = batchDialog?.querySelector("[data-batch-delete-summary]");
+        if (summary) summary.textContent = `${selectedFor(batch).length} share(s) selected.`;
+        batchDialog?.showModal();
+      });
+      updateBatch(batch);
+    });
+    batchDialog?.querySelector("[data-batch-delete-cancel]")?.addEventListener("click", () => batchDialog.close());
+    batchDialog?.querySelector("[data-batch-delete-confirm]")?.addEventListener("click", () => {
+      const batch = pendingBatch;
+      batchDialog.close();
+      if (!batch) return;
+      batch.bar.action = "/shares/delete-batch";
+      batch.bar.submit();
+    });
+    const toggle = root.querySelector("[data-expired-toggle]");
+    const expiredList = root.querySelector("[data-expired-list]");
+    if (toggle && expiredList) {
+      const label = toggle.querySelector("[data-expired-label]");
+      const arrow = toggle.querySelector("[data-expired-arrow]");
+      const count = toggle.dataset.expiredCount ?? "0";
+      const setOpen = (open, persist) => {
+        expiredList.hidden = !open;
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        if (label) label.textContent = `${open ? "Hide" : "Show"} expired (${count})`;
+        if (arrow) arrow.style.transform = open ? "rotate(90deg)" : "";
+        if (!open) {
+          expiredList.querySelectorAll("input[data-row-select]:checked").forEach((box) => {
+            box.checked = false;
+            const batch = batchOf(box);
+            if (batch) updateBatch(batch);
+          });
+        }
+        if (!persist) return;
+        try {
+          window.localStorage.setItem(expiredStorageKey, open ? "1" : "0");
+        } catch {
+        }
+      };
+      let stored = false;
+      try {
+        stored = window.localStorage.getItem(expiredStorageKey) === "1";
+      } catch {
+        stored = false;
+      }
+      setOpen(stored, false);
+      toggle.addEventListener("click", () => setOpen(expiredList.hidden, true));
+    }
+    const copyButton = root.querySelector("[data-copy-upload-link]");
+    const linkNode = root.querySelector("[data-upload-link]");
+    if (copyButton && linkNode) {
+      let timer;
+      copyButton.addEventListener("click", async () => {
+        const ok = await copyText(linkNode.textContent?.trim() ?? "");
+        copyButton.textContent = ok ? "Copied" : "Copy failed";
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          copyButton.textContent = "Copy";
+        }, 2e3);
+      });
+    }
+    if (tabs.some((tab) => tab.dataset.tab === "received" && tab.getAttribute("aria-selected") === "true")) {
+      markReceivedSeen();
+    }
+  })();
+
   // scripts/ts/index.ts
   (() => {
     const nodes = document.querySelectorAll("[data-local-datetime]");
@@ -302,32 +557,6 @@
       });
     });
     closeButton?.addEventListener("click", () => dialog.close());
-  })();
-  (() => {
-    const selectAll = document.querySelector("[data-received-select-all]");
-    if (!selectAll) return;
-    const rowCheckboxes = () => Array.from(document.querySelectorAll("[data-received-select]"));
-    const syncSelectAllState = () => {
-      const checkboxes = rowCheckboxes();
-      if (checkboxes.length === 0) {
-        selectAll.checked = false;
-        selectAll.indeterminate = false;
-        return;
-      }
-      const checkedCount = checkboxes.filter((checkbox) => checkbox.checked).length;
-      selectAll.checked = checkedCount === checkboxes.length;
-      selectAll.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
-    };
-    selectAll.addEventListener("change", () => {
-      const shouldCheck = selectAll.checked;
-      rowCheckboxes().forEach((checkbox) => {
-        checkbox.checked = shouldCheck;
-      });
-      syncSelectAllState();
-    });
-    rowCheckboxes().forEach((checkbox) => {
-      checkbox.addEventListener("change", syncSelectAllState);
-    });
   })();
   (() => {
     const dropzone = document.querySelector("[data-quick-share-dropzone]");

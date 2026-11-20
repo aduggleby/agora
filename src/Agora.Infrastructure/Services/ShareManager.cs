@@ -52,7 +52,8 @@ public sealed partial class ShareManager(
         string? SenderMessage,
         bool SentByAgent,
         string AccessMode,
-        IReadOnlyList<ShareArchiveFileSummary> Files)
+        IReadOnlyList<ShareArchiveFileSummary> Files,
+        string ShareToken = "")
     {
         public bool IsDirectLink => ShareModes.IsDirectLink(AccessMode);
     }
@@ -773,8 +774,71 @@ public sealed partial class ShareManager(
                     .Select(file => new ShareArchiveFileSummary(
                         file.OriginalFilename,
                         file.OriginalSizeBytes))
-                    .ToList()))
+                    .ToList(),
+                x.ShareToken))
             .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>The most shares the home page shows per tab (own and received are limited separately).</summary>
+    public const int HomeListSize = 100;
+
+    /// <summary>The owner's live shares that were not sent through the upload link, newest first.</summary>
+    public Task<List<UserShareSummary>> ListOwnSharesAsync(ShareOwner owner, int take, CancellationToken cancellationToken) =>
+        ListSummariesAsync(SharesOwnedBy(owner).Where(x => x.SenderEmail == null || x.SenderEmail == ""), take, cancellationToken);
+
+    /// <summary>The owner's live shares that were sent through the upload link, newest first.</summary>
+    public Task<List<UserShareSummary>> ListReceivedSharesAsync(ShareOwner owner, int take, CancellationToken cancellationToken) =>
+        ListSummariesAsync(SharesOwnedBy(owner).Where(x => x.SenderEmail != null && x.SenderEmail != ""), take, cancellationToken);
+
+    /// <summary>One page of every share the owner received, deleted and expired ones included, newest first.</summary>
+    public async Task<List<UserShareSummary>> ListReceivedHistoryAsync(ShareOwner owner, int skip, int take, CancellationToken cancellationToken)
+    {
+        return await SharesOwnedBy(owner)
+            .AsNoTracking()
+            .Where(x => x.SenderEmail != null && x.SenderEmail != "")
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ThenBy(x => x.Id)
+            .Skip(skip)
+            .Take(take)
+            .Select(x => new UserShareSummary(
+                x.Id,
+                x.ZipDisplayName,
+                x.ZipSizeBytes,
+                x.Files.Count,
+                x.DownloadEvents.Count,
+                x.CreatedAtUtc,
+                x.ExpiresAtUtc,
+                x.DeletedAtUtc,
+                x.SenderName,
+                x.SenderEmail,
+                x.SenderMessage,
+                x.SentByAgent,
+                x.AccessMode,
+                x.Files
+                    .Select(file => new ShareArchiveFileSummary(file.OriginalFilename, file.OriginalSizeBytes))
+                    .ToList(),
+                x.ShareToken))
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>A received share is new when it arrived after the owner last opened the Received tab (never opened: all are new).</summary>
+    public static bool IsNewReceived(DateTime createdAtUtc, DateTime? seenAtUtc) => seenAtUtc is null || createdAtUtc > seenAtUtc;
+
+    public async Task<DateTime?> GetReceivedSeenAtUtcAsync(Guid userId, CancellationToken cancellationToken) =>
+        await db.Users.AsNoTracking().Where(x => x.Id == userId).Select(x => x.ReceivedSeenAtUtc).SingleOrDefaultAsync(cancellationToken);
+
+    /// <summary>
+    /// Records that the owner has seen what was received up to <paramref name="seenUpToUtc"/> (the creation time of the
+    /// newest received share the page showed, never later than now), so files that were not shown stay new. Uses a direct update:
+    /// the account row carries a concurrency token (SecurityStamp) that a concurrent change must not turn into an error.
+    /// </summary>
+    public async Task MarkReceivedSeenAsync(Guid userId, DateTime? seenUpToUtc, CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        var seenAt = seenUpToUtc is { } rendered && rendered < now ? DateTime.SpecifyKind(rendered, DateTimeKind.Utc) : now;
+        await db.Users
+            .Where(x => x.Id == userId && (x.ReceivedSeenAtUtc == null || x.ReceivedSeenAtUtc < seenAt))
+            .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.ReceivedSeenAtUtc, seenAt), cancellationToken);
     }
 
     /// <summary>The most shares one batch delete accepts; the home list shows at most this many.</summary>
@@ -862,6 +926,31 @@ public sealed partial class ShareManager(
         share.ExpiresAtUtc = now.AddHours(24);
         await db.SaveChangesAsync(cancellationToken);
         return true;
+    }
+
+    /// <summary>
+    /// Re-enables several of the owner's shares for 24 hours with the single-share rules (direct links, shares that have
+    /// not expired, shares without an archive and other owners' shares are skipped). Returns null (and changes nothing)
+    /// for more than <see cref="MaxBatchDeleteShares"/> distinct ids, otherwise how many shares were re-enabled.
+    /// </summary>
+    public async Task<int?> ReenableSharesFor24HoursAsync(IReadOnlyCollection<Guid> shareIds, ShareOwner owner, CancellationToken cancellationToken)
+    {
+        var ids = shareIds.Distinct().ToArray();
+        if (ids.Length > MaxBatchDeleteShares)
+        {
+            return null;
+        }
+
+        var reenabled = 0;
+        foreach (var shareId in ids)
+        {
+            if (await ReenableShareFor24HoursAsync(shareId, owner, cancellationToken))
+            {
+                reenabled += 1;
+            }
+        }
+
+        return reenabled;
     }
 
     public async Task<string?> GetCopyableShareTokenAsync(Guid shareId, ShareOwner owner, CancellationToken cancellationToken)

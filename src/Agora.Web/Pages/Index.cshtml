@@ -10,214 +10,235 @@
     if (bytes >= 1024L) return $"{bytes / 1024.0:F2} KB";
     return $"{bytes} B";
   }
-}
-<section class="mb-10 rounded-2xl border border-border bg-white p-8">
-  <h1 class="font-display text-5xl tracking-tight leading-tight">Fast, branded file sharing for your team.</h1>
-  <p class="text-ink-muted text-sm mt-4 max-w-xl">Create expiring share links with customizable download pages, download notifications, and background processing built in.</p>
+  // Rows read from SQL Server come back with an unspecified kind; without the Z the browser would treat them as local time.
+  string Iso(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc).ToString("O");
+  string RowSize(long bytes) => bytes >= 1024 * 1024 ? $"{bytes / (1024.0 * 1024.0):F1} MB" : $"{bytes / 1024.0:F0} KB";
+  string FilesLabel(ShareManager.UserShareSummary share) => $"{share.FileCount} {(share.FileCount == 1 ? "file" : "files")} \u00b7 {RowSize(share.ZipSizeBytes)}";
+  var expiredShares = Model.OwnShares.Where(x => x.ExpiresAtUtc is not null && x.ExpiresAtUtc <= nowUtc).ToList();
+  var activeShares = Model.OwnShares.Where(x => x.ExpiresAtUtc is null || x.ExpiresAtUtc > nowUtc).ToList();
+  var receivedActive = Model.ActiveTab == "received";
+  var tabClass = "border-terra text-ink";
+  var tabIdleClass = "border-transparent text-ink-muted hover:text-ink";
 
-  <input type="hidden" value="@Model.QuickDraftShareId" data-quick-share-draft-id />
-  <input type="file" multiple accept="*/*" class="sr-only" data-quick-share-input />
-  <div class="mt-6 rounded-lg border border-dashed border-border bg-cream p-4 cursor-pointer" data-quick-share-dropzone data-max-files-per-share="@Model.MaxFilesPerShare" data-max-file-size-bytes="@Model.MaxFileSizeBytes" data-max-total-upload-bytes="@Model.MaxTotalUploadBytes" tabindex="0" role="button">
-    <div class="flex items-center justify-between gap-3">
-      <p class="text-sm text-ink-light">Drop, paste or click to select files — max @Model.MaxFilesPerShare files, @FormatFileSize(Model.MaxFileSizeBytes) per file, @FormatFileSize(Model.MaxTotalUploadBytes) total</p>
-      <div class="flex items-center gap-2">
-        <button type="button" class="hidden px-3 py-1.5 border border-border bg-cream-dark/70 text-ink text-xs font-medium rounded-md hover:bg-cream-dark transition-colors disabled:opacity-60 disabled:cursor-not-allowed" data-quick-share-cancel disabled title="No upload is currently running.">Cancel upload</button>
-        <button type="button" class="px-3 py-1.5 bg-terra text-white text-xs font-medium rounded-md hover:bg-terra/90 transition-colors" data-quick-share-pick>Choose files</button>
-      </div>
-    </div>
-    <p class="text-xs text-ink-muted mt-2" data-quick-share-status>We'll take you to the next step as soon as your files are ready.</p>
-    <ul class="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2" data-quick-share-upload-list></ul>
-  </div>
-</section>
-
-@if (Model.OwnShares.Count > 0 || Model.ReceivedShares.Count > 0)
-{
-@if (Model.OwnShares.Count > 0)
-{
-<section class="mb-8">
-  <div class="bg-white rounded-2xl border border-border overflow-hidden">
-    <div class="px-5 py-3 border-b border-border bg-cream-dark/50 flex items-center justify-between">
-      <h2 class="font-display text-xl">Previous shares</h2>
-      <span class="text-xs text-ink-muted">@Model.OwnShares.Count shown</span>
-    </div>
-    <table class="w-full table-fixed">
-      <thead>
-        <tr class="text-xs font-medium text-ink-muted uppercase tracking-wider border-b border-border whitespace-nowrap">
-          <th class="text-left px-3 py-2">Archive</th>
-          <th class="text-left px-3 py-2 w-28">Details</th>
-          <th class="text-left px-3 py-2 w-20">State</th>
-          <th class="text-left px-3 py-2 w-32">Created</th>
-          <th class="text-left px-3 py-2 w-32">Expires</th>
-          <th class="text-left px-3 py-2 w-12" title="Number of times downloaded by others">DLs</th>
-          <th class="text-right px-3 py-2 w-48">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        @foreach (var share in Model.OwnShares)
-        {
-          var isExpired = share.ExpiresAtUtc is not null && share.ExpiresAtUtc <= nowUtc;
-          var state = share.DeletedAtUtc is not null ? "Deleted" : isExpired ? "Expired" : "Active";
-          var stateClass = state == "Active" ? "bg-sage-wash text-sage" : state == "Expired" ? "bg-cream-dark text-ink-muted" : "bg-danger-wash text-danger";
-          var size = share.ZipSizeBytes >= 1024 * 1024 ? $"{share.ZipSizeBytes / (1024.0 * 1024.0):F1} MB" : $"{share.ZipSizeBytes / 1024.0:F0} KB";
-          var filesJson = JsonSerializer.Serialize(share.Files);
-          <tr class="border-b border-border/60 hover:bg-cream-dark/40 transition-colors whitespace-nowrap">
-            <td class="px-3 py-3 text-sm">
-              <div class="flex items-center gap-2 min-w-0">
-                <span class="truncate min-w-0" title="@share.ZipDisplayName">@share.ZipDisplayName</span>
-                @if (share.IsDirectLink)
-                {
-                  <span class="inline-flex items-center shrink-0 rounded-md bg-terra-wash px-2 py-0.5 text-[11px] font-medium text-terra" title="Opens the file directly; no download page, cannot be re-enabled" data-direct-link-badge>Direct link</span>
-                }
-              </div>
-            </td>
-            <td class="px-3 py-3 text-xs text-ink-muted">
-              <button type="button" class="text-xs text-terra hover:underline" data-share-details-trigger data-share-name="@share.ZipDisplayName" data-share-files='@filesJson'>@share.FileCount file(s) - @size</button>
-            </td>
-            <td class="px-3 py-3"><span class="text-xs px-2 py-0.5 rounded-md @stateClass">@state</span></td>
-            <td class="px-3 py-3"><span class="text-xs text-ink-muted" data-local-datetime="@share.CreatedAtUtc.ToString("O")" data-local-datetime-style="compact"></span></td>
-            <td class="px-3 py-3">
-              @if (share.ExpiresAtUtc is null)
-              {
-                <span class="text-xs text-ink-muted">Never</span>
-              }
-              else
-              {
-                <span class="text-xs text-ink-muted" data-local-datetime="@share.ExpiresAtUtc.Value.ToString("O")" data-local-datetime-style="compact"></span>
-              }
-            </td>
-            <td class="px-3 py-3 text-xs text-ink-muted">@share.DownloadCount</td>
-            <td class="px-3 py-3 text-right space-x-2">
-              <form method="post" action="/shares/@share.ShareId/show-link" class="inline">
-                <button type="submit" class="text-xs text-terra hover:underline">Show link</button>
-              </form>
-              @if (isExpired && !share.IsDirectLink)
-              {
-                <form method="post" action="/shares/@share.ShareId/reenable" class="inline">
-                  <button type="submit" class="text-xs text-sage hover:underline" title="Make this share available again for 24 hours">Re-enable</button>
-                </form>
-              }
-              <form method="post" action="/shares/@share.ShareId/delete" class="inline" data-share-delete-form data-share-name="@share.ZipDisplayName">
-                <button type="button" class="text-xs text-danger hover:underline" data-share-delete-trigger>Delete</button>
-              </form>
-            </td>
-          </tr>
-        }
-      </tbody>
-    </table>
-  </div>
-</section>
-}
-
-<section>
-  <div class="bg-white rounded-2xl border border-border overflow-hidden">
-    <form method="post" action="/shares/delete-batch">
-      <div class="px-5 py-3 border-b border-border bg-cream-dark/50 flex items-center justify-between gap-4">
-        <div>
-          <h2 class="font-display text-xl">Files sent to me</h2>
-          <p class="text-xs text-ink-muted mt-1">Received files expire according to your default share expiry (Settings). Delete them earlier when you no longer need them.</p>
-        </div>
-        @if (Model.ReceivedShares.Count > 0)
-        {
-          <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded-md border border-danger/50 text-danger hover:bg-danger-wash" title="Select at least one row to delete.">Delete selected</button>
-        }
-      </div>
-      @if (Model.ReceivedShares.Count == 0)
+  void DateBlock(ShareManager.UserShareSummary share, string createdLabel, bool expired)
+  {
+    <div class="hidden sm:grid grid-cols-[4.5rem_6.5rem] gap-x-1.5 text-xs text-ink-muted whitespace-nowrap leading-5 [&>*:nth-child(odd)]:text-right" data-share-dates>
+      <span>@createdLabel:</span>
+      <span data-local-datetime="@Iso(share.CreatedAtUtc)" data-local-datetime-style="compact"></span>
+      <span class="@(expired ? "text-danger" : "")">@(expired ? "Expired" : "Expires"):</span>
+      @if (share.ExpiresAtUtc is null)
       {
-        <p class="px-5 py-6 text-sm text-ink-muted" data-received-empty>Nothing received yet. Files people send through your upload link appear here. Find and share your link in <a href="/account/settings" class="text-terra hover:underline">Settings</a>.</p>
+        <span>Never</span>
       }
       else
       {
-      <table class="w-full table-fixed">
-        <thead>
-          <tr class="text-xs font-medium text-ink-muted uppercase tracking-wider border-b border-border whitespace-nowrap">
-            <th class="text-left px-3 py-2 w-10">
-              <input type="checkbox" data-received-select-all aria-label="Select all received files" />
-            </th>
-            <th class="text-left px-3 py-2">Archive</th>
-            <th class="text-left px-3 py-2 w-28">Sender</th>
-            <th class="text-left px-3 py-2 w-44">Email</th>
-            <th class="text-left px-3 py-2 w-28">Details</th>
-            <th class="text-left px-3 py-2 w-32">Created</th>
-            <th class="text-left px-3 py-2 w-32">Expires</th>
-            <th class="text-right px-3 py-2 w-32">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          @foreach (var share in Model.ReceivedShares)
-          {
-            var size = share.ZipSizeBytes >= 1024 * 1024 ? $"{share.ZipSizeBytes / (1024.0 * 1024.0):F1} MB" : $"{share.ZipSizeBytes / 1024.0:F0} KB";
-            var filesJson = JsonSerializer.Serialize(share.Files);
-            <tr class="border-b border-border/60 hover:bg-cream-dark/40 transition-colors whitespace-nowrap">
-              <td class="px-3 py-3">
-                <input type="checkbox" name="shareIds" value="@share.ShareId" data-received-select />
-              </td>
-              <td class="px-3 py-3 text-sm"><span class="block truncate" title="@share.ZipDisplayName">@share.ZipDisplayName</span></td>
-              <td class="px-3 py-3 text-xs text-ink-muted"><span class="block truncate" title="@share.SenderName">@(string.IsNullOrWhiteSpace(share.SenderName) ? "-" : share.SenderName)@if (share.SentByAgent) { <span class="ml-1 px-2 py-0.5 text-xs font-medium text-ink-muted border border-border rounded-md bg-white" data-share-sent-by-agent>Agent</span> }</span></td>
-              <td class="px-3 py-3 text-xs text-ink-muted"><span class="block truncate" title="@share.SenderEmail">@(string.IsNullOrWhiteSpace(share.SenderEmail) ? "-" : share.SenderEmail)</span></td>
-              <td class="px-3 py-3 text-xs text-ink-muted">
-                <button type="button"
-                        class="text-xs text-terra hover:underline"
-                        data-share-details-trigger
-                        data-share-name="@share.ZipDisplayName"
-                        data-share-files='@filesJson'
-                        data-share-sender-name="@share.SenderName"
-                        data-share-sender-email="@share.SenderEmail"
-                        data-share-sent-by-agent="@(share.SentByAgent ? "true" : "false")"
-                        data-share-sender-message='@JsonSerializer.Serialize(share.SenderMessage ?? string.Empty)'>@share.FileCount file(s) - @size</button>
-              </td>
-              <td class="px-3 py-3"><span class="text-xs text-ink-muted" data-local-datetime="@share.CreatedAtUtc.ToString("O")" data-local-datetime-style="compact"></span></td>
-              <td class="px-3 py-3">
-                @if (share.ExpiresAtUtc is null)
-                {
-                  <span class="text-xs text-ink-muted">Never</span>
-                }
-                else
-                {
-                  <span class="text-xs text-ink-muted" data-local-datetime="@share.ExpiresAtUtc.Value.ToString("O")" data-local-datetime-style="compact"></span>
-                }
-              </td>
-              <td class="px-3 py-3 text-right space-x-2">
-                <form method="post" action="/shares/@share.ShareId/show-link" class="inline">
-                  <button type="submit" class="text-xs text-terra hover:underline">Show link</button>
-                </form>
-                <form method="post" action="/shares/@share.ShareId/delete" class="inline" data-share-delete-form data-share-name="@share.ZipDisplayName">
-                  <button type="button" class="text-xs text-danger hover:underline" data-share-delete-trigger>Delete</button>
-                </form>
-              </td>
-            </tr>
-          }
-        </tbody>
-      </table>
+        <span class="@(expired ? "text-danger" : "")" data-local-datetime="@Iso(share.ExpiresAtUtc.Value)" data-local-datetime-style="compact"></span>
       }
+    </div>
+  }
+
+  void DirectLinkBadge(Guid shareId)
+  {
+    <button type="button" class="group relative inline-flex shrink-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-terra/40" aria-describedby="direct-tip-@shareId" data-direct-link-badge>
+      <span class="rounded-md bg-terra-wash px-2 py-0.5 text-[11px] font-medium text-terra cursor-help">Direct link</span>
+      <span role="tooltip" id="direct-tip-@shareId" class="pointer-events-none hidden group-hover:block group-focus:block absolute left-0 top-full mt-2 z-20 w-72 max-sm:fixed max-sm:inset-x-4 max-sm:top-auto max-sm:w-auto rounded-lg border border-border bg-ink text-cream text-xs leading-relaxed p-3 shadow-lg text-left font-normal">
+        <strong class="block text-white mb-0.5">Direct link</strong>The link opens the file itself (a PDF or image shows in the browser, HTML downloads), without a download page. It expires after at most 7 days and can't be password protected or re-enabled.
+      </span>
+    </button>
+  }
+
+  async Task OwnRow(ShareManager.UserShareSummary share, bool expired)
+  {
+    var filesJson = JsonSerializer.Serialize(share.Files);
+    <li class="px-3 sm:px-5 py-3 flex gap-3 items-center last:rounded-b-2xl @(expired ? "bg-cream-dark/50" : "")" data-share-row data-own-share>
+      <input type="checkbox" name="shareIds" value="@share.ShareId" form="batch-mine" class="accent-terra" aria-label="Select @share.ZipDisplayName" data-row-select data-expired="@(expired ? "true" : "false")" data-direct="@(share.IsDirectLink ? "true" : "false")" />
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="text-sm font-medium truncate @(expired ? "text-ink-light" : "")" title="@share.ZipDisplayName">@share.ZipDisplayName</span>
+          @if (share.IsDirectLink)
+          {
+            DirectLinkBadge(share.ShareId);
+          }
+        </div>
+        <div class="text-xs text-ink-muted mt-0.5">
+          <button type="button" class="text-terra hover:underline" data-share-details-trigger data-share-name="@share.ZipDisplayName" data-share-files='@filesJson'>@FilesLabel(share)</button>
+          &middot; @share.DownloadCount @(share.DownloadCount == 1 ? "download" : "downloads")
+        </div>
+      </div>
+      <div class="shrink-0 flex items-center gap-4">
+        @{ DateBlock(share, "Uploaded", expired); }
+        <div class="relative" data-menu-root>
+          <button type="button" class="w-8 h-8 rounded-md text-ink-light text-lg leading-none hover:bg-cream-dark grid place-items-center focus:outline-none focus-visible:ring-2 focus-visible:ring-terra/40" aria-label="More actions for @share.ZipDisplayName" aria-expanded="false" data-menu-button>&#8943;</button>
+          <div class="absolute right-0 top-full mt-1 w-52 rounded-lg border border-border bg-white shadow-lg py-1 z-30 text-left" hidden data-menu-list>
+            <form method="post" action="/shares/@share.ShareId/show-link"><button type="submit" class="w-full text-left px-3 py-2 text-xs hover:bg-cream-dark/60">Show link</button></form>
+        @if (expired && !share.IsDirectLink)
+        {
+          <form method="post" action="/shares/@share.ShareId/reenable"><button type="submit" class="w-full text-left px-3 py-2 text-xs text-sage hover:bg-cream-dark/60" title="Make this share available again for 24 hours">Re-enable for 24 hours</button></form>
+        }
+        <form method="post" action="/shares/@share.ShareId/delete" data-share-delete-form data-share-name="@share.ZipDisplayName"><button type="button" class="w-full text-left px-3 py-2 text-xs text-danger hover:bg-danger-wash" data-share-delete-trigger>Delete</button></form>
+        </div>
+        </div>
+      </div>
+    </li>
+  }
+
+  async Task ReceivedRow(ShareManager.UserShareSummary share)
+  {
+    var isNew = Model.IsNew(share);
+    var expired = share.ExpiresAtUtc is not null && share.ExpiresAtUtc <= nowUtc;
+    var filesJson = JsonSerializer.Serialize(share.Files);
+    var senderName = string.IsNullOrWhiteSpace(share.SenderName) ? "-" : share.SenderName;
+    <li class="px-3 sm:px-5 py-3 flex gap-3 items-center last:rounded-b-2xl @(isNew ? "bg-terra-wash/50" : "")" data-share-row data-received-share>
+      <input type="checkbox" name="shareIds" value="@share.ShareId" form="batch-received" class="accent-terra" aria-label="Select @share.ZipDisplayName" data-row-select data-expired="false" data-direct="false" />
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="text-sm font-medium truncate" title="@share.ZipDisplayName">@share.ZipDisplayName</span>
+          @if (isNew)
+          {
+            <span class="shrink-0 text-[11px] font-medium text-terra" data-received-new>New</span>
+          }
+        </div>
+        <div class="text-xs text-ink-muted mt-0.5 truncate">
+          From <span title="@share.SenderName">@senderName</span>@if (share.SentByAgent) { <span class="ml-1 px-1.5 py-0.5 text-[11px] font-medium text-ink-muted border border-border rounded-md bg-white" data-share-sent-by-agent>Agent</span> }
+          &middot; <span title="@share.SenderEmail">@share.SenderEmail</span>
+          &middot; <button type="button"
+                  class="text-terra hover:underline"
+                  data-share-details-trigger
+                  data-share-name="@share.ZipDisplayName"
+                  data-share-files='@filesJson'
+                  data-share-sender-name="@share.SenderName"
+                  data-share-sender-email="@share.SenderEmail"
+                  data-share-sent-by-agent="@(share.SentByAgent ? "true" : "false")"
+                  data-share-sender-message='@JsonSerializer.Serialize(share.SenderMessage ?? string.Empty)'>@FilesLabel(share)</button>
+          @if (!string.IsNullOrWhiteSpace(share.SenderMessage))
+          {
+            <text> &middot; <span class="italic text-ink-light">&ldquo;@share.SenderMessage&rdquo;</span></text>
+          }
+        </div>
+      </div>
+      <div class="shrink-0 flex items-center gap-4">
+        @{ DateBlock(share, "Received", expired); }
+        <div class="relative" data-menu-root>
+          <button type="button" class="w-8 h-8 rounded-md text-ink-light text-lg leading-none hover:bg-cream-dark grid place-items-center focus:outline-none focus-visible:ring-2 focus-visible:ring-terra/40" aria-label="More actions for @share.ZipDisplayName" aria-expanded="false" data-menu-button>&#8943;</button>
+          <div class="absolute right-0 top-full mt-1 w-52 rounded-lg border border-border bg-white shadow-lg py-1 z-30 text-left" hidden data-menu-list>
+            <a class="block w-full text-left px-3 py-2 text-xs hover:bg-cream-dark/60" href="/s/@Uri.EscapeDataString(share.ShareToken)" target="_blank" rel="noopener">Download</a>
+        <form method="post" action="/shares/@share.ShareId/delete" data-share-delete-form data-share-name="@share.ZipDisplayName"><input type="hidden" name="tab" value="received" /><button type="button" class="w-full text-left px-3 py-2 text-xs text-danger hover:bg-danger-wash" data-share-delete-trigger>Delete</button></form>
+        </div>
+        </div>
+      </div>
+    </li>
+  }
+
+  async Task BatchBar(string scope, bool canReenable)
+  {
+    <form method="post" action="/shares/delete-batch" id="batch-@scope" class="px-3 sm:px-5 py-2.5 border-b border-border/60 bg-terra-wash/60 flex items-center justify-between gap-3" hidden data-batch-bar="@scope">
+      @if (scope == "received")
+      {
+        <input type="hidden" name="tab" value="received" />
+      }
+      <span class="text-xs text-ink-light"><span data-batch-count>0</span> selected &middot; <button type="button" class="text-terra hover:underline" data-batch-clear>Clear</button></span>
+      <div class="relative" data-menu-root>
+        <button type="button" class="px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-white inline-flex items-center gap-1" aria-expanded="false" data-menu-button>Batch actions <span aria-hidden="true">&#9662;</span></button>
+        <div class="absolute right-0 top-full mt-1 w-56 rounded-lg border border-border bg-white shadow-lg py-1 z-30" hidden data-menu-list>
+          @if (canReenable)
+          {
+            <button type="submit" formaction="/shares/reenable-batch" class="w-full text-left px-3 py-2 text-xs hover:bg-cream-dark/60 disabled:text-ink-muted disabled:cursor-not-allowed disabled:hover:bg-transparent" disabled title="Select an expired share (direct links cannot be re-enabled)" data-batch-reenable>Re-enable for 24 hours</button>
+          }
+          <button type="button" class="w-full text-left px-3 py-2 text-xs text-danger hover:bg-danger-wash" data-batch-delete>Delete selected</button>
+        </div>
+      </div>
     </form>
+  }
+}
+<section class="mb-6 rounded-2xl border border-border bg-white p-4 sm:p-5">
+  <input type="hidden" value="@Model.QuickDraftShareId" data-quick-share-draft-id />
+  <input type="file" multiple accept="*/*" class="sr-only" data-quick-share-input />
+  <div class="rounded-lg cursor-pointer" data-quick-share-dropzone data-max-files-per-share="@Model.MaxFilesPerShare" data-max-file-size-bytes="@Model.MaxFileSizeBytes" data-max-total-upload-bytes="@Model.MaxTotalUploadBytes" tabindex="0" role="button" aria-label="Share files: drop, paste or choose files">
+    <div class="flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
+      <div>
+        <h1 class="font-display text-3xl tracking-tight">Share files</h1>
+        <p class="text-sm text-ink-muted mt-1">Drop, paste or choose files: max @Model.MaxFilesPerShare files, @FormatFileSize(Model.MaxFileSizeBytes) per file, @FormatFileSize(Model.MaxTotalUploadBytes) total.</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <button type="button" class="hidden px-3 py-2 border border-border bg-cream-dark/70 text-ink text-sm font-medium rounded-md hover:bg-cream-dark transition-colors disabled:opacity-60 disabled:cursor-not-allowed" data-quick-share-cancel disabled title="No upload is currently running.">Cancel upload</button>
+        <button type="button" class="px-4 py-2 bg-terra text-white text-sm font-medium rounded-md hover:bg-terra/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed" data-quick-share-pick>Choose files</button>
+      </div>
+    </div>
+    <p class="text-xs text-ink-muted mt-2" data-quick-share-status>We'll take you to the next step as soon as your files are ready.</p>
+    <ul class="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 empty:hidden" data-quick-share-upload-list></ul>
   </div>
 </section>
-}
-else
-{
-<section class="grid grid-cols-1 md:grid-cols-3 gap-4">
-  <article class="md:col-span-2 bg-white rounded-2xl border border-border p-6">
-    <p class="text-xs uppercase tracking-wider text-ink-muted">Get it done</p>
-    <h3 class="font-display text-3xl tracking-tight mt-2">Send large files without the back-and-forth</h3>
-    <p class="text-sm text-ink-muted mt-3">When you need to deliver files quickly, Agora gives you one simple flow: drop files, tune expiry, share the link.</p>
-  </article>
-  <article class="bg-white rounded-2xl border border-border p-6">
-    <p class="text-xs uppercase tracking-wider text-ink-muted">Full control</p>
-    <h3 class="font-display text-2xl mt-2">Host it where your data lives</h3>
-    <p class="text-sm text-ink-muted mt-2">Keep files, logs, and policies on your own infrastructure so governance and retention stay in your hands.</p>
-  </article>
-  <article class="bg-white rounded-2xl border border-border p-6">
-    <p class="text-xs uppercase tracking-wider text-ink-muted">Ease of use</p>
-    <h3 class="font-display text-2xl mt-2">Simple for senders and recipients</h3>
-    <p class="text-sm text-ink-muted mt-2">Your team gets a clean sharing workflow, while recipients get a clear branded page and one-click download.</p>
-  </article>
-  <article class="md:col-span-2 bg-white rounded-2xl border border-border p-6">
-    <p class="text-xs uppercase tracking-wider text-ink-muted">Operate with confidence</p>
-    <h3 class="font-display text-2xl mt-2">Automate lifecycle, keep visibility</h3>
-    <p class="text-sm text-ink-muted mt-2">Expiration, cleanup, and notifications run in the background so sharing stays reliable without manual follow-up.</p>
-  </article>
+
+<section class="bg-white rounded-2xl border border-border" data-dashboard data-new-count="@Model.NewReceivedCount" data-seen-up-to="@(Model.SeenUpToUtc is { } seenUpTo ? Iso(seenUpTo) : string.Empty)">
+  <div class="px-3 sm:px-5 pt-3 border-b border-border bg-cream-dark/50 rounded-t-2xl flex items-end justify-between gap-3">
+    <div class="flex gap-1" role="tablist" aria-label="Shares">
+      <button type="button" role="tab" id="tab-mine" aria-controls="panel-mine" aria-selected="@(receivedActive ? "false" : "true")" tabindex="@(receivedActive ? "-1" : "0")" data-tab="mine" class="px-4 py-2.5 text-sm font-medium border-b-2 @(receivedActive ? tabIdleClass : tabClass)" data-active-class="@tabClass" data-idle-class="@tabIdleClass">My shares <span class="ml-1 text-xs text-ink-muted">@Model.OwnShares.Count</span></button>
+      <button type="button" role="tab" id="tab-received" aria-controls="panel-received" aria-selected="@(receivedActive ? "true" : "false")" tabindex="@(receivedActive ? "0" : "-1")" data-tab="received" class="px-4 py-2.5 text-sm font-medium border-b-2 @(receivedActive ? tabClass : tabIdleClass)" data-active-class="@tabClass" data-idle-class="@tabIdleClass">Received @if (Model.NewReceivedCount > 0) { <span class="ml-1 inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-terra text-white text-[11px]" data-received-badge>@Model.NewReceivedCount new</span> }</button>
+    </div>
+    <span class="hidden sm:block pb-3 text-xs text-ink-muted" data-tab-hint="mine" hidden="@receivedActive">Newest first &middot; @Model.OwnShares.Count @(Model.OwnShares.Count == 1 ? "share" : "shares")</span>
+    <span class="hidden sm:block pb-3 text-xs text-ink-muted" data-tab-hint="received" hidden="@(!receivedActive)">@Model.ReceivedShares.Count received@(Model.NewReceivedCount > 0 ? $" \u00b7 {Model.NewReceivedCount} new since your last visit" : "")</span>
+  </div>
+
+  <div role="tabpanel" id="panel-mine" aria-labelledby="tab-mine" tabindex="0" hidden="@receivedActive" data-panel="mine">
+    @if (Model.OwnShares.Count == 0)
+    {
+      <p class="px-5 py-6 text-sm text-ink-muted" data-own-empty>No shares yet. Use Choose files above to share your first file.</p>
+    }
+    else
+    {
+      await BatchBar("mine", true);
+      <ul class="divide-y divide-border/60" data-active-list>
+        @foreach (var share in activeShares)
+        {
+          await OwnRow(share, false);
+        }
+      </ul>
+      @if (expiredShares.Count > 0)
+      {
+        <button type="button" class="w-full px-5 py-2.5 border-t border-border bg-cream-dark/40 flex items-center justify-between gap-3 text-xs text-ink-light hover:bg-cream-dark/70 rounded-b-2xl aria-expanded:rounded-b-none" aria-expanded="false" aria-controls="expired-list" data-expired-toggle data-expired-count="@expiredShares.Count">
+          <span><span class="inline-block transition-transform" aria-hidden="true" data-expired-arrow>&#9656;</span> <span data-expired-label>Show expired (@expiredShares.Count)</span></span>
+          <span class="text-ink-muted text-right">Re-enable within 7 days of expiry, then they are removed</span>
+        </button>
+        <ul id="expired-list" class="divide-y divide-border/60 border-t border-border/60" hidden data-expired-list>
+          @foreach (var share in expiredShares)
+          {
+            await OwnRow(share, true);
+          }
+        </ul>
+      }
+    }
+  </div>
+
+  <div role="tabpanel" id="panel-received" aria-labelledby="tab-received" tabindex="0" hidden="@(!receivedActive)" data-panel="received">
+    <div class="px-3 sm:px-5 py-3 border-b border-border/60">
+      <p class="text-xs text-ink-muted">Files people sent through your upload link
+        @if (string.IsNullOrEmpty(Model.UploadIntakeUrl))
+        {
+          <a href="/account/settings" class="text-terra hover:underline">Open Settings</a>
+        }
+        else
+        {
+          <span class="font-mono text-ink-light break-all" data-upload-link>@Model.UploadIntakeUrl</span> <button type="button" class="text-terra hover:underline ml-1" data-copy-upload-link>Copy</button>
+        }
+      </p>
+    </div>
+    @if (Model.ReceivedShares.Count == 0)
+    {
+      <p class="px-5 py-6 text-sm text-ink-muted" data-received-empty>Nothing received yet. Files people send through your upload link appear here.</p>
+    }
+    else
+    {
+      await BatchBar("received", false);
+      <ul class="divide-y divide-border/60" data-received-list>
+        @foreach (var share in Model.ReceivedShares)
+        {
+          await ReceivedRow(share);
+        }
+      </ul>
+    }
+    <div class="px-5 py-3 text-xs text-ink-muted border-t border-border/60 rounded-b-2xl">Received files expire with your default share expiry. <a href="/received/history" class="text-terra hover:underline">Show history (deleted and expired)</a></div>
+  </div>
 </section>
-}
 
 <dialog class="rounded-xl border border-border bg-white p-0 w-full max-w-sm backdrop:bg-black/30 m-auto" style="margin: auto;" data-share-delete-dialog>
   <form method="dialog" class="p-5">
@@ -227,6 +248,18 @@ else
     <div class="mt-5 flex justify-end gap-2">
       <button type="button" class="px-4 py-2 text-sm border border-border rounded-lg bg-cream hover:bg-cream-dark/70" data-share-delete-cancel>Cancel</button>
       <button type="button" class="px-4 py-2 text-sm bg-danger text-white rounded-lg hover:bg-danger/90" data-share-delete-confirm>Delete</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="rounded-xl border border-border bg-white p-0 w-full max-w-sm backdrop:bg-black/30 m-auto" style="margin: auto;" data-batch-delete-dialog>
+  <form method="dialog" class="p-5">
+    <h3 class="font-display text-2xl tracking-tight">Delete selected shares?</h3>
+    <p class="text-sm text-ink-muted mt-2">This removes the selected shares immediately. File cleanup runs in the background.</p>
+    <p class="text-sm text-ink-light mt-2" data-batch-delete-summary></p>
+    <div class="mt-5 flex justify-end gap-2">
+      <button type="button" class="px-4 py-2 text-sm border border-border rounded-lg bg-cream hover:bg-cream-dark/70" data-batch-delete-cancel>Cancel</button>
+      <button type="button" class="px-4 py-2 text-sm bg-danger text-white rounded-lg hover:bg-danger/90" data-batch-delete-confirm>Delete</button>
     </div>
   </form>
 </dialog>

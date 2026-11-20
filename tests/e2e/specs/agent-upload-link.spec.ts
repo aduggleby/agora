@@ -146,8 +146,8 @@ test.describe('Agent upload link', () => {
     expect(agentEmail.html).toContain('Sent by the recipe');
     expect(agentEmail.html).toMatch(/agent interface/);
 
-    await page.goto('/');
-    const recipeRow = page.locator('tr', { hasText: 'Recipe Bot' });
+    await page.goto('/?tab=received');
+    const recipeRow = page.locator('[data-received-share]', { hasText: 'Recipe Bot' });
     await expect(recipeRow.locator('span[data-share-sent-by-agent]')).toHaveText('Agent');
     await recipeRow.locator('[data-share-details-trigger]').click();
     await expect(page.locator('[data-share-details-sent-by-agent]')).toHaveText('Sent through the agent interface');
@@ -164,8 +164,8 @@ test.describe('Agent upload link', () => {
     expect(mcp.structured).toEqual({ state: 'queued' });
     const mcpEmail = await waitForEmail(user.email, 'Files were sent to you by an AI agent', mcpStart, 'MCP Bot');
     expect(mcpEmail.html).toContain('Sent through MCP');
-    await page.goto('/');
-    const mcpRow = page.locator('tr', { hasText: 'MCP Bot' });
+    await page.goto('/?tab=received');
+    const mcpRow = page.locator('[data-received-share]', { hasText: 'MCP Bot' });
     await expect(mcpRow.locator('span[data-share-sent-by-agent]')).toHaveText('Agent');
 
     // ---- regenerating the code ends the old one (R17) ----

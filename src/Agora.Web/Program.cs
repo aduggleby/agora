@@ -705,27 +705,26 @@ app.MapPost("/admin/settings/registration", async (HttpRequest request, AuthServ
     return Results.Redirect($"/admin?msg={(enabled ? "Registration%20enabled" : "Registration%20disabled")}");
 }).RequireAuthorization(AuthSetup.AdminOnlyPolicy);
 
-app.MapPost("/shares/{id:guid}/delete", async (Guid id, HttpContext context, ShareManager manager, CancellationToken ct) =>
+// Row and batch actions post an optional "tab" field so the redirect returns to the tab the user was on.
+static async Task<string?> ReadTabAsync(HttpRequest request, CancellationToken ct)
 {
-    if (!context.User.TryGetShareOwner(out var owner))
-    {
-        return Results.Unauthorized();
-    }
-
-    var ok = await manager.DeleteShareAsync(id, owner, ct);
-    return Results.Redirect(ok ? "/?msg=Share%20deleted" : "/?msg=Unable%20to%20delete%20share");
-}).RequireAuthorization();
-
-app.MapPost("/shares/delete-batch", async (HttpContext context, ShareManager manager, HttpRequest request, CancellationToken ct) =>
-{
-    if (!context.User.TryGetShareOwner(out var owner))
-    {
-        return Results.Unauthorized();
-    }
-
     if (!request.HasFormContentType)
     {
-        return Results.Redirect("/?msg=No%20shares%20selected");
+        return null;
+    }
+
+    var form = await request.ReadFormAsync(ct);
+    return string.Equals(form["tab"].ToString(), "received", StringComparison.Ordinal) ? "received" : null;
+}
+
+static IResult HomeRedirect(string message, string? tab) =>
+    Results.Redirect($"/?msg={Uri.EscapeDataString(message)}{(tab is null ? string.Empty : $"&tab={tab}")}");
+
+static async Task<(string? Tab, Guid[] ShareIds)> ReadBatchAsync(HttpRequest request, CancellationToken ct)
+{
+    if (!request.HasFormContentType)
+    {
+        return (null, []);
     }
 
     var form = await request.ReadFormAsync(ct);
@@ -736,32 +735,96 @@ app.MapPost("/shares/delete-batch", async (HttpContext context, ShareManager man
         .Where(value => value != Guid.Empty)
         .Distinct()
         .ToArray();
+    return (string.Equals(form["tab"].ToString(), "received", StringComparison.Ordinal) ? "received" : null, shareIds);
+}
 
-    if (shareIds.Length == 0)
-    {
-        return Results.Redirect("/?msg=No%20shares%20selected");
-    }
-
-    var deleted = await manager.DeleteSharesAsync(shareIds, owner, ct);
-    if (deleted is null)
-    {
-        return Results.Redirect($"/?msg={Uri.EscapeDataString($"Select at most {ShareManager.MaxBatchDeleteShares} shares at a time")}");
-    }
-
-    return Results.Redirect($"/?msg={Uri.EscapeDataString($"Deleted {deleted} share(s)")}");
-}).RequireAuthorization();
-
-app.MapPost("/shares/{id:guid}/reenable", async (Guid id, HttpContext context, ShareManager manager, CancellationToken ct) =>
+app.MapPost("/shares/{id:guid}/delete", async (Guid id, HttpContext context, ShareManager manager, HttpRequest request, CancellationToken ct) =>
 {
     if (!context.User.TryGetShareOwner(out var owner))
     {
         return Results.Unauthorized();
     }
 
+    var tab = await ReadTabAsync(request, ct);
+    var ok = await manager.DeleteShareAsync(id, owner, ct);
+    return HomeRedirect(ok ? "Share deleted" : "Unable to delete share", tab);
+}).RequireAuthorization();
+
+app.MapPost("/shares/delete-batch", async (HttpContext context, ShareManager manager, HttpRequest request, CancellationToken ct) =>
+{
+    if (!context.User.TryGetShareOwner(out var owner))
+    {
+        return Results.Unauthorized();
+    }
+
+    var (tab, shareIds) = await ReadBatchAsync(request, ct);
+    if (shareIds.Length == 0)
+    {
+        return HomeRedirect("No shares selected", tab);
+    }
+
+    var deleted = await manager.DeleteSharesAsync(shareIds, owner, ct);
+    if (deleted is null)
+    {
+        return HomeRedirect($"Select at most {ShareManager.MaxBatchDeleteShares} shares at a time", tab);
+    }
+
+    return HomeRedirect($"Deleted {deleted} share(s)", tab);
+}).RequireAuthorization();
+
+app.MapPost("/shares/reenable-batch", async (HttpContext context, ShareManager manager, HttpRequest request, CancellationToken ct) =>
+{
+    if (!context.User.TryGetShareOwner(out var owner))
+    {
+        return Results.Unauthorized();
+    }
+
+    var (tab, shareIds) = await ReadBatchAsync(request, ct);
+    if (shareIds.Length == 0)
+    {
+        return HomeRedirect("No shares selected", tab);
+    }
+
+    var reenabled = await manager.ReenableSharesFor24HoursAsync(shareIds, owner, ct);
+    if (reenabled is null)
+    {
+        return HomeRedirect($"Select at most {ShareManager.MaxBatchDeleteShares} shares at a time", tab);
+    }
+
+    var skipped = shareIds.Length - reenabled.Value;
+    return HomeRedirect(
+        skipped == 0
+            ? $"Re-enabled {reenabled} share(s) for 24 hours"
+            : $"Re-enabled {reenabled} share(s) for 24 hours, skipped {skipped} (not expired, direct links or no longer available)",
+        tab);
+}).RequireAuthorization();
+
+app.MapPost("/shares/{id:guid}/reenable", async (Guid id, HttpContext context, ShareManager manager, HttpRequest request, CancellationToken ct) =>
+{
+    if (!context.User.TryGetShareOwner(out var owner))
+    {
+        return Results.Unauthorized();
+    }
+
+    var tab = await ReadTabAsync(request, ct);
     var ok = await manager.ReenableShareFor24HoursAsync(id, owner, ct);
-    return Results.Redirect(ok
-        ? "/?msg=Share%20re-enabled%20for%2024%20hours"
-        : "/?msg=Unable%20to%20re-enable%20share");
+    return HomeRedirect(ok ? "Share re-enabled for 24 hours" : "Unable to re-enable share", tab);
+}).RequireAuthorization();
+
+app.MapPost("/account/received-seen", async (HttpContext context, ShareManager manager, string? seenUpTo, CancellationToken ct) =>
+{
+    if (context.User.UserId() is not { } userId)
+    {
+        return Results.Unauthorized();
+    }
+
+    if (!DateTime.TryParse(seenUpTo, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var parsed))
+    {
+        return Results.BadRequest();
+    }
+
+    await manager.MarkReceivedSeenAsync(userId, parsed, ct);
+    return Results.NoContent();
 }).RequireAuthorization();
 
 app.MapPost("/shares/{id:guid}/show-link", async (Guid id, HttpContext context, ShareManager manager, CancellationToken ct) =>
